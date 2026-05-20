@@ -29,7 +29,7 @@
 {% set custom_tld = "openstack" %}                  # PROMPT:Top Level Domain
 {% set custom_timezone = "America/New_York" %}      # PROMPT:Timezone
 
-# --- Snap Channels ---
+# --- Channels ---
 {% set custom_lxd_channel = "5.21/stable" %}          # PROMPT:LXD Channel
 {% set custom_maas_channel = "3.7/stable" %}          # PROMPT:MAAS Channel
 {% set custom_juju_channel = "3.6/stable" %}          # PROMPT:Juju Channel
@@ -38,6 +38,7 @@
 {% set custom_mysql_channel = "8.0/stable" %}         # PROMPT:MySQL InnoDB Channel
 {% set custom_rabbitmq_channel = "3.9/stable" %}      # PROMPT:RabbitMQ Channel
 {% set custom_ovn_channel = "23.09/stable" %}         # PROMPT:OVN Channel
+{% set custom_vault_channel = "1.8/stable" %}         # PROMPT:Vault Channel
 
 # --- LXD Settings ---
 {% set custom_lxd_project = "default" %}
@@ -125,6 +126,7 @@
 {% set mysql_channel = meta.get("mysql_channel") or custom_mysql_channel %}
 {% set rabbitmq_channel = meta.get("rabbitmq_channel") or custom_rabbitmq_channel %}
 {% set ovn_channel = meta.get("ovn_channel") or custom_ovn_channel %}
+{% set vault_channel = meta.get("vault_channel") or custom_vault_channel %}
 
 {% set lxd_project = meta.get("lxd_project") or custom_lxd_project %}
 {% set lxd_pool = meta.get("lxd_pool") or custom_lxd_pool %}
@@ -538,7 +540,7 @@ snap:
 {% endif %}
   - snap install juju --channel={{ juju_channel }}
   - snap install vault --channel={{ vault_channel }}
-  - snap install openstackclients --channel={{ openstack_channel }}
+  - snap install openstackclients
 
 package_update: true
 package_upgrade: true
@@ -706,6 +708,18 @@ runcmd:
   except Exception as e:
       print(f'echo \"IP Math Error: {e}\"; exit 1')
   ")
+
+- echo "MAAS Network CIDR         - $MAAS_CIDR"
+- echo "MAAS Gateway IP           - $MAAS_GATEWAY"
+- echo "MAAS Reserved IP Count    - $MAAS_RESERVED_IP_COUNT"
+- echo "MAAS Reserved IP Start    - $MAAS_RESERVED_IP_START"
+- echo "MAAS Reserved IP End      - $MAAS_RESERVED_IP_END"
+- echo ""
+- echo "Neutron Network CIDR      - $OS_NEUTRON_CIDR"
+- echo "Neutron Gateway IP        - $OS_NEUTRON_GATEWAY"
+- echo "Neutron Reserved IP Count - $OS_RESERVED_IP_COUNT"
+- echo "Neutron Reserved IP Start - $OS_RESERVED_IP_START"
+- echo "Neutron Reserved IP End   - $OS_RESERVED_IP_END"
 
 {% if maas_snap %}
 
@@ -1051,6 +1065,7 @@ runcmd:
     if [ "$all_ready" = true ]; then
       echo "All VMs are Ready!"
       maast $ADMIN_USER machines read
+      netplan apply # Update MAAS DNS record
       sleep 10
       break
     fi

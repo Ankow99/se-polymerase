@@ -29,7 +29,7 @@
 {% set custom_tld = "landscape" %}                  # PROMPT:Top Level Domain
 {% set custom_timezone = "America/New_York" %}      # PROMPT:Timezone
 
-# --- Snap Channels ---
+# --- Channels ---
 {% set custom_lxd_channel = "5.21/stable" %}                  # PROMPT:LXD Channel
 {% set custom_maas_channel = "3.7/stable" %}                  # PROMPT:MAAS Channel
 {% set custom_juju_channel = "3.6/stable" %}                  # PROMPT:Juju Channel
@@ -650,6 +650,12 @@ runcmd:
       print(f'echo \"IP Math Error: {e}\"; exit 1')
   ")
 
+- echo "Network CIDR      - $MAAS_CIDR"
+- echo "Gateway IP        - $MAAS_GATEWAY"
+- echo "Reserved IP Count - $MAAS_RESERVED_IP_COUNT"
+- echo "Reserved IP Start - $MAAS_RESERVED_IP_START"
+- echo "Reserved IP End   - $MAAS_RESERVED_IP_END"
+
 {% if maas_snap %}
 
 # Install PostgreSQL
@@ -977,6 +983,7 @@ runcmd:
     if [ "$all_ready" = true ]; then
       echo "All VMs are Ready!"
       maast $ADMIN_USER machines read
+      netplan apply # Update MAAS DNS record
       sleep 10
       break
     fi

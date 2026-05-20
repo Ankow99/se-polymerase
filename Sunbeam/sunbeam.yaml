@@ -29,7 +29,7 @@
 {% set custom_tld = "sunbeam" %}                    # PROMPT:Top Level Domain
 {% set custom_timezone = "America/New_York" %}      # PROMPT:Timezone
 
-# --- Snap Channels ---
+# --- Channels ---
 {% set custom_lxd_channel = "5.21/stable" %}        # PROMPT:LXD Channel
 {% set custom_maas_channel = "3.7/stable" %}        # PROMPT:MAAS Channel
 {% set custom_sunbeam_channel = "2024.1/stable" %}  # PROMPT:Sunbeam Channel
@@ -681,6 +681,20 @@ runcmd:
       print(f'echo \"IP Math Error: {e}\"; exit 1')
   ")
 
+- echo "MAAS Network CIDR      - $MAAS_CIDR"
+- echo "MAAS Gateway IP        - $MAAS_GATEWAY"
+- echo "MAAS Reserved IP Count - $MAAS_RESERVED_IP_COUNT"
+- echo "MAAS Reserved IP Start - $MAAS_RESERVED_IP_START"
+- echo "MAAS Reserved IP End   - $MAAS_RESERVED_IP_END"
+- echo ""
+- echo "Internal API IP Count  - $OS_INTERNAL_API_IP_COUNT"
+- echo "Internal API IP Start  - $OS_INTERNAL_API_IP_START"
+- echo "Internal API IP End    - $OS_INTERNAL_API_IP_END"
+- echo ""
+- echo "Public API IP Count    - $OS_PUBLIC_API_IP_COUNT"
+- echo "Public API IP Start    - $OS_PUBLIC_API_IP_START"
+- echo "Public API IP End      - $OS_PUBLIC_API_IP_END"
+
 {% if maas_snap %}
 
 # Install PostgreSQL
@@ -1027,6 +1041,7 @@ runcmd:
     if [ "$all_ready" = true ]; then
       echo "All VMs are Ready!"
       maast $ADMIN_USER machines read
+      netplan apply # Update MAAS DNS record
       sleep 10
       break
     fi

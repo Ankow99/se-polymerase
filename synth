@@ -3,7 +3,7 @@
 # se-polymerase (synth)
 # Acts as the polymerase to synthesize an isolated, terraform-free LXD 
 # reproducer environment using the host's LXD for MAAS + Juju deployments.
-# version: 3.0.0
+# version: 3.1.0
 #
 # Synthesized by: Pablo Gonzalez De Greiff @ Canonical
 # ---
@@ -117,6 +117,7 @@ emergency_rollback() {
                     lxc config trust remove "$FINGERPRINT"
                 fi
                 rm -f "$CERT_DIR/${VOLATILE_CERT_NAME}.crt" "$CERT_DIR/${VOLATILE_CERT_NAME}.key"
+                rmdir "$CERT_DIR" 2>/dev/null || true
             fi
         fi
         
@@ -334,11 +335,19 @@ create_dynamic_bridge() {
 import ipaddress, sys
 try:
     net = ipaddress.IPv4Network('$bridge_cidr', strict=False)
+    if net.prefixlen >= 31:
+        print('TOO_SMALL')
+        sys.exit(0)
     print(f'{list(net.hosts())[0]} {net.prefixlen}')
 except Exception:
     print('ERROR')
 ")"
-            if [ "$gw_ip" = "ERROR" ] || [ -z "$gw_ip" ]; then
+            if [ "$gw_ip" = "TOO_SMALL" ]; then
+                echo ""
+                echo -e "${BRED}Error: CIDR '${NC}${bridge_cidr}${BRED}' is too small for a bridge subnet. Must be /30 or larger. Please try again...${NC}"
+                echo ""
+                continue
+            elif [ "$gw_ip" = "ERROR" ] || [ -z "$gw_ip" ]; then
                 echo ""
                 echo -e "${BRED}Error: Invalid CIDR format '${NC}${bridge_cidr}${BRED}' provided for bridge '${NC}$bridge_name${BRED}'. Please try again...${NC}"
                 echo ""
@@ -377,6 +386,9 @@ except Exception:
 import ipaddress, sys
 try:
     net = ipaddress.IPv4Network('$bridge_cidr', strict=False)
+    if net.prefixlen >= 31:
+        print('ERROR')
+        sys.exit(0)
     hosts = list(net.hosts())
     print(f'{hosts[0]} {net.prefixlen} {hosts[1]}')
 except Exception:
@@ -384,9 +396,10 @@ except Exception:
 ")"
         if [ "$gw" = "ERROR" ] || [ -z "$gw" ]; then
             echo ""
-            echo -e "${BRED}Error: Could not calculate Primary VM network properties from CIDR '${NC}$bridge_name${BRED}'. Exiting.${NC}"
+            echo -e "${BRED}Error: Could not calculate Primary VM network properties from CIDR '${NC}$bridge_cidr${BRED}'. Exiting.${NC}"
             exit 1
         fi
+        
         PRIMARY_BRIDGE="$bridge_name"
         PRIMARY_GW_IP="$gw"
         PRIMARY_MASK="$mask"
@@ -399,7 +412,7 @@ except Exception:
 # ==========================================
 
 # Check for dependencies
-for cmd in jq openssl python3 lxc; do
+for cmd in jq openssl python3 lxc ssh base64 awk sed; do
     if ! command -v "$cmd" &> /dev/null; then
         echo ""
         echo -e "${BRED}Error: '${NC}${cmd}${BRED}' is not installed. Please install it.${NC}"
@@ -418,25 +431,26 @@ if ! lxc storage list --format json | jq -e 'length > 0' > /dev/null 2>&1; then
         echo -e "${BRED}Error: Failed to auto-initialize LXD. Please run '${NC}lxd init --auto${BRED}' manually and try again.${NC}"
         exit 1
     fi
-    echo -e "  Configuring LXD to listen on port 8443..."
-    lxc config set core.https_address ":8443"
     echo ""
     echo -e "  LXD initialized successfully."
-else
-    # Ensure it is listening on 8443 even if it was previously initialized
-    CURRENT_ADDR=$(lxc config get core.https_address)
+fi
+
+# Ensure it is listening on 8443 even if it was previously initialized
+CURRENT_ADDR=$(lxc config get core.https_address)
+
+# Check if it's either empty OR doesn't end in :8443
+if [[ "$CURRENT_ADDR" != *":8443" ]]; then
+    echo ""
+    if [ -z "$CURRENT_ADDR" ]; then
+        echo -e "${BYELLOW}-> LXD is not listening on the network. Configuring to port 8443...${NC}"
+    else
+        echo -e "${BYELLOW}-> LXD is listening on '${NC}${CURRENT_ADDR}${BYELLOW}' instead of port 8443. Reconfiguring...${NC}"
+    fi
     
-    # Check if it's either empty OR doesn't end in :8443
-    if [[ "$CURRENT_ADDR" != *":8443" ]]; then
-        echo ""
-        if [ -z "$CURRENT_ADDR" ]; then
-            echo -e "${BYELLOW}-> LXD is not listening on the network. Configuring to port 8443...${NC}"
-        else
-            echo -e "${BYELLOW}-> LXD is listening on '${NC}${CURRENT_ADDR}${BYELLOW}' instead of port 8443. Reconfiguring...${NC}"
-        fi
-        
-        # Override to listen on all interfaces on port 8443
-        lxc config set core.https_address ":8443"
+    # Override to listen on all interfaces on port 8443
+    if ! lxc config set core.https_address ":8443"; then
+         echo -e "${BRED}Error: Failed to configure LXD port. You may need to run this command manually or check your lxd group permissions.${NC}"
+         exit 1
     fi
 fi
 
@@ -557,6 +571,7 @@ else
         read -r user_input </dev/tty
         
         # Safely expand tilde (~) to $HOME if the user typed it
+        user_input=$(echo "$user_input" | tr -d '"'\')
         user_input="${user_input/#\~/$HOME}"
         SSH_ID="$user_input"
     fi
@@ -962,6 +977,13 @@ if [ "$LXD_PROJECT" != "default" ]; then
         lxc project create "$LXD_PROJECT" -c features.images=true -c features.profiles=true -c features.storage.volumes=true
         lxc project set "$LXD_PROJECT" --property description="${PRETTY_REPRO} Isolated Environment ($DEPLOY_ID)"
         
+        if [ -z "$LXD_POOL" ]; then
+            LXD_POOL=$(lxc profile device get default root pool 2>/dev/null || lxc storage list --format json | jq -r '.[0].name')
+            if [ -z "$LXD_POOL" ] || [ "$LXD_POOL" = "null" ]; then
+                LXD_POOL="default"
+            fi
+        fi
+        
         # Initialize the blank default profile with a root disk and MAAS bridge
         lxc profile device add default root disk path=/ pool="$LXD_POOL" --project "$LXD_PROJECT"
 
@@ -1123,6 +1145,7 @@ else
 fi
 
 rm -f "$CERT_DIR/${VOLATILE_CERT_NAME}.crt" "$CERT_DIR/${VOLATILE_CERT_NAME}.key"
+rmdir "$CERT_DIR" 2>/dev/null || true
 EOF
 fi
 
@@ -1199,6 +1222,7 @@ echo -e "${BYELLOW}-> 4. Waiting for VM SSH service to start...${NC}"
 echo ""
 
 TIMEOUT=0
+SYS_USER="${SYS_USER:-ubuntu}"
 
 # Use the LXD API to check the VM's authorized_keys
 until lxc exec "$VM_NAME" --project "$LXD_PROJECT" -- test -s "/home/$SYS_USER/.ssh/authorized_keys" 2>/dev/null; do

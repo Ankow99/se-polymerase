@@ -28,7 +28,7 @@
 {% set custom_tld = "" %}                           # PROMPT:Top Level Domain
 {% set custom_timezone = "America/New_York" %}      # PROMPT:Timezone
 
-# --- Snap Channels ---
+# --- Channels ---
 {% set custom_lxd_channel = "5.21/stable" %}        # PROMPT:LXD Channel
 
 # --- LXD Settings ---
