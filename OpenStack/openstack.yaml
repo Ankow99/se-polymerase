@@ -1293,7 +1293,8 @@ runcmd:
 # ------------------------------------------- Perform Vault initialization -------------------------------------------
 - echo "\n\n-------- Initializing Vault... --------\n"
 
-- export VAULT_ADDR="http://$(su ubuntu -c 'juju status --format=json' | jq -r '.applications.vault.units[] | select(.leader == true) | ."public-address"'):8200"
+- export VAULT_ADDR="http://$($RUN_AS juju status --format=json | jq -r '.applications.vault.units[] | select(.leader == true) | ."public-address"'):8200"
+- sleep 30
 
 - export INIT_OUTPUT=$(vault operator init -key-shares=1 -key-threshold=1)
 
@@ -1312,7 +1313,7 @@ runcmd:
 # Authorize Vault
 - echo "\n\n-------- Authorizing Vault... --------\n"
 
-- $RUN_AS vault token create -ttl=10m'
+- $RUN_AS vault token create -ttl=10m
 - $RUN_AS juju run vault/leader authorize-charm token=$VAULT_TOKEN
 
 # Have Vault generate a self-signed root CA certificate
