@@ -59,6 +59,7 @@
 {% set custom_os_neutron_bridge = "nbr0" %}         # PROMPT:Neutron Bridge Name [BRIDGE:dhcp=true,cidr=os_neutron_cidr]
 {% set custom_os_neutron_cidr = "10.20.0.0/22" %}
 {% set custom_os_ip_count = 50 %}                   # PROMPT:OpenStack Reserved IP Pool Size
+{% set custom_os_base_flavor = jammy %}             # PROMPT:OpenStack Flavor Base
 {% set custom_os_ram_flavor = 2048 %}               # PROMPT:OpenStack Flavor RAM
 {% set custom_os_disk_flavor = 10 %}                # PROMPT:OpenStack Flavor Disk
 {% set custom_os_e_disk_flavor = 10 %}              # PROMPT:OpenStack Flavor Ephemeral Disk
@@ -79,7 +80,7 @@
 {% set custom_juju_base = "ubuntu@22.04" %}         # PROMPT:Juju Base
 
 # Machines Defaults per node
-{% set custom_node_ha = "4" %}                      # PROMPT:Number of Machines
+{% set custom_node_ha = "4" %}
 {% set custom_node_cpu = "4" %}                     # PROMPT:Machine CPU cores
 {% set custom_node_ram = "12GiB" %}                 # PROMPT:Machine RAM
 {% set custom_node_disk = "50GiB" %}                # PROMPT:Machine Root Disk
@@ -146,6 +147,7 @@
 {% set os_neutron_bridge = meta.get("os_neutron_bridge") or custom_os_neutron_bridge %}
 {% set os_neutron_cidr = meta.get("os_neutron_cidr") or custom_os_neutron_cidr %}
 {% set os_ip_count = meta.get("os_ip_count") | default(custom_os_ip_count, true) | int %}
+{% set os_base_image = meta.get("os_base_image") or custom_os_base_image %}
 {% set os_ram_flavor = meta.get("os_ram_flavor") or custom_os_ram_flavor %}
 {% set os_disk_flavor = meta.get("os_disk_flavor") or custom_os_disk_flavor %}
 {% set os_e_disk_flavor = meta.get("os_e_disk_flavor") or custom_os_e_disk_flavor %}
@@ -617,6 +619,7 @@ runcmd:
 - export OS_NEUTRON_BRIDGE="{{ os_neutron_bridge }}"
 - export OS_NEUTRON_CIDR="{{ os_neutron_cidr }}"
 - export OS_RESERVED_IP_COUNT="{{ os_ip_count }}"
+- export FLAVOR_BASE="{{ os_base_image }}"
 - export FLAVOR_RAM="{{ os_ram_flavor }}"
 - export FLAVOR_DISK="{{ os_disk_flavor }}"
 - export FLAVOR_E_DISK="{{ os_e_disk_flavor }}"
@@ -657,6 +660,7 @@ runcmd:
 - export OSDS_PER_NODE="{{ node_osd_count }}"
 
 - export JUJU_MODEL="{{ custom_juju_models.split()[0] }}"
+- export TIMEOUT="45m"
 
 # --- Dynamic IP Subnet Slicing ---
 - echo "\n\n-------- Calculating Payload IP Allocations --------\n"
@@ -1179,7 +1183,7 @@ runcmd:
     
     echo "\n\n-------- Waiting for Juju HA controllers to provision... --------\n"
     for i in $(seq 1 $((JUJU_HA - 1))); do
-      $RUN_AS juju wait-for machine $i -m controller --timeout=20m --query="life==\"alive\" && status==\"started\""
+      $RUN_AS juju wait-for machine $i -m controller --timeout=$TIMEOUT --query="life==\"alive\" && status==\"started\""
     done
   fi
 
@@ -1203,7 +1207,7 @@ runcmd:
 - |
   TOTAL_MACHINES=$((NODE_HA - 1))
   for i in $(seq 0 $TOTAL_MACHINES); do
-    $RUN_AS juju wait-for machine $i --timeout=20m --query="life==\"alive\" && status==\"started\""
+    $RUN_AS juju wait-for machine $i --timeout=$TIMEOUT --query="life==\"alive\" && status==\"started\""
   done
 
 # ------------------------------------------------- Deploy Ceph OSD -------------------------------------------------
@@ -1212,9 +1216,10 @@ runcmd:
 - |
   # Dynamically generate the block device path string (sdb, sdc, sdd...) based on OSD count
   DEVICES=""
-  LETTERS=(b c d e f g h i j k l m)
+  LETTERS="b c d e f g h i j k l m"
   for i in $(seq 1 $OSDS_PER_NODE); do
-      DEVICES="$DEVICES /dev/sd${LETTERS[$((i-1))]}"
+      LETTER=$(echo "$LETTERS" | cut -d' ' -f$i)
+      DEVICES="$DEVICES /dev/sd$LETTER"
   done
   
   cat <<EOF > /home/{{ sys_user }}/ceph-osd.yaml
@@ -1231,7 +1236,7 @@ runcmd:
 # Wait for Ceph OSD to be deployed
 - echo "\n\n-------- Waiting for Ceph OSD to be deployed... --------\n"
 
-- $RUN_AS juju wait-for application ceph-osd --timeout=20m --query="life==\"alive\" && status==\"blocked\" && len(units) == 4"
+- $RUN_AS juju wait-for application ceph-osd --timeout=$TIMEOUT --query="life==\"alive\" && status==\"blocked\" && len(units) == 4"
 
 # ----------------------------------------------- Deploy Nova Compute -----------------------------------------------
 - echo "\n\n-------- Deploying Nova Compute... --------\n"
@@ -1255,7 +1260,7 @@ runcmd:
 # Wait for Nova Compute to be deployed
 - echo "\n\n-------- Waiting for Nova Compute to be deployed... --------\n"
 
-- $RUN_AS juju wait-for application nova-compute --query="life==\"alive\" && status==\"blocked\" && len(units) == 3"
+- $RUN_AS juju wait-for application nova-compute --timeout=$TIMEOUT --query="life==\"alive\" && status==\"blocked\" && len(units) == 3"
 
 # ------------------------------------------- Deploy MySQL InnoDB Cluster -------------------------------------------
 - echo "\n\n-------- Deploying MySQL InnoDB Cluster... --------\n"
@@ -1265,7 +1270,7 @@ runcmd:
 # Wait for MySQL InnoDB Cluster to be ready
 - echo "\n\n-------- Waiting for MySQL InnoDB Cluster to be ready... --------\n"
 
-- $RUN_AS juju wait-for application mysql-innodb-cluster --query="life==\"alive\" && status==\"active\" && len(units) == 3"
+- $RUN_AS juju wait-for application mysql-innodb-cluster --timeout=$TIMEOUT --query="life==\"alive\" && status==\"active\" && len(units) == 3"
 
 # -------------------------------------------------- Deploy Vault --------------------------------------------------
 - echo "\n\n-------- Deploying Vault... --------\n"
@@ -1282,31 +1287,27 @@ runcmd:
 # Wait for Vault to be deployed
 - echo "\n\n-------- Waiting for Vault to be deployed... --------\n"
 
-- $RUN_AS juju wait-for application vault --query="life==\"alive\" && status==\"blocked\""
-- $RUN_AS juju wait-for application vault-mysql-router --query="life==\"alive\" && status==\"blocked\""
+- $RUN_AS juju wait-for application vault --timeout=$TIMEOUT --query="life==\"alive\" && status==\"blocked\""
+- $RUN_AS juju wait-for application vault-mysql-router --timeout=$TIMEOUT --query="life==\"alive\" && status==\"blocked\""
 
 # ------------------------------------------- Perform Vault initialization -------------------------------------------
 - echo "\n\n-------- Initializing Vault... --------\n"
 
 - export VAULT_ADDR="http://$(su ubuntu -c 'juju status --format=json' | jq -r '.applications.vault.units[] | select(.leader == true) | ."public-address"'):8200"
 
-- export INIT_OUTPUT=$(vault operator init -key-shares=3 -key-threshold=2)
+- export INIT_OUTPUT=$(vault operator init -key-shares=1 -key-threshold=1)
 
 - export UNSEAL_KEY_1=$(echo "$INIT_OUTPUT" | grep "Unseal Key 1:" | awk '{print $4}')
-- export UNSEAL_KEY_2=$(echo "$INIT_OUTPUT" | grep "Unseal Key 2:" | awk '{print $4}')
-- export UNSEAL_KEY_3=$(echo "$INIT_OUTPUT" | grep "Unseal Key 3:" | awk '{print $4}')
 
 - export VAULT_TOKEN=$(echo "$INIT_OUTPUT" | grep "Initial Root Token:" | awk '{print $4}')
 
 - echo "\n Unseal Key 1 - $UNSEAL_KEY_1 \n"
-- echo "\n Unseal Key 2 - $UNSEAL_KEY_2 \n"
-- echo "\n Unseal Key 3 - $UNSEAL_KEY_3 \n"
+- echo "\n Root Token   - $VAULT_TOKEN \n"
 
 # Unsealing Vault
 - echo "\n\n-------- Unsealing Vault... --------\n"
 
 - $RUN_AS vault operator unseal $UNSEAL_KEY_1
-- $RUN_AS vault operator unseal $UNSEAL_KEY_2
 
 # Authorize Vault
 - echo "\n\n-------- Authorizing Vault... --------\n"
@@ -1323,8 +1324,8 @@ runcmd:
 # Wait for Vault to be ready
 - echo "\n\n-------- Waiting for Vault to be ready... --------\n"
 
-- $RUN_AS juju wait-for application vault --query="life==\"alive\" && status==\"active\""
-- $RUN_AS juju wait-for application vault-mysql-router --query="life==\"alive\" && status==\"active\""
+- $RUN_AS juju wait-for application vault --timeout=$TIMEOUT --query="life==\"alive\" && status==\"active\""
+- $RUN_AS juju wait-for application vault-mysql-router --timeout=$TIMEOUT --query="life==\"alive\" && status==\"active\""
 
 # -------------------------------------------- Deploy Neutron networking --------------------------------------------
 - echo "\n\n-------- Deploying Neutron... --------\n"
@@ -1353,7 +1354,7 @@ runcmd:
 # Wait for OVN Central to be deployed
 - echo "\n\n-------- Waiting for OVN Central to be deployed... --------\n"
 
-- $RUN_AS juju wait-for application ovn-central --query="life==\"alive\" && status==\"blocked\" && len(units) == 3"
+- $RUN_AS juju wait-for application ovn-central --timeout=$TIMEOUT --query="life==\"alive\" && status==\"blocked\" && len(units) == 3"
 
 # Integrate Neutron API with OVN
 - echo "\n\n-------- Integrate Neutron API with OVN... --------\n"
@@ -1385,9 +1386,9 @@ runcmd:
 # Wait for OVN Central to be ready
 - echo "\n\n-------- Waiting for OVN Central & Chassis to be ready... --------\n"
 
-- $RUN_AS juju wait-for application ovn-central --query="life==\"alive\" && status==\"active\" && len(units) == 3"
-- $RUN_AS juju wait-for application ovn-chassis --query="life==\"alive\" && status==\"active\" && len(units) == 3"
-- $RUN_AS juju wait-for application neutron-api-mysql-router --query="life==\"alive\" && status==\"active\""
+- $RUN_AS juju wait-for application ovn-central --timeout=$TIMEOUT --query="life==\"alive\" && status==\"active\" && len(units) == 3"
+- $RUN_AS juju wait-for application ovn-chassis --timeout=$TIMEOUT --query="life==\"alive\" && status==\"active\" && len(units) == 3"
+- $RUN_AS juju wait-for application neutron-api-mysql-router --timeout=$TIMEOUT --query="life==\"alive\" && status==\"active\""
 
 # ---------------------------------------------- Deploy Keystone ----------------------------------------------
 - echo "\n\n-------- Deploying Keystone... --------\n"
@@ -1410,8 +1411,8 @@ runcmd:
 # Wait for Keystone to be ready
 - echo "\n\n-------- Waiting for Keystone to be ready... --------\n"
 
-- $RUN_AS juju wait-for application keystone --query="life==\"alive\" && status==\"blocked\""
-- $RUN_AS juju wait-for application keystone-mysql-router --query="life==\"alive\" && status==\"active\""
+- $RUN_AS juju wait-for application keystone --timeout=$TIMEOUT --query="life==\"alive\" && status==\"blocked\""
+- $RUN_AS juju wait-for application keystone-mysql-router --timeout=$TIMEOUT --query="life==\"alive\" && status==\"active\""
 
 # ------------------------------------------------ Deploy RabbitMQ ------------------------------------------------
 - echo "\n\n-------- Deploying RabbitMQ... --------\n"
@@ -1427,7 +1428,7 @@ runcmd:
 # Wait for RabbitMQ to be ready
 - echo "\n\n-------- Waiting for RabbitMQ to be ready... --------\n"
 
-- $RUN_AS juju wait-for application rabbitmq-server --query="life==\"alive\" && status==\"active\""
+- $RUN_AS juju wait-for application rabbitmq-server --timeout=$TIMEOUT --query="life==\"alive\" && status==\"active\""
 
 # ------------------------------------------- Deploy Nova Cloud Controller -------------------------------------------
 - echo "\n\n-------- Deploying Nova Cloud Controller... --------\n"
@@ -1463,8 +1464,8 @@ runcmd:
 # Wait for Nova Cloud Controller to be ready
 - echo "\n\n-------- Waiting for Nova Cloud Controller to be ready... --------\n"
 
-- $RUN_AS juju wait-for application nova-cloud-controller --query="life==\"alive\" && status==\"blocked\""
-- $RUN_AS juju wait-for application ncc-mysql-router --query="life==\"alive\" && status==\"active\""
+- $RUN_AS juju wait-for application nova-cloud-controller --timeout=$TIMEOUT --query="life==\"alive\" && status==\"blocked\""
+- $RUN_AS juju wait-for application ncc-mysql-router --timeout=$TIMEOUT --query="life==\"alive\" && status==\"active\""
 
 # ------------------------------------------------ Deploy Placement ------------------------------------------------
 - echo "\n\n-------- Deploying Placement... --------\n"
@@ -1488,8 +1489,8 @@ runcmd:
 # Wait for Placement to be ready
 - echo "\n\n-------- Waiting for Placement to be ready... --------\n"
 
-- $RUN_AS juju wait-for application placement --query="life==\"alive\" && status==\"blocked\""
-- $RUN_AS juju wait-for application placement-mysql-router --query="life==\"alive\" && status==\"active\""
+- $RUN_AS juju wait-for application placement --timeout=$TIMEOUT --query="life==\"alive\" && status==\"blocked\""
+- $RUN_AS juju wait-for application placement-mysql-router --timeout=$TIMEOUT --query="life==\"alive\" && status==\"active\""
 
 # -------------------------------------------- Deploy OpenStack Dashboard --------------------------------------------
 - echo "\n\n-------- Deploying OpenStack Dashboard... --------\n"
@@ -1512,8 +1513,8 @@ runcmd:
 # Wait for OpenStack Dashboard to be ready
 - echo "\n\n-------- Waiting for OpenStack Dashboard to be ready... --------\n"
 
-- $RUN_AS juju wait-for application openstack-dashboard --query="life==\"alive\" && status==\"active\""
-- $RUN_AS juju wait-for application dashboard-mysql-router --query="life==\"alive\" && status==\"active\""
+- $RUN_AS juju wait-for application openstack-dashboard --timeout=$TIMEOUT --query="life==\"alive\" && status==\"active\""
+- $RUN_AS juju wait-for application dashboard-mysql-router --timeout=$TIMEOUT --query="life==\"alive\" && status==\"active\""
 
 # ------------------------------------------------ Deploy Glance ------------------------------------------------
 - echo "\n\n-------- Deploying Glance... --------\n"
@@ -1538,8 +1539,8 @@ runcmd:
 # Wait for Glance to be ready
 - echo "\n\n-------- Waiting for Glance to be ready... --------\n"
 
-- $RUN_AS juju wait-for application glance --query="life==\"alive\" && status==\"waiting\""
-- $RUN_AS juju wait-for application glance-mysql-router --query="life==\"alive\" && status==\"active\""
+- $RUN_AS juju wait-for application glance --timeout=$TIMEOUT --query="life==\"alive\" && status==\"waiting\""
+- $RUN_AS juju wait-for application glance-mysql-router --timeout=$TIMEOUT --query="life==\"alive\" && status==\"active\""
 
 # ---------------------------------------------- Deploy Ceph Monitor ----------------------------------------------
 - echo "\n\n-------- Deploying Ceph Monitor... --------\n"
@@ -1570,7 +1571,7 @@ runcmd:
 # Wait for Ceph Monitor to be ready
 - echo "\n\n-------- Waiting for Ceph Monitor to be ready... --------\n"
 
-- $RUN_AS juju wait-for application ceph-mon --query="life==\"alive\" && status==\"blocked\" && len(units) == 3"
+- $RUN_AS juju wait-for application ceph-mon --timeout=$TIMEOUT --query="life==\"alive\" && status==\"blocked\" && len(units) == 3"
 
 # ---------------------------------------------- Deploy Cinder ----------------------------------------------
 - echo "\n\n-------- Deploying Cinder... --------\n"
@@ -1607,8 +1608,8 @@ runcmd:
 # Wait for Cinder to be ready
 - echo "\n\n-------- Waiting for Cinder to be ready... --------\n"
 
-- $RUN_AS juju wait-for application cinder --query="life==\"alive\" && status==\"blocked\""
-- $RUN_AS juju wait-for application cinder-mysql-router --query="life==\"alive\" && status==\"active\""
+- $RUN_AS juju wait-for application cinder --timeout=$TIMEOUT --query="life==\"alive\" && status==\"blocked\""
+- $RUN_AS juju wait-for application cinder-mysql-router --timeout=$TIMEOUT --query="life==\"alive\" && status==\"active\""
 
 # ---------------------------------------------- Deploy Cinder-Ceph ----------------------------------------------
 - echo "\n\n-------- Deploying Cinder-Ceph... --------\n"
@@ -1625,7 +1626,7 @@ runcmd:
 # Wait for Cinder-Ceph to be ready
 - echo "\n\n-------- Waiting for Cinder-Ceph to be ready... --------\n"
 
-- $RUN_AS juju wait-for application cinder-ceph --query="life==\"alive\" && status==\"active\""
+- $RUN_AS juju wait-for application cinder-ceph --timeout=$TIMEOUT --query="life==\"alive\" && status==\"active\""
 
 # ---------------------------------------------- Deploy Ceph RADOS Gateway ----------------------------------------------
 - echo "\n\n-------- Deploying Ceph RADOS Gateway... --------\n"
@@ -1640,12 +1641,12 @@ runcmd:
 # Wait for Ceph RADOS Gateway to be ready
 - echo "\n\n-------- Waiting for Ceph RADOS Gateway to be ready... --------\n"
 
-- $RUN_AS juju wait-for application ceph-radosgw --timeout=20m --query="life==\"alive\" && status==\"active\""
+- $RUN_AS juju wait-for application ceph-radosgw --timeout=$TIMEOUT --query="life==\"alive\" && status==\"active\""
 
 # --------------------------------------- Wait for OpenStack to Finish Deploying ---------------------------------------
 - echo "\n\n-------- Wait for OpenStack to finish deploying... --------\n"
 
-- $RUN_AS juju wait-for model openstack --query="life==\"alive\" && status==\"available\" && forEach(applications, app => app.status == \"active\")"
+- $RUN_AS juju wait-for model openstack --timeout=$TIMEOUT --query="life==\"alive\" && status==\"available\" && forEach(applications, app => app.status == \"active\")"
 
 # ---------------------------------------------------- Set openrc ----------------------------------------------------
 - echo "\n\n-------- Set openrc... --------\n"
@@ -1723,15 +1724,15 @@ runcmd:
   openstack endpoint list --interface admin
   
   # ------------------------------------------- Download image and set Flavor -------------------------------------------
-  echo -e "\n\n-------- Download Jammy image... --------\n"
+  echo -e "\n\n-------- Download $FLAVOR_BASE image... --------\n"
   
   mkdir /home/{{ sys_user }}/cloud-images
-  wget -nv http://cloud-images.ubuntu.com/jammy/current/jammy-server-cloudimg-amd64.img -O /home/{{ sys_user }}/cloud-images/jammy-amd64.img
+  wget -nv http://cloud-images.ubuntu.com/$FLAVOR_BASE/current/$FLAVOR_BASE-server-cloudimg-amd64.img -O /home/{{ sys_user }}/cloud-images/$FLAVOR_BASE-amd64.img
   
   # Import image into Glance
-  echo -e "\n\n-------- Import Jammy image into Glance... --------\n"
+  echo -e "\n\n-------- Import $FLAVOR_BASE image into Glance... --------\n"
   
-  openstack image create --public --container-format bare --disk-format qcow2 --file /home/{{ sys_user }}/cloud-images/jammy-amd64.img jammy-amd64
+  openstack image create --public --container-format bare --disk-format qcow2 --file /home/{{ sys_user }}/cloud-images/$FLAVOR_BASE-amd64.img $FLAVOR_BASE-amd64
   
   # Create a flavor
   echo -e "\n\n-------- Create a Flavor... --------\n"
