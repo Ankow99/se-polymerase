@@ -1546,6 +1546,7 @@ runcmd:
 - |
   cat <<EOF > /home/{{ sys_user }}/ceph-mon.yaml
   ceph-mon:
+    source: distro
     expected-osd-count: $OSDS_PER_NODE
     monitor-count: 3
   EOF
