@@ -147,7 +147,7 @@
 {% set os_neutron_bridge = meta.get("os_neutron_bridge") or custom_os_neutron_bridge %}
 {% set os_neutron_cidr = meta.get("os_neutron_cidr") or custom_os_neutron_cidr %}
 {% set os_ip_count = meta.get("os_ip_count") | default(custom_os_ip_count, true) | int %}
-{% set os_base_image = meta.get("os_base_image") or custom_os_base_image %}
+{% set os_base_flavor = meta.get("os_base_flavor") or custom_os_base_flavor %}
 {% set os_ram_flavor = meta.get("os_ram_flavor") or custom_os_ram_flavor %}
 {% set os_disk_flavor = meta.get("os_disk_flavor") or custom_os_disk_flavor %}
 {% set os_e_disk_flavor = meta.get("os_e_disk_flavor") or custom_os_e_disk_flavor %}
@@ -619,7 +619,7 @@ runcmd:
 - export OS_NEUTRON_BRIDGE="{{ os_neutron_bridge }}"
 - export OS_NEUTRON_CIDR="{{ os_neutron_cidr }}"
 - export OS_RESERVED_IP_COUNT="{{ os_ip_count }}"
-- export FLAVOR_BASE="{{ os_base_image }}"
+- export FLAVOR_BASE="{{ os_base_flavor }}"
 - export FLAVOR_RAM="{{ os_ram_flavor }}"
 - export FLAVOR_DISK="{{ os_disk_flavor }}"
 - export FLAVOR_E_DISK="{{ os_e_disk_flavor }}"
