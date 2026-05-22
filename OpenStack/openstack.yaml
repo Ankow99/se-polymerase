@@ -65,16 +65,16 @@
 {% set custom_os_e_disk_flavor = 10 %}              # PROMPT:OpenStack Flavor Ephemeral Disk
 
 # --- Hardware Allocation ---
-# Total: ( CPU = 22 | RAM = 62GiB | DISK = 370GiB )
+# Total: ( CPU = 20 | RAM = 58GiB | DISK = 370GiB )
 
 # MAAS Controller
-{% set custom_maas_cpu = "3" %}                     # PROMPT:MAAS Server CPU cores
-{% set custom_maas_ram = "8GiB" %}                  # PROMPT:MAAS Server RAM
+{% set custom_maas_cpu = "2" %}                     # PROMPT:MAAS Server CPU cores
+{% set custom_maas_ram = "4GiB" %}                  # PROMPT:MAAS Server RAM
 {% set custom_maas_disk = "30GiB" %}                # PROMPT:MAAS Server Root Disk
 
 # Juju Controllers per node
 {% set custom_juju_ha = 1 %}                        # PROMPT:Number of Juju Controllers
-{% set custom_juju_cpu = "3" %}                     # PROMPT:Juju Controller CPU cores
+{% set custom_juju_cpu = "2" %}                     # PROMPT:Juju Controller CPU cores
 {% set custom_juju_ram = "6GiB" %}                  # PROMPT:Juju Controller RAM
 {% set custom_juju_disk = "20GiB" %}                # PROMPT:Juju Controller Root Disk
 {% set custom_juju_base = "ubuntu@22.04" %}         # PROMPT:Juju Base
@@ -1288,12 +1288,12 @@ runcmd:
 - echo "\n\n-------- Waiting for Vault to be deployed... --------\n"
 
 - $RUN_AS juju wait-for application vault --timeout=$TIMEOUT --query="life==\"alive\" && status==\"blocked\""
-- $RUN_AS juju wait-for application vault-mysql-router --timeout=$TIMEOUT --query="life==\"alive\" && status==\"blocked\""
-- $RUN_AS juju wait-for application vault --timeout=$TIMEOUT --query="life==\"alive\" && status==\"blocked\" && message==\"Vault needs to be initialized\""
+- $RUN_AS juju wait-for application vault-mysql-router --timeout=$TIMEOUT --query="life==\"alive\" && status==\"active\""
 
 # ------------------------------------------- Perform Vault initialization -------------------------------------------
 - echo "\n\n-------- Initializing Vault... --------\n"
 
+- sleep 60
 - $RUN_AS juju exec --unit vault/leader "VAULT_ADDR='http://127.0.0.1:8200' vault operator init -key-shares=1 -key-threshold=1 -format=json" > /home/{{ sys_user }}/vault-init.json
 
 - chown {{ sys_user }}:{{ sys_user }} /home/{{ sys_user }}/vault-init.json
@@ -1324,7 +1324,6 @@ runcmd:
 - echo "\n\n-------- Waiting for Vault to be ready... --------\n"
 
 - $RUN_AS juju wait-for application vault --timeout=$TIMEOUT --query="life==\"alive\" && status==\"active\""
-- $RUN_AS juju wait-for application vault-mysql-router --timeout=$TIMEOUT --query="life==\"alive\" && status==\"active\""
 
 # -------------------------------------------- Deploy Neutron networking --------------------------------------------
 - echo "\n\n-------- Deploying Neutron... --------\n"
@@ -1547,7 +1546,7 @@ runcmd:
 - |
   cat <<EOF > /home/{{ sys_user }}/ceph-mon.yaml
   ceph-mon:
-    expected-osd-count: 4
+    expected-osd-count: $OSDS_PER_NODE
     monitor-count: 3
   EOF
 
