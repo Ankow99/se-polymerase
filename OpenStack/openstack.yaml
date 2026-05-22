@@ -3,7 +3,7 @@
 
 # ---
 # openstack transcript: Automated scalable cloud-init install of Charmed OpenStack using Juju + MAAS
-# version: 1.0.0
+# version: 1.0.1
 #
 # Made by: Pablo Gonzalez De Greiff @ Canonical
 # ---
@@ -19,7 +19,7 @@
 # --- Auth & System ---
 {% set custom_repro_name = "openstack" %}
 {% set custom_vm_name = "maas-1" %}
-{% set custom_vm_image = "ubuntu:22.04" %}
+{% set custom_vm_image = "ubuntu:22.04" %}          # PROMPT:Primary VM Image
 {% set custom_ssh_key = "" %}
 {% set custom_ssh_import_id = "" %}
 {% set custom_sys_user = "ubuntu" %}                # PROMPT:System User
@@ -1293,28 +1293,31 @@ runcmd:
 # ------------------------------------------- Perform Vault initialization -------------------------------------------
 - echo "\n\n-------- Initializing Vault... --------\n"
 
-- export VAULT_ADDR="http://$($RUN_AS juju status --format=json | jq -r '.applications.vault.units[] | select(.leader == true) | ."public-address"'):8200"
-- sleep 30
+- |
+  while ! $RUN_AS juju exec --unit vault/leader "curl -s http://127.0.0.1:8200/v1/sys/health" > /dev/null; do
+    echo "Waiting for Vault API to bind on localhost..."
+    sleep 3
+  done
 
-- export INIT_OUTPUT=$(vault operator init -key-shares=1 -key-threshold=1)
+- $RUN_AS juju exec --unit vault/leader --format=json "VAULT_ADDR='http://127.0.0.1:8200' vault operator init -key-shares=1 -key-threshold=1 -format=json" | jq -r '.[].Stdout' > /home/{{ sys_user }}/vault-init.json
 
-- export UNSEAL_KEY_1=$(echo "$INIT_OUTPUT" | grep "Unseal Key 1:" | awk '{print $4}')
+- chown {{ sys_user }}:{{ sys_user }} /home/{{ sys_user }}/vault-init.json
 
-- export VAULT_TOKEN=$(echo "$INIT_OUTPUT" | grep "Initial Root Token:" | awk '{print $4}')
+- export UNSEAL_KEY=$(jq -r '.unseal_keys_b64[0]' /home/{{ sys_user }}/vault-init.json)
+- export ROOT_TOKEN=$(jq -r '.root_token' /home/{{ sys_user }}/vault-init.json)
 
-- echo "\n Unseal Key 1 - $UNSEAL_KEY_1 \n"
-- echo "\n Root Token   - $VAULT_TOKEN \n"
+- echo "\n Unseal Key - $UNSEAL_KEY \n"
+- echo "\n Root Token - $ROOT_TOKEN \n"
 
 # Unsealing Vault
 - echo "\n\n-------- Unsealing Vault... --------\n"
 
-- $RUN_AS vault operator unseal $UNSEAL_KEY_1
+- $RUN_AS juju exec --application vault "VAULT_ADDR='http://127.0.0.1:8200' vault operator unseal $UNSEAL_KEY"
 
 # Authorize Vault
 - echo "\n\n-------- Authorizing Vault... --------\n"
 
-- $RUN_AS vault token create -ttl=10m
-- $RUN_AS juju run vault/leader authorize-charm token=$VAULT_TOKEN
+- $RUN_AS juju run vault/leader authorize-charm token="$ROOT_TOKEN"
 
 # Have Vault generate a self-signed root CA certificate
 - echo "\n\n-------- Generating Self-signed root CA certificate... --------\n"

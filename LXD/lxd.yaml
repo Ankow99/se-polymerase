@@ -3,7 +3,7 @@
 
 # ---
 # lxd transcript: Automated scalable cloud-init install of LXD
-# version: 1.0.0
+# version: 1.0.1
 #
 # Made by: Pablo Gonzalez De Greiff @ Canonical
 # ---
@@ -18,7 +18,7 @@
 # --- Auth & System ---
 {% set custom_repro_name = "lxd" %}
 {% set custom_vm_name = "node-0" %}
-{% set custom_vm_image = "ubuntu:24.04" %}          # PROMPT:VM Image
+{% set custom_vm_image = "ubuntu:24.04" %}          # PROMPT:Primary VM Image
 {% set custom_ssh_key = "" %}
 {% set custom_ssh_import_id = "" %}
 {% set custom_sys_user = "ubuntu" %}                # PROMPT:System User
