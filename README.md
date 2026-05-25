@@ -1,6 +1,6 @@
 # se-polymerase 🧬
 
-Polymerase is a zero-state, Terraform-free reproducer repository designed exclusively for Support Engineering. It houses the "DNA", parameterised Jinja2 `cloud-config.yaml` templates for complex OpenStack, Kubernetes, and MAAS + Juju support deployments.
+Polymerase is a zero-state, Terraform-free reproducer repository designed exclusively for Support Engineering. It houses the "Transcripts" (labs), parameterised Jinja2 `cloud-init.yaml` templates for complex OpenStack, Kubernetes, and MAAS + Juju support deployments.
 
 At the core of the project is `synth`, a standalone LXD orchestrator that acts as the active enzyme. Instead of relying on Terraform, `synth` reads the reproducer's payload, prompts for required variables on the fly, provisions isolated LXD projects and networks, tracks the deployment in real time by tailing the logs, and generates a bespoke teardown script.
 
