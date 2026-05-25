@@ -69,6 +69,18 @@ Deploy an automated nested cluster using Launchpad keys:
 
 ---
 
+## Cleanup
+
+`synth` generates a `destroy-<project_name>.sh` file in the same directory as the payload. 
+
+Execute this script to wipe the LXD project, remove the associated dynamic networks, and close background SSH multiplex sockets.
+
+```bash
+./destroy-maas-00436900.sh
+```
+
+---
+
 ## Building Payloads
 
 `synth` parses standard Jinja comments to generate the CLI wizard. Format your `cloud-init.yaml` variables using the following standards:
@@ -100,16 +112,4 @@ Use the `[BRIDGE:dhcp=<true/false>,cidr=<var_name>]` tag to instruct synth to pr
 Define the string that signals the end of normal `cloud-init-output.log` tailing and the start of the Juju deployment so it switches to a Juju status watch:
 ```jinja
 {% set custom_juju_trigger = "-------- Bootstrapping Juju Controller... --------" %}
-```
-
----
-
-## Cleanup
-
-`synth` generates a `destroy-<project_name>.sh` file in the same directory as the payload. 
-
-Execute this script to wipe the LXD project, remove the associated dynamic networks, and close background SSH multiplex sockets.
-
-```bash
-./destroy-maas-00436900.sh
 ```
