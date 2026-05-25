@@ -59,12 +59,12 @@ Invoke the script against a cloud-init template:
 
 Deploy interactively with a custom ID:
 ```bash
-./synth ./sunbeam/cloud-init.yaml 00426900
+./synth Sunbeam/sunbeam.yaml 00426900
 ```
 
 Deploy an automated nested cluster using Launchpad keys:
 ```bash
-./synth -a -n --lp pgdg99 ./openstack/cloud-init.yaml
+./synth -a -n --lp pgdg99 Openstack/focal-ussuri.yaml
 ```
 
 ---
