@@ -3,7 +3,7 @@
 
 # ---
 # devstack transcript: Automated cloud-init install of DevStack OpenStack
-# version: 1.0.0
+# version: 2.0.0
 #
 # Made by: Pablo Gonzalez De Greiff @ Canonical
 # ---
@@ -30,6 +30,17 @@
 {% set custom_lxd_pool = "default" %}               # PROMPT:LXD Storage Pool
 {% set custom_lxd_bridge = "lbr0" %}                # PROMPT:LXD Bridge Name [BRIDGE:dhcp=true,cidr=lxd_cidr]
 {% set custom_lxd_cidr = "10.10.0.0/22" %}
+
+# --- DevStack Settings ---
+{% set custom_devstack_release = "stable/2025.2" %} # PROMPT:DevStack Release Branch
+{% set custom_devstack_password = "admin" %}        # PROMPT:DevStack Password
+{% set custom_enable_swift = True %}                # PROMPT:Enable Swift
+{% set custom_enable_skyline = True %}              # PROMPT:Enable Skyline Plugin
+{% set custom_enable_masakari = True %}             # PROMPT:Enable Masakari Plugin
+{% set custom_enable_heat = True %}                 # PROMPT:Enable Heat Plugin
+{% set custom_enable_designate = True %}            # PROMPT:Enable Designate Plugin
+{% set custom_enable_octavia = True %}              # PROMPT:Enable Octavia Plugin
+{% set custom_enable_barbican = True %}             # PROMPT:Enable Barbican Plugin
 
 # --- Hardware Allocation ---
 # Total: ( CPU = 20 | RAM = 40GiB | DISK = 150GiB )
@@ -73,6 +84,51 @@
 {% set lxd_bridge = meta.get("lxd_bridge") or custom_lxd_bridge %}
 {% set lxd_cidr = meta.get("lxd_cidr") or custom_lxd_cidr %}
 
+{% set devstack_release = meta.get("devstack_release") or custom_devstack_release %}
+{% set devstack_password = meta.get("devstack_password") or custom_devstack_password %}
+
+{% if meta.get("enable_swift") is not none %}
+  {% set enable_swift = (meta.get("enable_swift") | string | lower == "true") %}
+{% else %}
+  {% set enable_swift = (custom_enable_swift | string | lower == "true") %}
+{% endif %}
+
+{% if meta.get("enable_skyline") is not none %}
+  {% set enable_skyline = (meta.get("enable_skyline") | string | lower == "true") %}
+{% else %}
+  {% set enable_skyline = (custom_enable_skyline | string | lower == "true") %}
+{% endif %}
+
+{% if meta.get("enable_masakari") is not none %}
+  {% set enable_masakari = (meta.get("enable_masakari") | string | lower == "true") %}
+{% else %}
+  {% set enable_masakari = (custom_enable_masakari | string | lower == "true") %}
+{% endif %}
+
+{% if meta.get("enable_heat") is not none %}
+  {% set enable_heat = (meta.get("enable_heat") | string | lower == "true") %}
+{% else %}
+  {% set enable_heat = (custom_enable_heat | string | lower == "true") %}
+{% endif %}
+
+{% if meta.get("enable_designate") is not none %}
+  {% set enable_designate = (meta.get("enable_designate") | string | lower == "true") %}
+{% else %}
+  {% set enable_designate = (custom_enable_designate | string | lower == "true") %}
+{% endif %}
+
+{% if meta.get("enable_octavia") is not none %}
+  {% set enable_octavia = (meta.get("enable_octavia") | string | lower == "true") %}
+{% else %}
+  {% set enable_octavia = (custom_enable_octavia | string | lower == "true") %}
+{% endif %}
+
+{% if meta.get("enable_barbican") is not none %}
+  {% set enable_barbican = (meta.get("enable_barbican") | string | lower == "true") %}
+{% else %}
+  {% set enable_barbican = (custom_enable_barbican | string | lower == "true") %}
+{% endif %}
+
 # ==========================================
 # STANDARD CLOUD-INIT EXECUTION
 # ==========================================
@@ -91,11 +147,12 @@ users:
   - name: stack
     lock_passwd: False
     sudo: ["ALL=(ALL) NOPASSWD:ALL\nDefaults:stack !requiretty"]
+    groups: kvm
     shell: /bin/bash
     homedir: /opt/stack
   - name: {{ sys_user }}
     sudo: ALL=(ALL) NOPASSWD:ALL
-    groups: adm, sys, lxd, sudo
+    groups: adm, sys, lxd, sudo, kvm
     shell: /bin/bash
 {% if not ssh_key and not ssh_import_id %}
     plain_text_passwd: "{{ password }}"
@@ -128,11 +185,16 @@ write_files:
 - path: /etc/profile.d/devstack-login.sh
   permissions: '0644'
   content: |
-    if [ "$USER" = "{{ sys_user }}" ]; then
+    if [ "$USER" = "{{ sys_user }}" ] || [ "$USER" = "stack" ]; then
         if [ -f "/opt/stack/devstack/openrc" ]; then
-            source /opt/stack/devstack/openrc admin
+            source /opt/stack/devstack/openrc admin admin
         fi
     fi
+
+- path: /etc/udev/rules.d/99-kvm.rules
+  permissions: '0644'
+  content: |
+    KERNEL=="kvm", GROUP="kvm", MODE="0666"
 
 - path: /etc/profile.d/default-editor.sh
   permissions: '0644'
@@ -186,22 +248,81 @@ runcmd:
 - export SSH_KEY="{{ ssh_import_id }}"
 - export RUN_AS="sudo -u {{ sys_user }}"
 - export RUN_AS_LOGIN="sudo -i -u {{ sys_user }}"
-- export ADMIN_PASS="{{ password }}"
+- export ADMIN_PASS="{{ devstack_password }}"
 
 # Clone devstack repo
 - echo "\n\n-------- Cloning DevStack Repository... --------\n"
 
 - chmod +x /opt/stack
 
-- su stack -c 'git clone https://opendev.org/openstack/devstack /opt/stack/devstack'
+- su stack -c 'git clone -b {{ devstack_release }} https://opendev.org/openstack/devstack /opt/stack/devstack'
 
 - |
   cat <<EOF > /opt/stack/devstack/local.conf
   [[local|localrc]]
+  # Basic Credentials
   ADMIN_PASSWORD=$ADMIN_PASS
   DATABASE_PASSWORD=$ADMIN_PASS
   RABBIT_PASSWORD=$ADMIN_PASS
   SERVICE_PASSWORD=$ADMIN_PASS
+  # Base Git Repository
+  GIT_BASE=https://opendev.org
+  # Logging Configuration
+  DEST=/opt/stack
+  LOGFILE=\$DEST/logs/stack.sh.log
+  VERBOSE=True
+  LOG_COLOR=False
+  # Force the libvirt driver to use KVM hardware acceleration
+  LIBVIRT_TYPE=kvm
+  # Expose the full physical CPU features to the guest VMs
+  LIBVIRT_CPU_MODE=host-passthrough
+  # Tempest
+  INSTALL_TEMPEST=True
+  enable_service tempest
+  # Network (Neutron & OVN)
+  enable_plugin neutron \$GIT_BASE/openstack/neutron {{ devstack_release }}
+  enable_service rabbit
+  enable_service q-qos
+  # Placement
+  enable_service placement-api placement-client
+{% if enable_swift %}
+  # Swift
+  enable_service s-proxy s-object s-container s-account
+  SWIFT_HASH=66a3d6b56c1f479c8b4e70ab5c2000f5
+{% endif %}
+{% if enable_skyline %}
+  # Skyline Dashboard
+  enable_plugin skyline-apiserver \$GIT_BASE/openstack/skyline-apiserver {{ devstack_release }}
+  enable_plugin skyline-console \$GIT_BASE/openstack/skyline-console {{ devstack_release }}
+{% endif %}
+{% if enable_masakari %}
+  # Masakari
+  enable_plugin masakari \$GIT_BASE/openstack/masakari {{ devstack_release }}
+  enable_plugin masakaridashboard \$GIT_BASE/openstack/masakari-dashboard {{ devstack_release }}
+{% endif %}
+{% if enable_heat %}
+  # Heat
+  enable_plugin heat \$GIT_BASE/openstack/heat {{ devstack_release }}
+  enable_service h-eng h-api h-api-cfn h-api-cw
+{% endif %}
+{% if enable_heat %}
+  # Designate
+  enable_plugin designate \$GIT_BASE/openstack/designate {{ devstack_release }}
+  enable_service designate,designate-central,designate-api,designate-worker,designate-producer,designate-mdns
+{% endif %}
+{% if enable_octavia %}
+  # Octavia
+  enable_plugin octavia \$GIT_BASE/openstack/octavia {{ devstack_release }}
+  enable_plugin octavia-dashboard \$GIT_BASE/openstack/octavia-dashboard {{ devstack_release }}
+  enable_plugin ovn-octavia-provider \$GIT_BASE/openstack/ovn-octavia-provider {{ devstack_release }}
+  enable_plugin octavia-tempest-plugin \$GIT_BASE/openstack/octavia-tempest-plugin master
+  enable_service octavia o-api o-cw o-hm o-hk o-da
+{% endif %}
+{% if enable_barbican %}
+  # Barbican
+  enable_plugin barbican \$GIT_BASE/openstack/barbican {{ devstack_release }}
+  enable_service barbican
+{% endif %}
   EOF
 
 - chown stack:stack /opt/stack/devstack/local.conf
@@ -210,6 +331,9 @@ runcmd:
 - echo "\n\n-------- Installing DevStack... --------\n"
 
 - su -l stack -c '~/devstack/stack.sh'
+
+- cp /opt/stack/devstack/openrc /home/{{ sys_user }}/openrc
+- chown {{ sys_user }}:{{ sys_user }} /home/{{ sys_user }}/openrc
 
 - echo "\n\n-------- Finished deploying DevStack, have fun!... --------\n"
 

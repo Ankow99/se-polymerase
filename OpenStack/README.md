@@ -106,3 +106,78 @@ To completely wipe this environment and release its resources, execute the auto-
 * Network Topology: Utilizes a dual-bridge network. The primary bridge handles MAAS provisioning and PXE traffic, while a secondary bridge provides an isolated Neutron provider network for OpenStack floating IPs.
 * Node Distribution: Features one primary MAAS controller, one Juju controller, and four hyperconverged OpenStack nodes.
 * Provisioning Pipeline: All nodes are created natively via the LXD API. The four OpenStack nodes are dynamically configured with loop-backed ZFS volumes that MAAS registers and tags as raw SSD block devices. Juju deploys MySQL, Vault, and Ceph Monitors in LXD containers across the nodes, while mapping Ceph OSDs and Nova Compute directly to the bare metal instances for hardware access.
+
+---
+
+# Transcript: DevStack
+
+## Description
+A fully automated, monolithic OpenStack environment deployed via upstream DevStack. This Transcript synthesizes a single, heavy-duty virtual machine that pulls directly from OpenDev repositories to build an all-in-one OpenStack cloud. It serves as a fast, highly configurable reproducer for upstream development, API testing, and validating bleeding-edge OpenStack features without the overhead of a multi-node Juju + MAAS deployment.
+
+## Requirements
+To successfully synthesize this environment, your host machine must meet the following minimum specifications using the default topology.
+* CPU: 20 cores
+* RAM: 40 GiB
+* Disk: 150 GiB
+* Network: Outbound internet access for extensive git cloning, pip installations, and apt package downloads
+
+## Variables
+When launching this Transcript, `synth` will parse the payload and optionally prompt for the following configuration values.
+
+| Variable | Default Value | Description |
+| :--- | :--- | :--- |
+| vm_image | ubuntu:24.04 | Base operating system image for the DevStack machine |
+| sys_user | ubuntu | Default system user for SSH access |
+| password | ubuntu | Password for the default system user |
+| pro_token | None | Optional Ubuntu Pro token for extended packages |
+| hostname | None | Custom hostname for the DevStack machine |
+| tld | None | Top Level Domain for the local environment |
+| timezone | America/New_York | System timezone |
+| lxd_pool | default | Target LXD storage pool for the deployment |
+| lxd_bridge | lbr0 | Name of the primary LXD network bridge |
+| lxd_cidr | 10.10.0.0/22 | Subnet CIDR for the LXD network |
+| devstack_release | stable/2025.2 | Git branch to clone from the upstream DevStack repository |
+| devstack_password | admin | Universal password applied to all OpenStack services and databases |
+| enable_swift | True | Enables the Swift object storage plugin |
+| enable_skyline | True | Enables the Skyline dashboard plugin |
+| enable_masakari | True | Enables the Masakari instance high availability plugin |
+| enable_heat | True | Enables the Heat orchestration plugin |
+| enable_designate | True | Enables the Designate DNS plugin |
+| enable_octavia | True | Enables the Octavia load balancing plugin |
+| enable_barbican | True | Enables the Barbican key manager plugin |
+| primary_cpu | 20 | CPU cores allocated to the DevStack machine |
+| primary_ram | 40GiB | RAM allocated to the DevStack machine |
+| primary_disk | 150GiB | Root disk size for the DevStack machine |
+
+## Usage
+Deploy this Transcript using the `se-polymerase` orchestrator.
+
+Accept all default variables and let `synth` auto-generate a deployment ID:
+```bash
+./synth.sh OpenStack/devstack.yaml -a
+```
+
+Deploy with a nested LXD architecture, prompt for all variables interactively, and assign a specific case number as the deployment ID:
+```bash
+./synth.sh OpenStack/devstack.yaml -n 00426900
+```
+
+## Access and Cleanup
+Once the payload finishes executing, `synth` will automatically drop you into a secure multiplexed SSH shell connected to the DevStack machine. 
+
+An `openrc` file is automatically generated in your user directory and sourced at login. You can interact with the OpenStack CLI:
+```bash
+openstack server list
+```
+
+All DevStack scripts and configurations are located in `/opt/stack/devstack`.
+
+To completely wipe this environment and release its resources, execute the auto-generated teardown script located in your working directory:
+```bash
+./destroy-[PROJECT_NAME].sh
+```
+
+## Architecture Overview
+* Network Topology: Utilizes a single NAT-enabled LXD bridge for primary external access. DevStack configures its own internal OVN/Neutron networking architecture on top of this bridge.
+* Node Distribution: Features a single, vertically scaled virtual machine executing all OpenStack control plane and compute plane services locally.
+* Provisioning Pipeline: The LXD virtual machine is provisioned and injected with a dedicated `stack` user. The machine downloads the requested branch of the upstream DevStack repository, dynamically generates a `local.conf` file based on your plugin selections, and executes `stack.sh`. KVM hardware acceleration (host-passthrough) is explicitly enabled to ensure high performance for nested guest instances.
