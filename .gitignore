@@ -1,3 +1,4 @@
 .certs/
 destroy-*
 credentials
+snaps-source
