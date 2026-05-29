@@ -51,6 +51,10 @@ Once the payload finishes executing, `synth` will automatically drop you into a 
 
 Your base64 credentials are automatically written to a hidden `.snapcraft-credentials` file and exported as an environment variable in the user's `~/.bashrc`. You can immediately begin using Snapcraft commands without requiring a manual login.
 
+```bash
+snapcraft whoami
+```
+
 To completely wipe this environment and release its resources, execute the auto-generated teardown script located in your working directory:
 ```bash
 ./destroy-[PROJECT_NAME].sh
