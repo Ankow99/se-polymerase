@@ -52,12 +52,12 @@ Deploy this Transcript using the `se-polymerase` orchestrator.
 
 Accept all default variables and let `synth` auto-generate a deployment ID:
 ```bash
-./synth.sh Juju/juju.yaml -a
+./synth Juju/juju.yaml -a
 ```
 
 Deploy with a nested LXD architecture, prompt for all variables interactively, and assign a specific case number as the deployment ID:
 ```bash
-./synth.sh Juju/juju.yaml -n 00426900
+./synth Juju/juju.yaml -n 00426900
 ```
 
 ## Access and Cleanup

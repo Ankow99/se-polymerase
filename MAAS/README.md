@@ -46,12 +46,12 @@ Deploy this Transcript using the `se-polymerase` orchestrator.
 
 Accept all default variables and let `synth` auto-generate a deployment ID:
 ```bash
-./synth.sh MAAS/maas.yaml -a
+./synth MAAS/maas.yaml -a
 ```
 
 Deploy with a nested LXD architecture, prompt for all variables interactively, and assign a specific case number as the deployment ID:
 ```bash
-./synth.sh MAAS/maas.yaml -n 00426900
+./synth MAAS/maas.yaml -n 00426900
 ```
 
 ## Access and Cleanup

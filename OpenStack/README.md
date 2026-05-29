@@ -79,12 +79,12 @@ Deploy a generated OpenStack release using the `se-polymerase` orchestrator.
 
 Accept all default variables and let `synth` auto-generate a deployment ID:
 ```bash
-./synth.sh OpenStack/focal-ussuri.yaml -a
+./synth OpenStack/focal-ussuri.yaml -a
 ```
 
 Deploy with a nested LXD architecture, prompt for all variables interactively, and assign a specific case number as the deployment ID:
 ```bash
-./synth.sh OpenStack/jammy-2023.2.yaml -n 00426900
+./synth OpenStack/jammy-2023.2.yaml -n 00426900
 ```
 
 ## Access and Cleanup
@@ -154,12 +154,12 @@ Deploy this Transcript using the `se-polymerase` orchestrator.
 
 Accept all default variables and let `synth` auto-generate a deployment ID:
 ```bash
-./synth.sh OpenStack/devstack.yaml -a
+./synth OpenStack/devstack.yaml -a
 ```
 
 Deploy with a nested LXD architecture, prompt for all variables interactively, and assign a specific case number as the deployment ID:
 ```bash
-./synth.sh OpenStack/devstack.yaml -n 00426900
+./synth OpenStack/devstack.yaml -n 00426900
 ```
 
 ## Access and Cleanup
