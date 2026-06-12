@@ -8,7 +8,7 @@ At the core of the project is `synth`, a standalone LXD orchestrator that acts a
 * Parses Jinja `cloud-config.yaml` payloads to dynamically calculate hardware requirements and generate interactive CLI prompts.
 * Supports nested LXD architectures or bare-metal LXD daemons.
 * Provisions `ipv4.nat` bridges, calculates CIDR gateways, and validates DHCP settings to prevent collisions.
-* Auto-injects local or Launchpad SSH keys and establishes a multiplexed SSH tunnel for dashboard port-forwarding.
+* Auto-injects local or Launchpad SSH keys and establishes secure SSH tunnel for dashboard port-forwarding.
 * Tails `cloud-init` logs and seamlessly transitions to a live juju status watch-loop.
 * Generates a project-specific teardown script to destroy the LXD project, un-trust certificates, and remove dynamic networks.
 
@@ -73,7 +73,7 @@ Deploy an automated nested cluster using Launchpad keys:
 
 `synth` generates a `destroy-<project_name>.sh` file in the same directory as the payload. 
 
-Execute this script to wipe the LXD project, remove the associated dynamic networks, and close background SSH multiplex sockets.
+Execute this script to wipe the LXD project, stop and delete instances, and remove the associated dynamic networks.
 
 ```bash
 ./destroy-maas-00436900.sh
