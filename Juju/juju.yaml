@@ -3,7 +3,7 @@
 
 # ---
 # juju transcript: Automated scalable cloud-init install of Juju using MAAS
-# version: 1.0.1
+# version: 1.0.2
 #
 # Made by: Pablo Gonzalez De Greiff @ Canonical
 # ---
@@ -1006,12 +1006,12 @@ runcmd:
 # Add MAAS as a Juju Cloud
 - echo "\n\n-------- Adding MAAS as a Juju Cloud... --------\n"
 
-- $RUN_AS juju add-cloud --client -f /home/{{ sys_user }}/maas-cloud.yaml maas
+- $RUN_AS_LOGIN juju add-cloud --client -f /home/{{ sys_user }}/maas-cloud.yaml maas
 
 # Add MAAS as a Juju Cloud
 - echo "\n\n-------- Adding MAAS Credentials to Juju... --------\n"
 
-- $RUN_AS juju add-credential --client -f /home/{{ sys_user }}/maas-creds.yaml maas
+- $RUN_AS_LOGIN juju add-credential --client -f /home/{{ sys_user }}/maas-creds.yaml maas
 
 # Remove config files
 - rm /home/{{ sys_user }}/maas-*.yaml
@@ -1019,18 +1019,18 @@ runcmd:
 # Bootstrap Juju controller
 - echo "\n\n-------- Bootstrapping Juju Controller... --------\n"
 
-- $RUN_AS juju bootstrap --bootstrap-base=$JUJU_BASE --constraints tags=juju-controller maas juju-controller
+- $RUN_AS_LOGIN juju bootstrap --bootstrap-base=$JUJU_BASE --constraints tags=juju-controller maas juju-controller
 
 # Enable Juju HA if JUJU_HA > 1
 - |
   if [ "$JUJU_HA" -gt 1 ]; then
     echo "\n\n-------- Enabling Juju HA ($JUJU_HA nodes)... --------\n"
     
-    $RUN_AS juju enable-ha -n $JUJU_HA --constraints tags=juju-controller
+    $RUN_AS_LOGIN juju enable-ha -n $JUJU_HA --constraints tags=juju-controller
     
     echo "\n\n-------- Waiting for Juju HA controllers to provision... --------\n"
     for i in $(seq 1 $((JUJU_HA - 1))); do
-      $RUN_AS juju wait-for machine $i -m controller --timeout=20m --query="life==\"alive\" && status==\"started\""
+      $RUN_AS_LOGIN juju wait-for machine $i -m controller --timeout=20m --query="life==\"alive\" && status==\"started\""
     done
   fi
 
@@ -1041,12 +1041,12 @@ runcmd:
 # Create Juju Model
 - echo "\n\n-------- Creating Juju Test Model... --------\n"
 
-- $RUN_AS juju add-model --config default-base=$JUJU_BASE $JUJU_MODEL
+- $RUN_AS_LOGIN juju add-model --config default-base=$JUJU_BASE $JUJU_MODEL
 
 # ------------------------------------------------- Deploy Machines -------------------------------------------------
 - echo "\n\n-------- Deploying Juju Machines... --------\n"
 
-- $RUN_AS juju add-machine -n $NODE_HA --constraints tags=machine
+- $RUN_AS_LOGIN juju add-machine -n $NODE_HA --constraints tags=machine
 
 # Wait for machines to be started so LXD is ready
 - echo "\n\n-------- Waiting for Machines to start... --------\n"
@@ -1054,7 +1054,7 @@ runcmd:
 - |
   TOTAL_MACHINES=$((NODE_HA - 1))
   for i in $(seq 0 $TOTAL_MACHINES); do
-    $RUN_AS juju wait-for machine $i --timeout=20m --query="life==\"alive\" && status==\"started\""
+    $RUN_AS_LOGIN juju wait-for machine $i --timeout=20m --query="life==\"alive\" && status==\"started\""
   done
 
 - echo "\n\n-------- Finished deploying Juju + MAAS, have fun!... --------\n"

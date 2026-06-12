@@ -52,6 +52,7 @@
 
 # --- OpenStack Settings ---
 {% set custom_os_deployment = "sunbeam" %}          # PROMPT:OpenStack Deployment Name
+{% set custom_os_run_demo = True %}                 # PROMPT:Run Demo User Setup
 {% set custom_os_neutron_bridge = "nbr0" %}         # PROMPT:Neutron Bridge Name [BRIDGE:dhcp=true,cidr=os_neutron_cidr]
 {% set custom_os_neutron_cidr = "10.20.0.0/22" %}
 {% set custom_os_pub_api_ip_count = 50 %}           # PROMPT:OpenStack Public API Pool Size
@@ -159,6 +160,12 @@
 {% set cloud_disk = meta.get("cloud_disk") or custom_cloud_disk %}
 {% set cloud_osd_disk = meta.get("cloud_osd_disk") or custom_cloud_osd_disk %}
 {% set cloud_osd_count = meta.get("cloud_osd_count") | default(custom_cloud_osd_count, true) | int %}
+
+{% if meta.get("os_run_demo") is not none %}
+  {% set os_run_demo = (meta.get("os_run_demo") | string | lower == "true") %}
+{% else %}
+  {% set os_run_demo = (custom_os_run_demo | string | lower == "true") %}
+{% endif %}
 
 {% if meta.get("maas_snap") is not none %}
   {% set maas_snap = (meta.get("maas_snap") | string | lower == "true") %}
@@ -360,8 +367,8 @@ write_files:
             {% endif %}
         fi
         
-        if [ -f "/home/{{ sys_user }}/sunrc" ]; then
-            source /home/{{ sys_user }}/sunrc
+        if [ -f "/home/{{ sys_user }}/admin-openrc" ]; then
+            source /home/{{ sys_user }}/admin-openrc
         fi
     fi
 
@@ -1123,24 +1130,24 @@ runcmd:
 # Prepare machine for Sunbeam usage
 - echo "\n\n-------- Preparing machine for Sunbeam usage... --------\n"
 
-- $RUN_AS sunbeam prepare-node-script --client | $RUN_AS bash -x
+- $RUN_AS_LOGIN sunbeam prepare-node-script --client | $RUN_AS_LOGIN bash -x
 
 # Add the Canonical MAAS provider
 - echo "\n\n-------- Adding the Canonical MAAS provider... --------\n"
 
-- $RUN_AS sunbeam deployment add maas $OS_DEPLOYMENT_NAME $APIKEY http://${IP_ADDRESS}:5240/MAAS
+- $RUN_AS_LOGIN sunbeam deployment add maas $OS_DEPLOYMENT_NAME $APIKEY http://${IP_ADDRESS}:5240/MAAS
 
 # Map network spaces to cloud networks
 - echo "\n\n-------- Mapping network spaces to cloud networks... --------\n"
 
 - maast $ADMIN_USER spaces create name=$MAAS_SPACE
 - maast $ADMIN_USER vlan update $FABRIC_ID $VLAN_TAG space=$MAAS_SPACE
-- $RUN_AS sunbeam deployment space map $MAAS_SPACE
+- $RUN_AS_LOGIN sunbeam deployment space map $MAAS_SPACE
 
 # Validate MAAS provider
 - echo "\n\n-------- Validating MAAS provider... --------\n"
 
-- $RUN_AS sunbeam deployment validate
+- $RUN_AS_LOGIN sunbeam deployment validate
 
 - cat /home/{{ sys_user }}/snap/openstack/common/reports/*
 - echo "\n"
@@ -1149,29 +1156,23 @@ runcmd:
 - echo "Number of successes  - $(grep -c success /home/{{ sys_user }}/snap/openstack/common/reports/*)"
 - echo "\n"
 
-- $RUN_AS sunbeam deployment show $OS_DEPLOYMENT_NAME
+- $RUN_AS_LOGIN sunbeam deployment show $OS_DEPLOYMENT_NAME
 - sleep 10
 
 # Generate Sunbeam deployment manifest
 - echo "\n\n-------- Generating Sunbeam manifest... --------\n"
-- |
-  if [ "$MAX_HA" -gt "1" ]; then
-    TOPOLOGY="multi"
-  else
-    TOPOLOGY="single"
-  fi
-  
+- | 
   cat <<EOF > /home/{{ sys_user }}/manifest.yaml
   core:
     config:
       proxy:
         proxy_required: false
-      database: $TOPOLOGY
+      database: single
       region: RegionOne
       user:
-        run_demo_setup: true
-        username: $ADMIN_USER
-        password: $ADMIN_PASS
+        run_demo_setup: {{ 'true' if os_run_demo else 'false' }}
+        username: demo
+        password: password
         cidr: 192.168.0.0/24
         nameservers: $MAAS_DNS
         security_group_rules: true
@@ -1202,10 +1203,10 @@ runcmd:
 - $RUN_AS_LOGIN  script -q -e -c "sunbeam cluster bootstrap --accept-defaults --manifest /home/{{ sys_user }}/manifest.yaml" /dev/null
 
 - echo "\n\n-------- Controller Model Status... --------\n"
-- $RUN_AS juju status -m controller
+- $RUN_AS_LOGIN juju status -m controller
 
 - echo "\n\n-------- OpenStack-Infra Model Status... --------\n"
-- $RUN_AS juju status -m openstack-infra
+- $RUN_AS_LOGIN juju status -m openstack-infra
 
 # Deploy the cloud
 - echo "\n\n-------- Deploying the cloud... --------\n"
@@ -1213,15 +1214,21 @@ runcmd:
 - $RUN_AS_LOGIN  script -q -e -c "sunbeam cluster deploy --accept-defaults --manifest /home/{{ sys_user }}/manifest.yaml" /dev/null
 
 - echo "\n\n-------- OpenStack-Machines Model Status... --------\n"
-- $RUN_AS juju status -m openstack-machines
+- $RUN_AS_LOGIN juju status -m openstack-machines
 
 - echo "\n\n-------- OpenStack Model Status... --------\n"
-- $RUN_AS juju status -m openstack
+- $RUN_AS_LOGIN juju status -m openstack
 
 # Configure the cloud
 - echo "\n\n-------- Configuring the cloud... --------\n"
 
-- $RUN_AS_LOGIN  script -q -e -c "sunbeam configure --accept-defaults --openrc /home/{{ sys_user }}/sunrc --manifest /home/{{ sys_user }}/manifest.yaml" /dev/null
+- $RUN_AS_LOGIN  script -q -e -c "sunbeam configure --accept-defaults --openrc /home/{{ sys_user }}/demo-openrc --manifest /home/{{ sys_user }}/manifest.yaml" /dev/null
+
+# Generate the admin novarc credentials
+- echo "\n\n-------- Generating Admin Credentials... --------\n"
+
+- $RUN_AS_LOGIN sunbeam openrc > /home/{{ sys_user }}/admin-openrc
+- chown {{ sys_user }}:{{ sys_user }} /home/{{ sys_user }}/admin-openrc
 
 - echo "\n\n-------- Finished deploying Sunbeam, have fun!... --------\n"
 

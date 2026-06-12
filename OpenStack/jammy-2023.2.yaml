@@ -1159,12 +1159,12 @@ runcmd:
 # Add MAAS as a Juju Cloud
 - echo "\n\n-------- Adding MAAS as a Juju Cloud... --------\n"
 
-- $RUN_AS juju add-cloud --client -f /home/{{ sys_user }}/maas-cloud.yaml maas
+- $RUN_AS_LOGIN juju add-cloud --client -f /home/{{ sys_user }}/maas-cloud.yaml maas
 
 # Add MAAS as a Juju Cloud
 - echo "\n\n-------- Adding MAAS Credentials to Juju... --------\n"
 
-- $RUN_AS juju add-credential --client -f /home/{{ sys_user }}/maas-creds.yaml maas
+- $RUN_AS_LOGIN juju add-credential --client -f /home/{{ sys_user }}/maas-creds.yaml maas
 
 # Remove config files
 - rm /home/{{ sys_user }}/maas-*.yaml
@@ -1172,18 +1172,18 @@ runcmd:
 # Bootstrap Juju controller
 - echo "\n\n-------- Bootstrapping Juju Controller... --------\n"
 
-- $RUN_AS juju bootstrap --bootstrap-base=$JUJU_BASE --constraints tags=juju-controller maas juju-controller
+- $RUN_AS_LOGIN juju bootstrap --bootstrap-base=$JUJU_BASE --constraints tags=juju-controller maas juju-controller
 
 # Enable Juju HA if JUJU_HA > 1
 - |
   if [ "$JUJU_HA" -gt 1 ]; then
     echo "\n\n-------- Enabling Juju HA ($JUJU_HA nodes)... --------\n"
     
-    $RUN_AS juju enable-ha -n $JUJU_HA --constraints tags=juju-controller
+    $RUN_AS_LOGIN juju enable-ha -n $JUJU_HA --constraints tags=juju-controller
     
     echo "\n\n-------- Waiting for Juju HA controllers to provision... --------\n"
     for i in $(seq 1 $((JUJU_HA - 1))); do
-      $RUN_AS juju wait-for machine $i -m controller --timeout=$TIMEOUT --query="life==\"alive\" && status==\"started\""
+      $RUN_AS_LOGIN juju wait-for machine $i -m controller --timeout=$TIMEOUT --query="life==\"alive\" && status==\"started\""
     done
   fi
 
@@ -1194,12 +1194,12 @@ runcmd:
 # Create Juju Model
 - echo "\n\n-------- Creating Juju Openstack Model... --------\n"
 
-- $RUN_AS juju add-model --config default-base=$JUJU_BASE $JUJU_MODEL
+- $RUN_AS_LOGIN juju add-model --config default-base=$JUJU_BASE $JUJU_MODEL
 
 # ------------------------------------------------- Deploy Machines -------------------------------------------------
 - echo "\n\n-------- Deploying Juju Machines... --------\n"
 
-- $RUN_AS juju add-machine -n $NODE_HA --constraints tags=compute
+- $RUN_AS_LOGIN juju add-machine -n $NODE_HA --constraints tags=compute
 
 # Wait for machines to be started so LXD is ready
 - echo "\n\n-------- Waiting for Machines to start... --------\n"
@@ -1207,7 +1207,7 @@ runcmd:
 - |
   TOTAL_MACHINES=$((NODE_HA - 1))
   for i in $(seq 0 $TOTAL_MACHINES); do
-    $RUN_AS juju wait-for machine $i --timeout=$TIMEOUT --query="life==\"alive\" && status==\"started\""
+    $RUN_AS_LOGIN juju wait-for machine $i --timeout=$TIMEOUT --query="life==\"alive\" && status==\"started\""
   done
 
 # ------------------------------------------------- Deploy Ceph OSD -------------------------------------------------
@@ -1229,14 +1229,14 @@ runcmd:
 
 - chown {{ sys_user }}:{{ sys_user }} /home/{{ sys_user }}/ceph-osd.yaml
 
-- $RUN_AS juju deploy -n 4 --to 0,1,2,3 --channel $CEPH_OSD_VERSION --config /home/{{ sys_user }}/ceph-osd.yaml ceph-osd
+- $RUN_AS_LOGIN juju deploy -n 4 --to 0,1,2,3 --channel $CEPH_OSD_VERSION --config /home/{{ sys_user }}/ceph-osd.yaml ceph-osd
 
 - rm /home/{{ sys_user }}/ceph-osd.yaml
 
 # Wait for Ceph OSD to be deployed
 - echo "\n\n-------- Waiting for Ceph OSD to be deployed... --------\n"
 
-- $RUN_AS juju wait-for application ceph-osd --timeout=$TIMEOUT --query="life==\"alive\" && status==\"blocked\" && len(units) == 4"
+- $RUN_AS_LOGIN juju wait-for application ceph-osd --timeout=$TIMEOUT --query="life==\"alive\" && status==\"blocked\" && len(units) == 4"
 
 # ----------------------------------------------- Deploy Nova Compute -----------------------------------------------
 - echo "\n\n-------- Deploying Nova Compute... --------\n"
@@ -1253,48 +1253,48 @@ runcmd:
 
 - chown {{ sys_user }}:{{ sys_user }} /home/{{ sys_user }}/nova-compute.yaml
 
-- $RUN_AS juju deploy -n 3 --to 1,2,3 --channel $NOVA_COMPUTE_VERSION --config /home/{{ sys_user }}/nova-compute.yaml nova-compute
+- $RUN_AS_LOGIN juju deploy -n 3 --to 1,2,3 --channel $NOVA_COMPUTE_VERSION --config /home/{{ sys_user }}/nova-compute.yaml nova-compute
 
 - rm /home/{{ sys_user }}/nova-compute.yaml
 
 # Wait for Nova Compute to be deployed
 - echo "\n\n-------- Waiting for Nova Compute to be deployed... --------\n"
 
-- $RUN_AS juju wait-for application nova-compute --timeout=$TIMEOUT --query="life==\"alive\" && status==\"blocked\" && len(units) == 3"
+- $RUN_AS_LOGIN juju wait-for application nova-compute --timeout=$TIMEOUT --query="life==\"alive\" && status==\"blocked\" && len(units) == 3"
 
 # ------------------------------------------- Deploy MySQL InnoDB Cluster -------------------------------------------
 - echo "\n\n-------- Deploying MySQL InnoDB Cluster... --------\n"
 
-- $RUN_AS juju deploy -n 3 --to lxd:0,lxd:1,lxd:2 --channel $MYSQL_INNODB_VERSION mysql-innodb-cluster
+- $RUN_AS_LOGIN juju deploy -n 3 --to lxd:0,lxd:1,lxd:2 --channel $MYSQL_INNODB_VERSION mysql-innodb-cluster
 
 # Wait for MySQL InnoDB Cluster to be ready
 - echo "\n\n-------- Waiting for MySQL InnoDB Cluster to be ready... --------\n"
 
-- $RUN_AS juju wait-for application mysql-innodb-cluster --timeout=$TIMEOUT --query="life==\"alive\" && status==\"active\" && len(units) == 3"
+- $RUN_AS_LOGIN juju wait-for application mysql-innodb-cluster --timeout=$TIMEOUT --query="life==\"alive\" && status==\"active\" && len(units) == 3"
 
 # -------------------------------------------------- Deploy Vault --------------------------------------------------
 - echo "\n\n-------- Deploying Vault... --------\n"
 
-- $RUN_AS juju deploy --to lxd:3 --channel $VAULT_VERSION vault
+- $RUN_AS_LOGIN juju deploy --to lxd:3 --channel $VAULT_VERSION vault
 
 # Join Vault to the cloud database
 - echo "\n\n-------- Joining Vault to the Cloud Database... --------\n"
 
-- $RUN_AS juju deploy --channel $MYSQL_INNODB_VERSION mysql-router vault-mysql-router
-- $RUN_AS juju integrate vault-mysql-router:db-router mysql-innodb-cluster:db-router
-- $RUN_AS juju integrate vault-mysql-router:shared-db vault:shared-db
+- $RUN_AS_LOGIN juju deploy --channel $MYSQL_INNODB_VERSION mysql-router vault-mysql-router
+- $RUN_AS_LOGIN juju integrate vault-mysql-router:db-router mysql-innodb-cluster:db-router
+- $RUN_AS_LOGIN juju integrate vault-mysql-router:shared-db vault:shared-db
 
 # Wait for Vault to be deployed
 - echo "\n\n-------- Waiting for Vault to be deployed... --------\n"
 
-- $RUN_AS juju wait-for application vault --timeout=$TIMEOUT --query="life==\"alive\" && status==\"blocked\""
-- $RUN_AS juju wait-for application vault-mysql-router --timeout=$TIMEOUT --query="life==\"alive\" && status==\"active\""
+- $RUN_AS_LOGIN juju wait-for application vault --timeout=$TIMEOUT --query="life==\"alive\" && status==\"blocked\""
+- $RUN_AS_LOGIN juju wait-for application vault-mysql-router --timeout=$TIMEOUT --query="life==\"alive\" && status==\"active\""
 
 # ------------------------------------------- Perform Vault initialization -------------------------------------------
 - echo "\n\n-------- Initializing Vault... --------\n"
 
 - sleep 60
-- $RUN_AS juju exec --unit vault/leader "VAULT_ADDR='http://127.0.0.1:8200' vault operator init -key-shares=1 -key-threshold=1 -format=json" > /home/{{ sys_user }}/vault-init.json
+- $RUN_AS_LOGIN juju exec --unit vault/leader "VAULT_ADDR='http://127.0.0.1:8200' vault operator init -key-shares=1 -key-threshold=1 -format=json" > /home/{{ sys_user }}/vault-init.json
 
 - chown {{ sys_user }}:{{ sys_user }} /home/{{ sys_user }}/vault-init.json
 
@@ -1307,23 +1307,23 @@ runcmd:
 # Unsealing Vault
 - echo "\n\n-------- Unsealing Vault... --------\n"
 
-- $RUN_AS juju exec --application vault "VAULT_ADDR='http://127.0.0.1:8200' vault operator unseal $UNSEAL_KEY"
+- $RUN_AS_LOGIN juju exec --application vault "VAULT_ADDR='http://127.0.0.1:8200' vault operator unseal $UNSEAL_KEY"
 
 # Authorize Vault
 - echo "\n\n-------- Authorizing Vault... --------\n"
 
-- $RUN_AS juju run vault/leader authorize-charm token="$ROOT_TOKEN"
+- $RUN_AS_LOGIN juju run vault/leader authorize-charm token="$ROOT_TOKEN"
 
 # Have Vault generate a self-signed root CA certificate
 - echo "\n\n-------- Generating Self-signed root CA certificate... --------\n"
 
-- $RUN_AS juju run vault/leader generate-root-ca
-- $RUN_AS juju integrate mysql-innodb-cluster:certificates vault:certificates
+- $RUN_AS_LOGIN juju run vault/leader generate-root-ca
+- $RUN_AS_LOGIN juju integrate mysql-innodb-cluster:certificates vault:certificates
 
 # Wait for Vault to be ready
 - echo "\n\n-------- Waiting for Vault to be ready... --------\n"
 
-- $RUN_AS juju wait-for application vault --timeout=$TIMEOUT --query="life==\"alive\" && status==\"active\""
+- $RUN_AS_LOGIN juju wait-for application vault --timeout=$TIMEOUT --query="life==\"alive\" && status==\"active\""
 
 # -------------------------------------------- Deploy Neutron networking --------------------------------------------
 - echo "\n\n-------- Deploying Neutron... --------\n"
@@ -1340,93 +1340,93 @@ runcmd:
 
 - chown {{ sys_user }}:{{ sys_user }} /home/{{ sys_user }}/neutron.yaml
 
-- $RUN_AS juju deploy -n 3 --to lxd:0,lxd:1,lxd:2 --channel $OVN_CENTRAL_VERSION ovn-central
-- $RUN_AS juju deploy --to lxd:1 --channel $NEUTRON_API_VERSION --config /home/{{ sys_user }}/neutron.yaml neutron-api
+- $RUN_AS_LOGIN juju deploy -n 3 --to lxd:0,lxd:1,lxd:2 --channel $OVN_CENTRAL_VERSION ovn-central
+- $RUN_AS_LOGIN juju deploy --to lxd:1 --channel $NEUTRON_API_VERSION --config /home/{{ sys_user }}/neutron.yaml neutron-api
 
 # Deploy the subordinate charm applications
-- $RUN_AS juju deploy --channel $NEUTRON_API_PLUGIN_OVN_VERSION neutron-api-plugin-ovn
-- $RUN_AS juju deploy --channel $OVN_CHASSIS_VERSION --config /home/{{ sys_user }}/neutron.yaml ovn-chassis
+- $RUN_AS_LOGIN juju deploy --channel $NEUTRON_API_PLUGIN_OVN_VERSION neutron-api-plugin-ovn
+- $RUN_AS_LOGIN juju deploy --channel $OVN_CHASSIS_VERSION --config /home/{{ sys_user }}/neutron.yaml ovn-chassis
 
 - rm /home/{{ sys_user }}/neutron.yaml
 
 # Wait for OVN Central to be deployed
 - echo "\n\n-------- Waiting for OVN Central to be deployed... --------\n"
 
-- $RUN_AS juju wait-for application ovn-central --timeout=$TIMEOUT --query="life==\"alive\" && status==\"blocked\" && len(units) == 3"
+- $RUN_AS_LOGIN juju wait-for application ovn-central --timeout=$TIMEOUT --query="life==\"alive\" && status==\"blocked\" && len(units) == 3"
 
 # Integrate Neutron API with OVN
 - echo "\n\n-------- Integrate Neutron API with OVN... --------\n"
 
-- $RUN_AS juju integrate neutron-api-plugin-ovn:neutron-plugin neutron-api:neutron-plugin-api-subordinate
-- $RUN_AS juju integrate neutron-api-plugin-ovn:ovsdb-cms ovn-central:ovsdb-cms
-- $RUN_AS juju integrate ovn-chassis:ovsdb ovn-central:ovsdb
+- $RUN_AS_LOGIN juju integrate neutron-api-plugin-ovn:neutron-plugin neutron-api:neutron-plugin-api-subordinate
+- $RUN_AS_LOGIN juju integrate neutron-api-plugin-ovn:ovsdb-cms ovn-central:ovsdb-cms
+- $RUN_AS_LOGIN juju integrate ovn-chassis:ovsdb ovn-central:ovsdb
 
 # Integrate OVN with Nova Compute
 - echo "\n\n-------- Integrate OVN with Nova Compute... --------\n"
 
-- $RUN_AS juju integrate ovn-chassis:nova-compute nova-compute:neutron-plugin
+- $RUN_AS_LOGIN juju integrate ovn-chassis:nova-compute nova-compute:neutron-plugin
 
 # Integrate Certificates
 - echo "\n\n-------- Integrate Certificates... --------\n"
 
-- $RUN_AS juju integrate neutron-api:certificates vault:certificates
-- $RUN_AS juju integrate neutron-api-plugin-ovn:certificates vault:certificates
-- $RUN_AS juju integrate ovn-central:certificates vault:certificates
-- $RUN_AS juju integrate ovn-chassis:certificates vault:certificates
+- $RUN_AS_LOGIN juju integrate neutron-api:certificates vault:certificates
+- $RUN_AS_LOGIN juju integrate neutron-api-plugin-ovn:certificates vault:certificates
+- $RUN_AS_LOGIN juju integrate ovn-central:certificates vault:certificates
+- $RUN_AS_LOGIN juju integrate ovn-chassis:certificates vault:certificates
 
 # Join Neutron API to the cloud database
 - echo "\n\n-------- Joining Neutron API to the Cloud Database... --------\n"
 
-- $RUN_AS juju deploy --channel $MYSQL_INNODB_VERSION mysql-router neutron-api-mysql-router
-- $RUN_AS juju integrate neutron-api-mysql-router:db-router mysql-innodb-cluster:db-router
-- $RUN_AS juju integrate neutron-api-mysql-router:shared-db neutron-api:shared-db
+- $RUN_AS_LOGIN juju deploy --channel $MYSQL_INNODB_VERSION mysql-router neutron-api-mysql-router
+- $RUN_AS_LOGIN juju integrate neutron-api-mysql-router:db-router mysql-innodb-cluster:db-router
+- $RUN_AS_LOGIN juju integrate neutron-api-mysql-router:shared-db neutron-api:shared-db
 
 # Wait for OVN Central to be ready
 - echo "\n\n-------- Waiting for OVN Central & Chassis to be ready... --------\n"
 
-- $RUN_AS juju wait-for application ovn-central --timeout=$TIMEOUT --query="life==\"alive\" && status==\"active\" && len(units) == 3"
-- $RUN_AS juju wait-for application ovn-chassis --timeout=$TIMEOUT --query="life==\"alive\" && status==\"active\" && len(units) == 3"
-- $RUN_AS juju wait-for application neutron-api-mysql-router --timeout=$TIMEOUT --query="life==\"alive\" && status==\"active\""
+- $RUN_AS_LOGIN juju wait-for application ovn-central --timeout=$TIMEOUT --query="life==\"alive\" && status==\"active\" && len(units) == 3"
+- $RUN_AS_LOGIN juju wait-for application ovn-chassis --timeout=$TIMEOUT --query="life==\"alive\" && status==\"active\" && len(units) == 3"
+- $RUN_AS_LOGIN juju wait-for application neutron-api-mysql-router --timeout=$TIMEOUT --query="life==\"alive\" && status==\"active\""
 
 # ---------------------------------------------- Deploy Keystone ----------------------------------------------
 - echo "\n\n-------- Deploying Keystone... --------\n"
 
-- $RUN_AS juju deploy --to lxd:0 --channel $KEYSTONE_VERSION keystone
+- $RUN_AS_LOGIN juju deploy --to lxd:0 --channel $KEYSTONE_VERSION keystone
 
 # Join Keystone to the cloud database
 - echo "\n\n-------- Joining Keystone to the Cloud Database... --------\n"
 
-- $RUN_AS juju deploy --channel $MYSQL_INNODB_VERSION mysql-router keystone-mysql-router
-- $RUN_AS juju integrate keystone-mysql-router:db-router mysql-innodb-cluster:db-router
-- $RUN_AS juju integrate keystone-mysql-router:shared-db keystone:shared-db
+- $RUN_AS_LOGIN juju deploy --channel $MYSQL_INNODB_VERSION mysql-router keystone-mysql-router
+- $RUN_AS_LOGIN juju integrate keystone-mysql-router:db-router mysql-innodb-cluster:db-router
+- $RUN_AS_LOGIN juju integrate keystone-mysql-router:shared-db keystone:shared-db
 
 # Integrate Keystone with Vault and Neutron API
 - echo "\n\n-------- Integrate Keystone with Vault and Neutron API... --------\n"
 
-- $RUN_AS juju integrate keystone:identity-service neutron-api:identity-service
-- $RUN_AS juju integrate keystone:certificates vault:certificates
+- $RUN_AS_LOGIN juju integrate keystone:identity-service neutron-api:identity-service
+- $RUN_AS_LOGIN juju integrate keystone:certificates vault:certificates
 
 # Wait for Keystone to be ready
 - echo "\n\n-------- Waiting for Keystone to be ready... --------\n"
 
-- $RUN_AS juju wait-for application keystone --timeout=$TIMEOUT --query="life==\"alive\" && status==\"blocked\""
-- $RUN_AS juju wait-for application keystone-mysql-router --timeout=$TIMEOUT --query="life==\"alive\" && status==\"active\""
+- $RUN_AS_LOGIN juju wait-for application keystone --timeout=$TIMEOUT --query="life==\"alive\" && status==\"blocked\""
+- $RUN_AS_LOGIN juju wait-for application keystone-mysql-router --timeout=$TIMEOUT --query="life==\"alive\" && status==\"active\""
 
 # ------------------------------------------------ Deploy RabbitMQ ------------------------------------------------
 - echo "\n\n-------- Deploying RabbitMQ... --------\n"
 
-- $RUN_AS juju deploy --to lxd:2 --channel $RABBITMQ_VERSION rabbitmq-server
+- $RUN_AS_LOGIN juju deploy --to lxd:2 --channel $RABBITMQ_VERSION rabbitmq-server
 
 # Integrate RabbitMQ with Nova Compute and Neutron API
 - echo "\n\n-------- Integrate RabbitMQ with Nova Compute and Neutron API... --------\n"
 
-- $RUN_AS juju integrate rabbitmq-server:amqp neutron-api:amqp
-- $RUN_AS juju integrate rabbitmq-server:amqp nova-compute:amqp
+- $RUN_AS_LOGIN juju integrate rabbitmq-server:amqp neutron-api:amqp
+- $RUN_AS_LOGIN juju integrate rabbitmq-server:amqp nova-compute:amqp
 
 # Wait for RabbitMQ to be ready
 - echo "\n\n-------- Waiting for RabbitMQ to be ready... --------\n"
 
-- $RUN_AS juju wait-for application rabbitmq-server --timeout=$TIMEOUT --query="life==\"alive\" && status==\"active\""
+- $RUN_AS_LOGIN juju wait-for application rabbitmq-server --timeout=$TIMEOUT --query="life==\"alive\" && status==\"active\""
 
 # ------------------------------------------- Deploy Nova Cloud Controller -------------------------------------------
 - echo "\n\n-------- Deploying Nova Cloud Controller... --------\n"
@@ -1439,106 +1439,106 @@ runcmd:
 
 - chown {{ sys_user }}:{{ sys_user }} /home/{{ sys_user }}/ncc.yaml
 
-- $RUN_AS juju deploy --to lxd:3 --channel $NOVA_CLOUD_CONTROLLER_VERSION --config /home/{{ sys_user }}/ncc.yaml nova-cloud-controller
+- $RUN_AS_LOGIN juju deploy --to lxd:3 --channel $NOVA_CLOUD_CONTROLLER_VERSION --config /home/{{ sys_user }}/ncc.yaml nova-cloud-controller
 
 - rm /home/{{ sys_user }}/ncc.yaml
 
 # Join Nova Cloud Controller to the cloud database
 - echo "\n\n-------- Joining Nova Cloud Controller to the Cloud Database... --------\n"
 
-- $RUN_AS juju deploy --channel $MYSQL_INNODB_VERSION mysql-router ncc-mysql-router
-- $RUN_AS juju integrate ncc-mysql-router:db-router mysql-innodb-cluster:db-router
-- $RUN_AS juju integrate ncc-mysql-router:shared-db nova-cloud-controller:shared-db
+- $RUN_AS_LOGIN juju deploy --channel $MYSQL_INNODB_VERSION mysql-router ncc-mysql-router
+- $RUN_AS_LOGIN juju integrate ncc-mysql-router:db-router mysql-innodb-cluster:db-router
+- $RUN_AS_LOGIN juju integrate ncc-mysql-router:shared-db nova-cloud-controller:shared-db
 
 # Integrate Nova Cloud Controller
 - echo "\n\n-------- Integrate Nova Cloud Controller... --------\n"
 
-- $RUN_AS juju integrate nova-cloud-controller:identity-service keystone:identity-service
-- $RUN_AS juju integrate nova-cloud-controller:amqp rabbitmq-server:amqp
-- $RUN_AS juju integrate nova-cloud-controller:neutron-api neutron-api:neutron-api
-- $RUN_AS juju integrate nova-cloud-controller:cloud-compute nova-compute:cloud-compute
-- $RUN_AS juju integrate nova-cloud-controller:certificates vault:certificates
+- $RUN_AS_LOGIN juju integrate nova-cloud-controller:identity-service keystone:identity-service
+- $RUN_AS_LOGIN juju integrate nova-cloud-controller:amqp rabbitmq-server:amqp
+- $RUN_AS_LOGIN juju integrate nova-cloud-controller:neutron-api neutron-api:neutron-api
+- $RUN_AS_LOGIN juju integrate nova-cloud-controller:cloud-compute nova-compute:cloud-compute
+- $RUN_AS_LOGIN juju integrate nova-cloud-controller:certificates vault:certificates
 
 # Wait for Nova Cloud Controller to be ready
 - echo "\n\n-------- Waiting for Nova Cloud Controller to be ready... --------\n"
 
-- $RUN_AS juju wait-for application nova-cloud-controller --timeout=$TIMEOUT --query="life==\"alive\" && status==\"blocked\""
-- $RUN_AS juju wait-for application ncc-mysql-router --timeout=$TIMEOUT --query="life==\"alive\" && status==\"active\""
+- $RUN_AS_LOGIN juju wait-for application nova-cloud-controller --timeout=$TIMEOUT --query="life==\"alive\" && status==\"blocked\""
+- $RUN_AS_LOGIN juju wait-for application ncc-mysql-router --timeout=$TIMEOUT --query="life==\"alive\" && status==\"active\""
 
 # ------------------------------------------------ Deploy Placement ------------------------------------------------
 - echo "\n\n-------- Deploying Placement... --------\n"
 
-- $RUN_AS juju deploy --to lxd:3 --channel $PLACEMENT_VERSION placement
+- $RUN_AS_LOGIN juju deploy --to lxd:3 --channel $PLACEMENT_VERSION placement
 
 # Join placement to the cloud database
 - echo "\n\n-------- Joining Placement to the Cloud Database... --------\n"
 
-- $RUN_AS juju deploy --channel $MYSQL_INNODB_VERSION mysql-router placement-mysql-router
-- $RUN_AS juju integrate placement-mysql-router:db-router mysql-innodb-cluster:db-router
-- $RUN_AS juju integrate placement-mysql-router:shared-db placement:shared-db
+- $RUN_AS_LOGIN juju deploy --channel $MYSQL_INNODB_VERSION mysql-router placement-mysql-router
+- $RUN_AS_LOGIN juju integrate placement-mysql-router:db-router mysql-innodb-cluster:db-router
+- $RUN_AS_LOGIN juju integrate placement-mysql-router:shared-db placement:shared-db
 
 # Integrate Placement
 - echo "\n\n-------- Integrate Placement... --------\n"
 
-- $RUN_AS juju integrate placement:identity-service keystone:identity-service
-- $RUN_AS juju integrate placement:placement nova-cloud-controller:placement
-- $RUN_AS juju integrate placement:certificates vault:certificates
+- $RUN_AS_LOGIN juju integrate placement:identity-service keystone:identity-service
+- $RUN_AS_LOGIN juju integrate placement:placement nova-cloud-controller:placement
+- $RUN_AS_LOGIN juju integrate placement:certificates vault:certificates
 
 # Wait for Placement to be ready
 - echo "\n\n-------- Waiting for Placement to be ready... --------\n"
 
-- $RUN_AS juju wait-for application placement --timeout=$TIMEOUT --query="life==\"alive\" && status==\"blocked\""
-- $RUN_AS juju wait-for application placement-mysql-router --timeout=$TIMEOUT --query="life==\"alive\" && status==\"active\""
+- $RUN_AS_LOGIN juju wait-for application placement --timeout=$TIMEOUT --query="life==\"alive\" && status==\"blocked\""
+- $RUN_AS_LOGIN juju wait-for application placement-mysql-router --timeout=$TIMEOUT --query="life==\"alive\" && status==\"active\""
 
 # -------------------------------------------- Deploy OpenStack Dashboard --------------------------------------------
 - echo "\n\n-------- Deploying OpenStack Dashboard... --------\n"
 
-- $RUN_AS juju deploy --to lxd:2 --channel $OPENSTACK_DASHBOARD_VERSION openstack-dashboard
+- $RUN_AS_LOGIN juju deploy --to lxd:2 --channel $OPENSTACK_DASHBOARD_VERSION openstack-dashboard
 
 # Join OpenStack Dashboard to the cloud database
 - echo "\n\n-------- Joining OpenStack Dashboard to the Cloud Database... --------\n"
 
-- $RUN_AS juju deploy --channel $MYSQL_INNODB_VERSION mysql-router dashboard-mysql-router
-- $RUN_AS juju integrate dashboard-mysql-router:db-router mysql-innodb-cluster:db-router
-- $RUN_AS juju integrate dashboard-mysql-router:shared-db openstack-dashboard:shared-db
+- $RUN_AS_LOGIN juju deploy --channel $MYSQL_INNODB_VERSION mysql-router dashboard-mysql-router
+- $RUN_AS_LOGIN juju integrate dashboard-mysql-router:db-router mysql-innodb-cluster:db-router
+- $RUN_AS_LOGIN juju integrate dashboard-mysql-router:shared-db openstack-dashboard:shared-db
 
 # Integrate OpenStack Dashboard
 - echo "\n\n-------- Integrate OpenStack Dashboard... --------\n"
 
-- $RUN_AS juju integrate openstack-dashboard:identity-service keystone:identity-service
-- $RUN_AS juju integrate openstack-dashboard:certificates vault:certificates
+- $RUN_AS_LOGIN juju integrate openstack-dashboard:identity-service keystone:identity-service
+- $RUN_AS_LOGIN juju integrate openstack-dashboard:certificates vault:certificates
 
 # Wait for OpenStack Dashboard to be ready
 - echo "\n\n-------- Waiting for OpenStack Dashboard to be ready... --------\n"
 
-- $RUN_AS juju wait-for application openstack-dashboard --timeout=$TIMEOUT --query="life==\"alive\" && status==\"active\""
-- $RUN_AS juju wait-for application dashboard-mysql-router --timeout=$TIMEOUT --query="life==\"alive\" && status==\"active\""
+- $RUN_AS_LOGIN juju wait-for application openstack-dashboard --timeout=$TIMEOUT --query="life==\"alive\" && status==\"active\""
+- $RUN_AS_LOGIN juju wait-for application dashboard-mysql-router --timeout=$TIMEOUT --query="life==\"alive\" && status==\"active\""
 
 # ------------------------------------------------ Deploy Glance ------------------------------------------------
 - echo "\n\n-------- Deploying Glance... --------\n"
 
-- $RUN_AS juju deploy --to lxd:3 --channel $GLANCE_VERSION glance
+- $RUN_AS_LOGIN juju deploy --to lxd:3 --channel $GLANCE_VERSION glance
 
 # Join Glance to the cloud database
 - echo "\n\n-------- Joining Glance to the Cloud Database... --------\n"
 
-- $RUN_AS juju deploy --channel $MYSQL_INNODB_VERSION mysql-router glance-mysql-router
-- $RUN_AS juju integrate glance-mysql-router:db-router mysql-innodb-cluster:db-router
-- $RUN_AS juju integrate glance-mysql-router:shared-db glance:shared-db
+- $RUN_AS_LOGIN juju deploy --channel $MYSQL_INNODB_VERSION mysql-router glance-mysql-router
+- $RUN_AS_LOGIN juju integrate glance-mysql-router:db-router mysql-innodb-cluster:db-router
+- $RUN_AS_LOGIN juju integrate glance-mysql-router:shared-db glance:shared-db
 
 # Integrate Glance
 - echo "\n\n-------- Integrate Glance... --------\n"
 
-- $RUN_AS juju integrate glance:image-service nova-cloud-controller:image-service
-- $RUN_AS juju integrate glance:image-service nova-compute:image-service
-- $RUN_AS juju integrate glance:identity-service keystone:identity-service
-- $RUN_AS juju integrate glance:certificates vault:certificates
+- $RUN_AS_LOGIN juju integrate glance:image-service nova-cloud-controller:image-service
+- $RUN_AS_LOGIN juju integrate glance:image-service nova-compute:image-service
+- $RUN_AS_LOGIN juju integrate glance:identity-service keystone:identity-service
+- $RUN_AS_LOGIN juju integrate glance:certificates vault:certificates
 
 # Wait for Glance to be ready
 - echo "\n\n-------- Waiting for Glance to be ready... --------\n"
 
-- $RUN_AS juju wait-for application glance --timeout=$TIMEOUT --query="life==\"alive\" && status==\"waiting\""
-- $RUN_AS juju wait-for application glance-mysql-router --timeout=$TIMEOUT --query="life==\"alive\" && status==\"active\""
+- $RUN_AS_LOGIN juju wait-for application glance --timeout=$TIMEOUT --query="life==\"alive\" && status==\"waiting\""
+- $RUN_AS_LOGIN juju wait-for application glance-mysql-router --timeout=$TIMEOUT --query="life==\"alive\" && status==\"active\""
 
 # ---------------------------------------------- Deploy Ceph Monitor ----------------------------------------------
 - echo "\n\n-------- Deploying Ceph Monitor... --------\n"
@@ -1553,24 +1553,24 @@ runcmd:
 
 - chown {{ sys_user }}:{{ sys_user }} /home/{{ sys_user }}/ceph-mon.yaml
 
-- $RUN_AS juju deploy -n 3 --to lxd:0,lxd:1,lxd:2 --channel $CEPH_MON_VERSION --config /home/{{ sys_user }}/ceph-mon.yaml ceph-mon
+- $RUN_AS_LOGIN juju deploy -n 3 --to lxd:0,lxd:1,lxd:2 --channel $CEPH_MON_VERSION --config /home/{{ sys_user }}/ceph-mon.yaml ceph-mon
 
 - rm /home/{{ sys_user }}/ceph-mon.yaml
 
 # Integrate Ceph Monitor
 - echo "\n\n-------- Integrate Ceph Monitor... --------\n"
 
-- $RUN_AS juju integrate ceph-mon:osd ceph-osd:mon
-- $RUN_AS juju integrate ceph-mon:client nova-compute:ceph
-- $RUN_AS juju integrate ceph-mon:client glance:ceph
+- $RUN_AS_LOGIN juju integrate ceph-mon:osd ceph-osd:mon
+- $RUN_AS_LOGIN juju integrate ceph-mon:client nova-compute:ceph
+- $RUN_AS_LOGIN juju integrate ceph-mon:client glance:ceph
 
 # Set Ceph as the storage backend for Nova non-bootable disk images
-- $RUN_AS juju config nova-compute libvirt-image-backend=rbd
+- $RUN_AS_LOGIN juju config nova-compute libvirt-image-backend=rbd
 
 # Wait for Ceph Monitor to be ready
 - echo "\n\n-------- Waiting for Ceph Monitor to be ready... --------\n"
 
-- $RUN_AS juju wait-for application ceph-mon --timeout=$TIMEOUT --query="life==\"alive\" && status==\"blocked\" && len(units) == 3"
+- $RUN_AS_LOGIN juju wait-for application ceph-mon --timeout=$TIMEOUT --query="life==\"alive\" && status==\"blocked\" && len(units) == 3"
 
 # ---------------------------------------------- Deploy Cinder ----------------------------------------------
 - echo "\n\n-------- Deploying Cinder... --------\n"
@@ -1584,68 +1584,68 @@ runcmd:
 
 - chown {{ sys_user }}:{{ sys_user }} /home/{{ sys_user }}/cinder.yaml
 
-- $RUN_AS juju deploy --to lxd:1 --channel $CINDER_VERSION --config /home/{{ sys_user }}/cinder.yaml cinder
+- $RUN_AS_LOGIN juju deploy --to lxd:1 --channel $CINDER_VERSION --config /home/{{ sys_user }}/cinder.yaml cinder
 
 - rm /home/{{ sys_user }}/cinder.yaml
 
 # Join Cinder to the cloud database
 - echo "\n\n-------- Joining Cinder to the Cloud Database... --------\n"
 
-- $RUN_AS juju deploy --channel $MYSQL_INNODB_VERSION mysql-router cinder-mysql-router
-- $RUN_AS juju integrate cinder-mysql-router:db-router mysql-innodb-cluster:db-router
-- $RUN_AS juju integrate cinder-mysql-router:shared-db cinder:shared-db
+- $RUN_AS_LOGIN juju deploy --channel $MYSQL_INNODB_VERSION mysql-router cinder-mysql-router
+- $RUN_AS_LOGIN juju integrate cinder-mysql-router:db-router mysql-innodb-cluster:db-router
+- $RUN_AS_LOGIN juju integrate cinder-mysql-router:shared-db cinder:shared-db
 
 # Integrate Cinder
 - echo "\n\n-------- Integrate Cinder... --------\n"
 
-- $RUN_AS juju integrate cinder:cinder-volume-service nova-cloud-controller:cinder-volume-service
-- $RUN_AS juju integrate cinder:identity-service keystone:identity-service
-- $RUN_AS juju integrate cinder:amqp rabbitmq-server:amqp
-- $RUN_AS juju integrate cinder:image-service glance:image-service
-- $RUN_AS juju integrate cinder:certificates vault:certificates
+- $RUN_AS_LOGIN juju integrate cinder:cinder-volume-service nova-cloud-controller:cinder-volume-service
+- $RUN_AS_LOGIN juju integrate cinder:identity-service keystone:identity-service
+- $RUN_AS_LOGIN juju integrate cinder:amqp rabbitmq-server:amqp
+- $RUN_AS_LOGIN juju integrate cinder:image-service glance:image-service
+- $RUN_AS_LOGIN juju integrate cinder:certificates vault:certificates
 
 # Wait for Cinder to be ready
 - echo "\n\n-------- Waiting for Cinder to be ready... --------\n"
 
-- $RUN_AS juju wait-for application cinder --timeout=$TIMEOUT --query="life==\"alive\" && status==\"blocked\""
-- $RUN_AS juju wait-for application cinder-mysql-router --timeout=$TIMEOUT --query="life==\"alive\" && status==\"active\""
+- $RUN_AS_LOGIN juju wait-for application cinder --timeout=$TIMEOUT --query="life==\"alive\" && status==\"blocked\""
+- $RUN_AS_LOGIN juju wait-for application cinder-mysql-router --timeout=$TIMEOUT --query="life==\"alive\" && status==\"active\""
 
 # ---------------------------------------------- Deploy Cinder-Ceph ----------------------------------------------
 - echo "\n\n-------- Deploying Cinder-Ceph... --------\n"
 
-- $RUN_AS juju deploy --channel $CINDER_CEPH_VERSION cinder-ceph
+- $RUN_AS_LOGIN juju deploy --channel $CINDER_CEPH_VERSION cinder-ceph
 
 # Integrate Cinder-Ceph
 - echo "\n\n-------- Integrate Cinder-Ceph... --------\n"
 
-- $RUN_AS juju integrate cinder-ceph:storage-backend cinder:storage-backend
-- $RUN_AS juju integrate cinder-ceph:ceph ceph-mon:client
-- $RUN_AS juju integrate cinder-ceph:ceph-access nova-compute:ceph-access
+- $RUN_AS_LOGIN juju integrate cinder-ceph:storage-backend cinder:storage-backend
+- $RUN_AS_LOGIN juju integrate cinder-ceph:ceph ceph-mon:client
+- $RUN_AS_LOGIN juju integrate cinder-ceph:ceph-access nova-compute:ceph-access
 
 # Wait for Cinder-Ceph to be ready
 - echo "\n\n-------- Waiting for Cinder-Ceph to be ready... --------\n"
 
-- $RUN_AS juju wait-for application cinder-ceph --timeout=$TIMEOUT --query="life==\"alive\" && status==\"active\""
+- $RUN_AS_LOGIN juju wait-for application cinder-ceph --timeout=$TIMEOUT --query="life==\"alive\" && status==\"active\""
 
 # ---------------------------------------------- Deploy Ceph RADOS Gateway ----------------------------------------------
 - echo "\n\n-------- Deploying Ceph RADOS Gateway... --------\n"
 
-- $RUN_AS juju deploy --to lxd:0 --channel $CEPH_RADOSGW_VERSION ceph-radosgw
+- $RUN_AS_LOGIN juju deploy --to lxd:0 --channel $CEPH_RADOSGW_VERSION ceph-radosgw
 
 # Integrate Ceph RADOS Gateway
 - echo "\n\n-------- Integrate Ceph RADOS Gateway... --------\n"
 
-- $RUN_AS juju integrate ceph-radosgw:mon ceph-mon:radosgw
+- $RUN_AS_LOGIN juju integrate ceph-radosgw:mon ceph-mon:radosgw
 
 # Wait for Ceph RADOS Gateway to be ready
 - echo "\n\n-------- Waiting for Ceph RADOS Gateway to be ready... --------\n"
 
-- $RUN_AS juju wait-for application ceph-radosgw --timeout=$TIMEOUT --query="life==\"alive\" && status==\"active\""
+- $RUN_AS_LOGIN juju wait-for application ceph-radosgw --timeout=$TIMEOUT --query="life==\"alive\" && status==\"active\""
 
 # --------------------------------------- Wait for OpenStack to Finish Deploying ---------------------------------------
 - echo "\n\n-------- Wait for OpenStack to finish deploying... --------\n"
 
-- $RUN_AS juju wait-for model openstack --timeout=$TIMEOUT --query="life==\"alive\" && status==\"available\" && forEach(applications, app => app.status == \"active\")"
+- $RUN_AS_LOGIN juju wait-for model openstack --timeout=$TIMEOUT --query="life==\"alive\" && status==\"available\" && forEach(applications, app => app.status == \"active\")"
 
 # ---------------------------------------------------- Set openrc ----------------------------------------------------
 - echo "\n\n-------- Set openrc... --------\n"

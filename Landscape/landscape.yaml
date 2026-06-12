@@ -3,7 +3,7 @@
 
 # ---
 # landscape transcript: Automated scalable cloud-init install of Landscape HA using Juju + MAAS
-# version: 1.0.1
+# version: 1.0.2
 #
 # Made by: Pablo Gonzalez De Greiff @ Canonical
 # ---
@@ -1055,12 +1055,12 @@ runcmd:
 # Add MAAS as a Juju Cloud
 - echo "\n\n-------- Adding MAAS as a Juju Cloud... --------\n"
 
-- $RUN_AS juju add-cloud --client -f /home/{{ sys_user }}/maas-cloud.yaml maas
+- $RUN_AS_LOGIN juju add-cloud --client -f /home/{{ sys_user }}/maas-cloud.yaml maas
 
 # Add MAAS as a Juju Cloud
 - echo "\n\n-------- Adding MAAS Credentials to Juju... --------\n"
 
-- $RUN_AS juju add-credential --client -f /home/{{ sys_user }}/maas-creds.yaml maas
+- $RUN_AS_LOGIN juju add-credential --client -f /home/{{ sys_user }}/maas-creds.yaml maas
 
 # Remove config files
 - rm /home/{{ sys_user }}/maas-*.yaml
@@ -1068,18 +1068,18 @@ runcmd:
 # Bootstrap Juju controller
 - echo "\n\n-------- Bootstrapping Juju Controller... --------\n"
 
-- $RUN_AS juju bootstrap --bootstrap-base=$JUJU_BASE --constraints tags=juju-controller maas juju-controller
+- $RUN_AS_LOGIN juju bootstrap --bootstrap-base=$JUJU_BASE --constraints tags=juju-controller maas juju-controller
 
 # Enable Juju HA if JUJU_HA > 1
 - |
   if [ "$JUJU_HA" -gt 1 ]; then
     echo "\n\n-------- Enabling Juju HA ($JUJU_HA nodes)... --------\n"
     
-    $RUN_AS juju enable-ha -n $JUJU_HA --constraints tags=juju-controller
+    $RUN_AS_LOGIN juju enable-ha -n $JUJU_HA --constraints tags=juju-controller
     
     echo "\n\n-------- Waiting for Juju HA controllers to provision... --------\n"
     for i in $(seq 1 $((JUJU_HA - 1))); do
-      $RUN_AS juju wait-for machine $i -m controller --timeout=20m --query="life==\"alive\" && status==\"started\""
+      $RUN_AS_LOGIN juju wait-for machine $i -m controller --timeout=20m --query="life==\"alive\" && status==\"started\""
     done
   fi
 
@@ -1090,13 +1090,13 @@ runcmd:
 # Create Juju Model
 - echo "\n\n-------- Creating Juju Landscape Model... --------\n"
 
-- $RUN_AS juju add-model --config default-base=$JUJU_BASE $JUJU_MODEL
+- $RUN_AS_LOGIN juju add-model --config default-base=$JUJU_BASE $JUJU_MODEL
 
 # ------------------------------------------------- Deploy Machines -------------------------------------------------
 - echo "\n\n-------- Deploying Juju Machines... --------\n"
 
-- $RUN_AS juju add-machine -n $NODE_HA --constraints tags=landscape
-- $RUN_AS juju add-machine -n $CLIENT_HA --constraints tags=client
+- $RUN_AS_LOGIN juju add-machine -n $NODE_HA --constraints tags=landscape
+- $RUN_AS_LOGIN juju add-machine -n $CLIENT_HA --constraints tags=client
 
 # Wait for machines to be started so LXD is ready
 - echo "\n\n-------- Waiting for Machines to start... --------\n"
@@ -1104,7 +1104,7 @@ runcmd:
 - |
   TOTAL_MACHINES=$((NODE_HA + CLIENT_HA - 1))
   for i in $(seq 0 $TOTAL_MACHINES); do
-    $RUN_AS juju wait-for machine $i --timeout=20m --query="life==\"alive\" && status==\"started\""
+    $RUN_AS_LOGIN juju wait-for machine $i --timeout=20m --query="life==\"alive\" && status==\"started\""
   done
 
 # ------------------------------------------------- Deploy HAProxy -------------------------------------------------
@@ -1123,17 +1123,17 @@ runcmd:
 
 - |
   LXD_PLACEMENT=$(for i in $(seq 0 $((NODE_HA - 1))); do echo -n "lxd:$i,"; done | sed 's/,$//')
-  $RUN_AS juju deploy -n $NODE_HA --channel $HAPROXY_VERSION --base=ubuntu@24.04 --to $LXD_PLACEMENT --config /home/{{ sys_user }}/haproxy.yaml haproxy
+  $RUN_AS_LOGIN juju deploy -n $NODE_HA --channel $HAPROXY_VERSION --base=ubuntu@24.04 --to $LXD_PLACEMENT --config /home/{{ sys_user }}/haproxy.yaml haproxy
 
 - rm /home/{{ sys_user }}/haproxy.yaml
 
 # Expose HAProxy
-- $RUN_AS juju expose haproxy
+- $RUN_AS_LOGIN juju expose haproxy
 
 # Wait for HAProxy to be deployed
 - echo "\n\n-------- Waiting for HAProxy... --------\n"
 
-- $RUN_AS juju wait-for application haproxy --timeout=20m --query="life==\"alive\" && status==\"active\" && len(units) == $NODE_HA"
+- $RUN_AS_LOGIN juju wait-for application haproxy --timeout=20m --query="life==\"alive\" && status==\"active\" && len(units) == $NODE_HA"
 
 # ------------------------------------------------- Deploy PostgreSQL -------------------------------------------------
 - echo "\n\n-------- Deploying PostgreSQL... --------\n"
@@ -1154,14 +1154,14 @@ runcmd:
 
 - |
   BAREMETAL_PLACEMENT=$(seq -s, 0 $((NODE_HA - 1)))
-  $RUN_AS juju deploy -n $NODE_HA --channel $POSTGRESQL_VERSION --to $BAREMETAL_PLACEMENT --config /home/{{ sys_user }}/postgresql.yaml postgresql
+  $RUN_AS_LOGIN juju deploy -n $NODE_HA --channel $POSTGRESQL_VERSION --to $BAREMETAL_PLACEMENT --config /home/{{ sys_user }}/postgresql.yaml postgresql
 
 - rm /home/{{ sys_user }}/postgresql.yaml
 
 # Wait for PostgreSQL to be deployed
 - echo "\n\n-------- Waiting for PostgreSQL... --------\n"
 
-- $RUN_AS juju wait-for application postgresql --timeout=20m --query="life==\"alive\" && status==\"active\" && len(units) == $NODE_HA"
+- $RUN_AS_LOGIN juju wait-for application postgresql --timeout=20m --query="life==\"alive\" && status==\"active\" && len(units) == $NODE_HA"
 
 # ----------------------------------------------- Deploy RabbitMQ Server -----------------------------------------------
 - echo "\n\n-------- Deploying RabbitMQ... --------\n"
@@ -1176,14 +1176,14 @@ runcmd:
 
 - |
   LXD_PLACEMENT=$(for i in $(seq 0 $((NODE_HA - 1))); do echo -n "lxd:$i,"; done | sed 's/,$//')
-  $RUN_AS juju deploy -n $NODE_HA --channel $RABBITMQ_VERSION --to $LXD_PLACEMENT --config /home/{{ sys_user }}/rabbitmq.yaml rabbitmq-server
+  $RUN_AS_LOGIN juju deploy -n $NODE_HA --channel $RABBITMQ_VERSION --to $LXD_PLACEMENT --config /home/{{ sys_user }}/rabbitmq.yaml rabbitmq-server
 
 - rm /home/{{ sys_user }}/rabbitmq.yaml
 
 # Wait for RabbitMQ to be deployed
 - echo "\n\n-------- Waiting for RabbitMQ... --------\n"
 
-- $RUN_AS juju wait-for application rabbitmq-server --timeout=20m --query="life==\"alive\" && status==\"active\" && len(units) == $NODE_HA"
+- $RUN_AS_LOGIN juju wait-for application rabbitmq-server --timeout=20m --query="life==\"alive\" && status==\"active\" && len(units) == $NODE_HA"
 
 # --------------------------------------------- Deploy Landscape Server ---------------------------------------------
 - echo "\n\n-------- Deploying Landscape Server... --------\n"
@@ -1200,31 +1200,31 @@ runcmd:
 
 - |
   LXD_PLACEMENT=$(for i in $(seq 0 $((NODE_HA - 1))); do echo -n "lxd:$i,"; done | sed 's/,$//')
-  $RUN_AS juju deploy -n $NODE_HA --channel $LANDSCAPE_SERVER_VERSION --to $LXD_PLACEMENT --config /home/{{ sys_user }}/landscape-server.yaml landscape-server
+  $RUN_AS_LOGIN juju deploy -n $NODE_HA --channel $LANDSCAPE_SERVER_VERSION --to $LXD_PLACEMENT --config /home/{{ sys_user }}/landscape-server.yaml landscape-server
 
 - rm /home/{{ sys_user }}/landscape-server.yaml
 
 # Integrate Landscape Server
-- $RUN_AS juju integrate landscape-server rabbitmq-server
-- $RUN_AS juju integrate landscape-server haproxy
-- $RUN_AS juju integrate landscape-server:db postgresql:db-admin
+- $RUN_AS_LOGIN juju integrate landscape-server rabbitmq-server
+- $RUN_AS_LOGIN juju integrate landscape-server haproxy
+- $RUN_AS_LOGIN juju integrate landscape-server:db postgresql:db-admin
 
 # Wait for Landscape Server to be deployed
 - echo "\n\n-------- Waiting for Landscape Server... --------\n"
 
-- $RUN_AS juju wait-for application landscape-server --timeout=20m --query="life==\"alive\" && status==\"active\" && len(units) == $NODE_HA"
+- $RUN_AS_LOGIN juju wait-for application landscape-server --timeout=20m --query="life==\"alive\" && status==\"active\" && len(units) == $NODE_HA"
 
 # --------------------------------------------- Deploy Ubuntu machine ---------------------------------------------
 - echo "\n\n-------- Deploying Ubuntu Machine... --------\n"
 
 - |
   CLIENT_PLACEMENT=$(seq -s, $NODE_HA $((NODE_HA + CLIENT_HA - 1)))
-  $RUN_AS juju deploy -n $CLIENT_HA --base $CLIENT_BASE --to $CLIENT_PLACEMENT ubuntu
+  $RUN_AS_LOGIN juju deploy -n $CLIENT_HA --base $CLIENT_BASE --to $CLIENT_PLACEMENT ubuntu
 
 # Wait for Ubuntu to be deployed
 - echo "\n\n-------- Waiting for Ubuntu Machine... --------\n"
 
-- $RUN_AS juju wait-for application ubuntu --timeout=20m --query="life==\"alive\" && status==\"active\" && len(units) == $CLIENT_HA"
+- $RUN_AS_LOGIN juju wait-for application ubuntu --timeout=20m --query="life==\"alive\" && status==\"active\" && len(units) == $CLIENT_HA"
 
 # --------------------------------------------- Deploy Landscape Client ---------------------------------------------
 - echo "\n\n-------- Deploying Landscape Client... --------\n"
@@ -1245,19 +1245,19 @@ runcmd:
 
 - chown {{ sys_user }}:{{ sys_user }} /home/{{ sys_user }}/landscape-client.yaml
 
-- $RUN_AS juju deploy --channel $LANDSCAPE_CLIENT_VERSION --config /home/{{ sys_user }}/landscape-client.yaml landscape-client
+- $RUN_AS_LOGIN juju deploy --channel $LANDSCAPE_CLIENT_VERSION --config /home/{{ sys_user }}/landscape-client.yaml landscape-client
 
 - rm /home/{{ sys_user }}/landscape-client.yaml
 
 # Relate Client with Ubuntu Machine
 - echo "\n\n-------- Attaching Landscape Client to Ubuntu Machine... --------\n"
 
-- $RUN_AS juju relate landscape-client ubuntu
+- $RUN_AS_LOGIN juju relate landscape-client ubuntu
 
 # Wait for Landscape Server to be deployed
 - echo "\n\n-------- Waiting for Landscape Client... --------\n"
 
-- $RUN_AS juju wait-for application landscape-client --timeout=20m --query="life==\"alive\" && status==\"active\""
+- $RUN_AS_LOGIN juju wait-for application landscape-client --timeout=20m --query="life==\"alive\" && status==\"active\""
 
 {% if pro_token %}
 
@@ -1265,7 +1265,7 @@ runcmd:
 - echo "\n\n-------- Attaching Ubuntu Pro Token... --------\n"
 - |
   for i in $(seq 0 $((CLIENT_HA - 1))); do
-    $RUN_AS juju ssh ubuntu/$i "sudo pro attach $PRO_TOKEN"
+    $RUN_AS_LOGIN juju ssh ubuntu/$i "sudo pro attach $PRO_TOKEN"
   done
 
 {% endif %}
@@ -1275,13 +1275,13 @@ runcmd:
 
 - |
   for i in $(seq 0 $((CLIENT_HA - 1))); do
-    $RUN_AS juju run landscape-client/$i register
+    $RUN_AS_LOGIN juju run landscape-client/$i register
   done
 
 # Wait for Landscape to be deployed
 - echo "\n\n-------- Waiting for Landscape Client... --------\n"
 
-- $RUN_AS juju wait-for application landscape-client --timeout=20m --query="life==\"alive\" && len(units) == $CLIENT_HA"
+- $RUN_AS_LOGIN juju wait-for application landscape-client --timeout=20m --query="life==\"alive\" && len(units) == $CLIENT_HA"
 
 - echo "\n\n-------- Finished deploying HA Landscape, have fun!... --------\n"
 
