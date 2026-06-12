@@ -20,6 +20,7 @@ LXC_OPTIONAL_ARGS=()
 NESTED=false
 ACCEPT_DEFAULTS=false
 CLEANUP_HANDOVER=false
+CLOUD_INIT_LOG_LINES=7 # Lines to show while Juju status watch
 MAX_WAIT=300 # Maximum wait time in seconds for loops
 
 # --- Colors ---
@@ -608,7 +609,6 @@ IMAGE=$(get_default "vm_image")
 
 # Generate the random resources using the specific prefix + unified ID (8 hex chars)
 VOLATILE_CERT_NAME="${REPRO_NAME}-cert-${DEPLOY_ID}"
-MUX_SOCKET="/tmp/${REPRO_NAME}-ssh-${DEPLOY_ID}.sock"
 
 # Obtain Juju watch variables
 JUJU_TRIGGER_MSG=$(get_default "juju_trigger")
@@ -1007,21 +1007,21 @@ echo ""
 
 LXD_UI_URL="https://localhost:8443/ui/project/${LXD_PROJECT}/instances"
 
-echo -e "${BYELLOW}  LXD Dashboard:${NC} $LXD_UI_URL"
-echo ""
-
 if [ -n "$SSH_CLIENT" ] || [ -n "$SSH_TTY" ]; then
     REMOTE_USER=$(whoami)
     
     echo -e "${BYELLOW}  Remote SSH Session Detected!${NC}"
     echo "  To watch the deployment live from the LXD UI, open a new terminal tab on your host and run:"
     echo ""
-    echo -e "${BYELLOW}  Run:${NC} ssh -N -L 8443:localhost:8443 ${REMOTE_USER}@<SERVER_IP>"
-    echo -e "${BYELLOW}  URL:${NC} $LXD_UI_URL"
+    echo -e "${BYELLOW}  Run:${NC} ssh -N -L 8444:localhost:8443 ${REMOTE_USER}@<SERVER_IP>"
+    echo -e "${BYELLOW}  URL:${NC} https://localhost:8444/ui/project/${LXD_PROJECT}/instances"
     echo ""
+    echo "  You may need to configure the LXD trust token..."
     
     pause_to_continue "Press Enter to launch the VM and begin deployment tracking..."
 else
+    echo -e "${BYELLOW}  LXD Dashboard:${NC} $LXD_UI_URL"
+    echo ""
     echo -e "${BYELLOW}  Local session detected. Opening LXD Dashboard...${NC}"
     if command -v xdg-open &> /dev/null; then
         xdg-open "$LXD_UI_URL" > /dev/null 2>&1 &
@@ -1149,16 +1149,8 @@ rmdir "$CERT_DIR" 2>/dev/null || true
 EOF
 fi
 
-# 4. SSH Multiplex Socket Cleanup & Footer
+# 4. Footer
 cat << EOF >> "$CLEANUP_SCRIPT"
-if [ -S "$MUX_SOCKET" ]; then
-    echo -e "${BYELLOW}-> Cleaning up lingering SSH multiplex socket:${NC} $MUX_SOCKET"
-    # Send exit command to the master process via the socket to kill the background daemon
-    ssh -O exit -o "ControlPath=$MUX_SOCKET" localhost 2>/dev/null
-    rm -f "$MUX_SOCKET"
-    echo ""
-fi
-
 echo -e "${BYELLOW}-------------- Cleanup Complete --------------${NC}"
 
 # rm -- "\$0" # Self-deletion removed for auditing purposes.
@@ -1176,15 +1168,11 @@ echo -e "${BYELLOW}-> 2. Cleanup script created:${NC} $CLEANUP_SCRIPT"
 # ESTABLISH SSH CONNECTION
 # ==========================================
 
-# Define SSH options dynamically using SSH Multiplexing (ControlMaster)
+# Define SSH options dynamically
 if [ -f "$SSH_ID" ]; then
-    SSH_MASTER_OPTS=(-i "$SSH_ID" -o "StrictHostKeyChecking=no" -o "UserKnownHostsFile=/dev/null" -o "ControlMaster=auto" -o "ControlPath=$MUX_SOCKET" -o "ControlPersist=5h")
-    SSH_OPTS=(-q -o "StrictHostKeyChecking=no" -o "UserKnownHostsFile=/dev/null" -o "ControlPath=$MUX_SOCKET")
-    SSH_INT_OPTS=(-i "$SSH_ID" -o "StrictHostKeyChecking=no" -o "UserKnownHostsFile=/dev/null")
+    SSH_OPTS=(-i "$SSH_ID" -o "StrictHostKeyChecking=no" -o "UserKnownHostsFile=/dev/null")
 else
-    SSH_MASTER_OPTS=(-o "StrictHostKeyChecking=no" -o "UserKnownHostsFile=/dev/null" -o "ControlMaster=auto" -o "ControlPath=$MUX_SOCKET" -o "ControlPersist=5h")
-    SSH_OPTS=(-q -o "StrictHostKeyChecking=no" -o "UserKnownHostsFile=/dev/null" -o "ControlPath=$MUX_SOCKET")
-    SSH_INT_OPTS=(-o "StrictHostKeyChecking=no" -o "UserKnownHostsFile=/dev/null")
+    SSH_OPTS=(-o "StrictHostKeyChecking=no" -o "UserKnownHostsFile=/dev/null")
 fi
 
 # 3. Watch for IP Address
@@ -1216,48 +1204,16 @@ echo ""
 
 lxc list --project "$LXD_PROJECT"
 
-# 4. Wait for SSH to become available and establish Master Socket
-echo ""
-echo -e "${BYELLOW}-> 4. Waiting for VM SSH service to start...${NC}"
-echo ""
-
-TIMEOUT=0
-SYS_USER="${SYS_USER:-ubuntu}"
-
-# Use the LXD API to check the VM's authorized_keys
-until lxc exec "$VM_NAME" --project "$LXD_PROJECT" -- test -s "/home/$SYS_USER/.ssh/authorized_keys" 2>/dev/null; do
-    if [ "$TIMEOUT" -ge "$MAX_WAIT" ]; then
-        echo ""
-        echo -e "${BRED}Error: Timed out waiting for cloud-init to inject SSH keys on $VM_NAME.${NC}"
-        echo -e "Run '${CLEANUP_SCRIPT}' to clean up the environment."
-        exit 1
-    fi
-    sleep 2
-    TIMEOUT=$((TIMEOUT + 2))
-done
-
-sleep 3 # Small 3-second buffer to ensure the SSH daemon has fully bound to port 22
-
-echo "Establishing master SSH connection (Enter key passphrase if prompted)..."
-
-if ! ssh "${SSH_MASTER_OPTS[@]}" "${SYS_USER}@$IP" exit; then
-    echo -e "${BRED}Error: Failed to establish SSH connection. Check your SSH keys or passphrase.${NC}"
-    echo -e "Run '${CLEANUP_SCRIPT}' to clean up the environment."
-    exit 1
-fi
-
-echo "Secure SSH multiplex tunnel established!"
-
 # ==========================================
 # LOG TAILING + JUJU STATUS
 # ==========================================
 
-# 5. Wait for cloud-init to finish and tail logs and then Juju watch
+# 4. Wait for cloud-init to finish and tail logs and then Juju watch
 echo ""
-echo -e "${BYELLOW}-> 5. Connecting to live cloud-init logs... (will switch to Juju status)${NC}"
+echo -e "${BYELLOW}-> 4. Connecting to live cloud-init logs... (will switch to Juju status)${NC}"
 echo ""
 
-CLOUD_INIT_LOG_LINES=7 # Lines to show while Juju status watch
+SYS_USER="${SYS_USER:-ubuntu}"
 PHASE="LOG_TAIL" # Phase options: LOG_TAIL, JUJU_WATCH, DONE
 CURSOR_TOP='\033[H'
 CLEAR_REST='\033[J'
@@ -1270,9 +1226,9 @@ while [ "$PHASE" != "DONE" ]; do
         
         # Build the sed command dynamically based on whether a Juju trigger exists, quit 'q' if we see the Trigger Message OR "finished at"
         if [ -n "$JUJU_TRIGGER_MSG" ]; then
-            ssh "${SSH_OPTS[@]}" -t "${SYS_USER}@$IP" "tail -f /var/log/cloud-init-output.log 2>/dev/null | sed '/$JUJU_TRIGGER_MSG/ q; /finished at/ q'"
+            lxc exec "$VM_NAME" --project "$LXD_PROJECT" -- sh -c "tail -f /var/log/cloud-init-output.log 2>/dev/null | sed '/$JUJU_TRIGGER_MSG/ q; /finished at/ q'"
         else
-            ssh "${SSH_OPTS[@]}" -t "${SYS_USER}@$IP" "tail -f /var/log/cloud-init-output.log 2>/dev/null | sed '/finished at/ q'"
+            lxc exec "$VM_NAME" --project "$LXD_PROJECT" -- sh -c "tail -f /var/log/cloud-init-output.log 2>/dev/null | sed '/finished at/ q'"
         fi
         
         EXIT_CODE=$?
@@ -1280,7 +1236,7 @@ while [ "$PHASE" != "DONE" ]; do
         if [ $EXIT_CODE -eq 0 ]; then
             # Success! The 'sed' command found the Juju model deploy start and quit cleanly.
             sleep 2
-            STATUS_CHECK=$(ssh "${SSH_OPTS[@]}" "${SYS_USER}@$IP" "cloud-init status" 2>/dev/null)
+            STATUS_CHECK=$(lxc exec "$VM_NAME" --project "$LXD_PROJECT" -- cloud-init status 2>/dev/null)
             
             if [[ "$STATUS_CHECK" == *"status: error"* ]]; then
                 echo ""
@@ -1291,7 +1247,7 @@ while [ "$PHASE" != "DONE" ]; do
                 echo ""
                 echo -e "${BYELLOW}cloud-init finished successfully! ${NC}${CLR_EOL}"
                 PHASE="DONE"
-            elif [ -n "$JUJU_TRIGGER_MSG" ] && ssh "${SSH_OPTS[@]}" "${SYS_USER}@$IP" "grep -Fq -- '$JUJU_TRIGGER_MSG' /var/log/cloud-init-output.log" 2>/dev/null; then
+            elif [ -n "$JUJU_TRIGGER_MSG" ] && lxc exec "$VM_NAME" --project "$LXD_PROJECT" -- grep -Fq -- "$JUJU_TRIGGER_MSG" /var/log/cloud-init-output.log 2>/dev/null; then
                 echo ""
                 echo -e "${BYELLOW}Juju Deployment Trigger Detected. Switching to Watch Mode...${NC}${CLR_EOL}"
                 sleep 2
@@ -1330,12 +1286,10 @@ while [ "$PHASE" != "DONE" ]; do
         fi
         
         # Capture both status commands first
-        # shellcheck disable=SC2029
-        JUJU_OUTPUT=$(ssh "${SSH_OPTS[@]}" "${SYS_USER}@$IP" "$JUJU_CMD" 2>/dev/null)
-        # shellcheck disable=SC2029
-        LOG_OUTPUT=$(ssh "${SSH_OPTS[@]}" "${SYS_USER}@$IP" "tail -n $CLOUD_INIT_LOG_LINES /var/log/cloud-init-output.log | sed 's/\r$//' | sed 's/.*\r//' | sed 's/\x1b\[[0-9;]*[a-zA-Z]//g'" 2>/dev/null)
-        SSH_EXIT=$?
-        CI_STATUS=$(ssh "${SSH_OPTS[@]}" "${SYS_USER}@$IP" "cloud-init status" 2>/dev/null)
+        JUJU_OUTPUT=$(lxc exec "$VM_NAME" --project "$LXD_PROJECT" -- su - "$SYS_USER" -c "$JUJU_CMD" 2>/dev/null)
+        LOG_OUTPUT=$(lxc exec "$VM_NAME" --project "$LXD_PROJECT" -- sh -c "tail -n $CLOUD_INIT_LOG_LINES /var/log/cloud-init-output.log | sed 's/\r$//' | sed 's/.*\r//' | sed 's/\x1b\[[0-9;]*[a-zA-Z]//g'" 2>/dev/null)
+        LXC_EXIT=$?
+        CI_STATUS=$(lxc exec "$VM_NAME" --project "$LXD_PROJECT" -- cloud-init status 2>/dev/null)
         
         # Check if we should stop (Is cloud-init done?)
         if [[ "$CI_STATUS" == *"status: error"* ]]; then
@@ -1345,7 +1299,7 @@ while [ "$PHASE" != "DONE" ]; do
             exit 1
         elif [[ "$CI_STATUS" == *"status: done"* ]]; then
             # Print the final status one last time cleanly
-            echo -e "${CURSOR_TOP}${BYELLOW}-> 5. Juju Deployment Status (Finalizing...)${NC}${CLR_EOL}"
+            echo -e "${CURSOR_TOP}${BYELLOW}-> 4. Juju Deployment Status (Finalizing...)${NC}${CLR_EOL}"
             echo -e "Target IP: $IP | Updated: $(date +%T)${CLR_EOL}"
             echo -e "${BYELLOW}-------------------------------------------------------${NC}${CLR_EOL}"
             echo -e "$JUJU_OUTPUT" | sed "s/$/${CLR_EOL}/"
@@ -1357,12 +1311,12 @@ while [ "$PHASE" != "DONE" ]; do
         fi
         
         # Repaint screen
-        if [ $SSH_EXIT -eq 0 ]; then
+        if [ $LXC_EXIT -eq 0 ]; then
             # Move cursor to top (0,0) -> Print Data -> Clear remaining junk at bottom
             echo -ne "${CURSOR_TOP}"
             
             # Header
-            echo -e "${BYELLOW}-> 5. Juju Deployment Status (cloud-init is running...)${NC}${CLR_EOL}"
+            echo -e "${BYELLOW}-> 4. Juju Deployment Status (cloud-init is running...)${NC}${CLR_EOL}"
             echo -e "Target IP: $IP | Updated: $(date +%T)${CLR_EOL}"
             
             # Tail $CLOUD_INIT_LOG_LINES lines of cloud-init logs
@@ -1413,16 +1367,13 @@ echo -e "\033[?25h"
 # POST_DEPLOYMENT ACTIONS
 # ==========================================
 
-# 6. MAAS Dashboard Access (SSH-Aware)
+# 5. MAAS Dashboard Access (SSH-Aware)
 if grep -q "custom_maas_" "$CLOUD_INIT"; then
     echo ""
-    echo -e "${BYELLOW}-> 6. Opening MAAS Dashboard...${NC}"
+    echo -e "${BYELLOW}-> 5. Opening MAAS Dashboard...${NC}"
     echo ""
     
     MAAS_UI_URL="http://$IP:5240/MAAS/"
-    
-    echo -e "${BYELLOW}  MAAS Dashboard:${NC} $MAAS_UI_URL"
-    echo ""
     
     if [ -n "$SSH_CLIENT" ] || [ -n "$SSH_TTY" ]; then
         REMOTE_USER=$(whoami)
@@ -1430,12 +1381,14 @@ if grep -q "custom_maas_" "$CLOUD_INIT"; then
         echo -e "${BYELLOW}  Remote SSH Session Detected!${NC}"
         echo "  To access the MAAS dashboard locally, open a new terminal tab on your host and run:"
         echo ""
-        echo -e "${BYELLOW}  Run:${NC} ssh -N -L 5240:$IP:5240 ${REMOTE_USER}@<SERVER_IP>"
-        echo -e "${BYELLOW}  URL:${NC} http://localhost:5240/MAAS/"
+        echo -e "${BYELLOW}  Run:${NC} ssh -N -L 5241:$IP:5240 ${REMOTE_USER}@<SERVER_IP>"
+        echo -e "${BYELLOW}  URL:${NC} http://localhost:5241/MAAS/"
         echo ""
         
         pause_to_continue "Press Enter to drop into the final interactive shell..."
     else
+        echo -e "${BYELLOW}  MAAS Dashboard:${NC} $MAAS_UI_URL"
+        echo ""
         echo -e "${BYELLOW}  Local session detected. Opening MAAS Dashboard...${NC}"
         if command -v xdg-open &> /dev/null; then
             xdg-open "$MAAS_UI_URL" > /dev/null 2>&1 &
@@ -1443,7 +1396,7 @@ if grep -q "custom_maas_" "$CLOUD_INIT"; then
     fi
 else
     echo ""
-    echo -e "${BYELLOW}-> 6. Skipping MAAS Dashboard... (no MAAS detected)${NC}"
+    echo -e "${BYELLOW}-> 5. Skipping MAAS Dashboard... (no MAAS detected)${NC}"
     echo ""
 fi
 
@@ -1451,19 +1404,13 @@ fi
 # FINAL SSH SHELL
 # ==========================================
 
-# 7. Final Interactive Shell
+# 6. Final Interactive Shell
 echo ""
-echo -e "${BYELLOW}-> 7. Dropping into interactive shell...${NC}"
-echo ""
-
-# Close the SSH Multiplex Socket
-echo "  Closing background SSH multiplex socket..."
-ssh -O exit -o "ControlPath=$MUX_SOCKET" "${SYS_USER}@$IP" 2>/dev/null
-rm -f "$MUX_SOCKET"
+echo -e "${BYELLOW}-> 6. Dropping into interactive shell...${NC}"
 echo ""
 
 # shellcheck disable=SC2029
-ssh "${SSH_INT_OPTS[@]}" "${SYS_USER}@$IP"
+ssh "${SSH_OPTS[@]}" "${SYS_USER}@$IP"
 
 # ==========================================
 # DONE
