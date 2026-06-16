@@ -1019,6 +1019,15 @@ if [ -n "$SSH_CLIENT" ] || [ -n "$SSH_TTY" ] || [ -n "$SSH_CONNECTION" ]; then
     echo -e "${BYELLOW}  URL:${NC} https://localhost:8444/ui/project/${LXD_PROJECT}/instances"
     echo ""
     echo "  You may need to configure the LXD trust token..."
+    echo ""
+
+    if grep -q "custom_maas_" "$CLOUD_INIT"; then
+        echo "  To access the MAAS dashboard (once ready) locally, open a new terminal tab on your host and run:"
+        echo ""
+        echo -e "${BYELLOW}  Run:${NC} ssh -N -L 5241:$IP:5240 ${REMOTE_USER}@${SERVER_IP_STR}"
+        echo -e "${BYELLOW}  URL:${NC} http://localhost:5241/MAAS/"
+        echo ""
+    fi
     
     pause_to_continue "Press Enter to launch the VM and begin deployment tracking..."
 else
