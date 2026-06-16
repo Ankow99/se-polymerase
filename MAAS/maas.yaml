@@ -636,6 +636,31 @@ runcmd:
 - chmod 644 /home/{{ sys_user }}/.ssh/id_rsa.pub
 - maas $ADMIN_USER sshkeys create key="$(cat /home/{{ sys_user }}/.ssh/id_rsa.pub)"
 
+# Wait for MAAS to finish background network discovery
+- |
+  echo "\n\n-------- Waiting for MAAS to discover subnet $MAAS_CIDR... --------\n"
+  
+  while true; do
+    missing_subnet=false
+    
+    # Check if the subnet exists in the MAAS database
+    if maas $ADMIN_USER subnets read | jq -e ".[] | select(.cidr == \"$MAAS_CIDR\")" > /dev/null 2>&1; then
+      echo "  [OK] Subnet '$MAAS_CIDR' has been discovered!"
+    else
+      echo "  [..] Subnet '$MAAS_CIDR' is currently syncing/discovering..."
+      missing_subnet=true
+    fi
+    
+    # Check for missing subnets
+    if [ "$missing_subnet" = "false" ]; then
+      echo "Target subnet '$MAAS_CIDR' is fully populated!"
+      break
+    fi
+    
+    echo "Subnet '$MAAS_CIDR' not yet discovered by rack controller. Retrying in 10 seconds..."
+    sleep 10
+  done
+
 # Configure MAAS networking (set gateways, vlans, DHCP on etc)
 - echo "\n\n-------- Configuring MAAS networking... --------\n"
 
@@ -710,13 +735,13 @@ runcmd:
       if echo "$downloaded_releases" | grep -q "$release"; then
          # Image exists. Now check if import is finished
          if [ "$importing_status" = "false" ]; then
-             echo "  Image '$release' has downloaded!"
+             echo "  [OK] Image '$release' has downloaded!"
          else
-             echo "  Image '$release' is currently syncing..."
+             echo "  [..] Image '$release' is currently syncing..."
              missing_images=true
          fi
       else
-         echo "  Image '$release' was not found in boot resources..."
+         echo "  [??] Image '$release' was not found in boot resources..."
          missing_images=true
       fi
     done
