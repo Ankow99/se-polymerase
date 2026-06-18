@@ -35,7 +35,7 @@ ssh-keygen -t rsa -b 4096 -f ~/.ssh/id_rsa -N ""
 Clone the repository to your local machine and `cd` into it:
 
 ```bash
-git clone [https://github.com/Ankow99/se-polymerase.git](https://github.com/Ankow99/se-polymerase.git)
+git clone https://github.com/Ankow99/se-polymerase
 cd se-polymerase
 ```
 
