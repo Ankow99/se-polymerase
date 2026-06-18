@@ -768,6 +768,8 @@ fi
 HOST_CPU=$(nproc 2>/dev/null || echo 0)
 # Convert Kb to GiB and round to nearest whole number
 HOST_RAM=$(awk '/MemTotal/ {printf "%.0f", $2/1024/1024}' /proc/meminfo 2>/dev/null || echo 0)
+# Fetch available disk space on root (/) in GiB
+HOST_DISK=$(df -k / | awk 'NR==2 {printf "%.0f", $4/1024/1024}' 2>/dev/null || echo 0)
 
 # Evaluate Constraints
 WARNINGS=""
@@ -779,6 +781,11 @@ fi
 
 if [ "$HOST_RAM" -gt 0 ] && [ "$TOT_RAM" -gt "$HOST_RAM" ]; then
     WARNINGS+="${BRED}  ! RAM EXHAUSTION: Requested ${TOT_RAM} GiB, but host only has ${HOST_RAM} GiB total!${NC}\n"
+    DANGER=true
+fi
+
+if [ "$HOST_DISK" -gt 0 ] && [ "$TOT_DISK" -gt "$HOST_DISK" ]; then
+    WARNINGS+="${BRED}  ! DISK EXHAUSTION: Requested ${TOT_DISK} GiB, but host only has ~${HOST_DISK} GiB available on / !${NC}\n"
     DANGER=true
 fi
 
@@ -890,6 +897,7 @@ done
 echo -e "${BYELLOW}  ------------- Capacity & Constraints ------------${NC}"
 printf "  %-28s %s\n" "Primary VM Size:" "${CPU_LIMIT} cores, ${RAM_LIMIT} RAM, ${DISK_LIMIT} Disk"
 printf "  %-28s %s\n" "Total Footprint:" "${TOT_CPU} cores, ${TOT_RAM}GiB RAM, ${TOT_DISK}GiB Disk"
+printf "  %-28s %s\n" "Host Capacity:" "${HOST_CPU} cores, ${HOST_RAM}GiB RAM, ~${HOST_DISK}GiB Disk"
 echo ""
 
 if [ -n "$WARNINGS" ]; then
@@ -900,7 +908,7 @@ fi
 if [ "$DANGER" = true ]; then
     ORIG_ACCEPT="$ACCEPT_DEFAULTS"
     ACCEPT_DEFAULTS=false
-    confirm_or_abort "${BRED}Host lacks sufficient RAM. Force proceed anyway?${NC}"
+    confirm_or_abort "${BRED}Host lacks sufficient RAM or disk space. Force proceed anyway?${NC}"
     ACCEPT_DEFAULTS="$ORIG_ACCEPT"
 else
     confirm_or_abort "Proceed with deployment using these resources and networks?"
@@ -1171,13 +1179,6 @@ echo -e "${BYELLOW}-> 2. Cleanup script created:${NC} $CLEANUP_SCRIPT"
 # ESTABLISH SSH CONNECTION
 # ==========================================
 
-# Define SSH options dynamically
-if [ -f "$SSH_ID" ]; then
-    SSH_OPTS=(-i "$SSH_ID" -o "StrictHostKeyChecking=no" -o "UserKnownHostsFile=/dev/null")
-else
-    SSH_OPTS=(-o "StrictHostKeyChecking=no" -o "UserKnownHostsFile=/dev/null")
-fi
-
 # 3. Watch for IP Address
 echo ""
 echo -e "${BYELLOW}-> 3. Obtaining IP Address...${NC}"
@@ -1206,6 +1207,10 @@ echo "Target IP: $IP"
 echo ""
 
 lxc list --project "$LXD_PROJECT"
+
+# ==========================================
+# MAAS REMOTE DASHBOARD ACCESS
+# ==========================================
 
 if [ -n "$SSH_CLIENT" ] || [ -n "$SSH_TTY" ] || [ -n "$SSH_CONNECTION" ]; then
     REMOTE_USER=$(whoami)
@@ -1431,6 +1436,13 @@ fi
 echo ""
 echo -e "${BYELLOW}-> 6. Dropping into interactive shell...${NC}"
 echo ""
+
+# Define SSH options dynamically
+if [ -f "$SSH_ID" ]; then
+    SSH_OPTS=(-i "$SSH_ID" -o "StrictHostKeyChecking=no" -o "UserKnownHostsFile=/dev/null")
+else
+    SSH_OPTS=(-o "StrictHostKeyChecking=no" -o "UserKnownHostsFile=/dev/null")
+fi
 
 # shellcheck disable=SC2029
 ssh "${SSH_OPTS[@]}" "${SYS_USER}@$IP"
