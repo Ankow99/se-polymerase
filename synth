@@ -1050,7 +1050,7 @@ fi
 
 # 1. Launch VM
 echo ""
-echo -e "${BYELLOW}-> 1. Launching LXD VM '${NC}$VM_NAME${BYELLOW}' (${NC}$IMAGE${BYELLOW}) with CPU: ${NC}$CPU_LIMIT${BYELLOW} cores ; RAM: ${NC}${RAM_LIMIT/GiB/ GiB}${BYELLOW} ; DISK: ${NC}${DISK_LIMIT/GiB/ GiB}"
+echo -e "${BYELLOW}-> 1. Launching LXD VM '${NC}$VM_NAME${BYELLOW}' (${NC}$IMAGE${BYELLOW}) with CPU: ${NC}$CPU_LIMIT cores${BYELLOW} ; RAM: ${NC}${RAM_LIMIT/GiB/ GiB}${BYELLOW} ; DISK: ${NC}${DISK_LIMIT/GiB/ GiB}"
 echo ""
 
 if ! lxc launch "$IMAGE" "$VM_NAME" --vm --project "$LXD_PROJECT" \
