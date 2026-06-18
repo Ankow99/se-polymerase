@@ -881,23 +881,23 @@ for pref in $(echo "$UNIQUE_PREFIXES" | tr ' ' '\n' | sort -u | grep -v '^$'); d
                     if [ -n "$sub_disk" ] && [ -n "$sub_count" ]; then
                         # Format nicely: cloud_osd -> OSD
                         sub_name=$(echo "${sub_pref}" | sed "s/^${pref}_//" | tr '[:lower:]' '[:upper:]')
-                        extra_disks+=" + ${sub_count}x ${sub_disk} ${sub_name}s"
+                        extra_disks+=" + ${sub_count}x ${sub_disk/GiB/ GiB} ${sub_name}s"
                     fi
                 fi
             fi
         done
         
         left_col="${ha_val}x ${pretty_name} Node(s):"
-        right_col="${cpu_val} cores, ${ram_val} RAM, ${disk_val} Disk${extra_disks} (each)"
+        right_col="${cpu_val} cores, ${ram_val/GiB/ GiB} RAM, ${disk_val/GiB/ GiB} Disk${extra_disks} (each)"
         printf "  %-28s %s\n" "$left_col" "$right_col"
     fi
 done
 
 # Constraints Summary
 echo -e "${BYELLOW}  ------------- Capacity & Constraints ------------${NC}"
-printf "  %-28s %s\n" "Primary VM Size:" "${CPU_LIMIT} cores, ${RAM_LIMIT} RAM, ${DISK_LIMIT} Disk"
-printf "  %-28s %s\n" "Total Footprint:" "${TOT_CPU} cores, ${TOT_RAM}GiB RAM, ${TOT_DISK}GiB Disk"
-printf "  %-28s %s\n" "Host Capacity:" "${HOST_CPU} cores, ${HOST_RAM}GiB RAM, ~${HOST_DISK}GiB Disk"
+printf "  %-28s %s\n" "Primary VM Size:" "${CPU_LIMIT} cores, ${RAM_LIMIT/GiB/ GiB} RAM, ${DISK_LIMIT/GiB/ GiB} Disk"
+printf "  %-28s %s\n" "Total Footprint:" "${TOT_CPU} cores, ${TOT_RAM} GiB RAM, ${TOT_DISK} GiB Disk"
+printf "  %-28s %s\n" "Host Capacity:" "${HOST_CPU} cores, ${HOST_RAM} GiB RAM, ~${HOST_DISK} GiB Disk"
 echo ""
 
 if [ -n "$WARNINGS" ]; then
@@ -1050,7 +1050,7 @@ fi
 
 # 1. Launch VM
 echo ""
-echo -e "${BYELLOW}-> 1. Launching LXD VM '${NC}$VM_NAME${BYELLOW}' (${NC}$IMAGE${BYELLOW}) with CPU: ${NC}$CPU_LIMIT${BYELLOW} cores ; RAM: ${NC}$RAM_LIMIT${BYELLOW} ; DISK: ${NC}$DISK_LIMIT"
+echo -e "${BYELLOW}-> 1. Launching LXD VM '${NC}$VM_NAME${BYELLOW}' (${NC}$IMAGE${BYELLOW}) with CPU: ${NC}$CPU_LIMIT${BYELLOW} cores ; RAM: ${NC}${RAM_LIMIT/GiB/ GiB}${BYELLOW} ; DISK: ${NC}${DISK_LIMIT/GiB/ GiB}"
 echo ""
 
 if ! lxc launch "$IMAGE" "$VM_NAME" --vm --project "$LXD_PROJECT" \
@@ -1176,7 +1176,7 @@ echo ""
 echo -e "${BYELLOW}-> 2. Cleanup script created:${NC} $CLEANUP_SCRIPT"
 
 # ==========================================
-# ESTABLISH SSH CONNECTION
+# OBTAIN LXD PRIMARY IP ADDRESS
 # ==========================================
 
 # 3. Watch for IP Address
@@ -1209,7 +1209,7 @@ echo ""
 lxc list --project "$LXD_PROJECT"
 
 # ==========================================
-# MAAS REMOTE DASHBOARD ACCESS
+# MAAS DASHBOARD ACCESS (ONLY REMOTE + MAAS)
 # ==========================================
 
 if [ -n "$SSH_CLIENT" ] || [ -n "$SSH_TTY" ] || [ -n "$SSH_CONNECTION" ]; then
