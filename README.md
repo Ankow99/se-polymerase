@@ -22,16 +22,21 @@ Ensure the following dependencies are installed on the host machine:
 * `openssl`
 * `python3`
 
+You must also have an SSH key pair generated before launching `synth`, as it requires one to establish the final SSH connection into the created lab. If you don't already have one, you can generate it using:
+
+```bash
+ssh-keygen -t rsa -b 4096 -f ~/.ssh/id_rsa -N ""
+```
+
 ---
 
 ## Usage
 
-Clone the repository to your local machine and ensure the synth script is executable:
+Clone the repository to your local machine and `cd` into it:
 
 ```bash
 git clone [https://github.com/Ankow99/se-polymerase.git](https://github.com/Ankow99/se-polymerase.git)
 cd se-polymerase
-chmod +x synth
 ```
 
 Invoke the script against a cloud-init template:
@@ -39,6 +44,8 @@ Invoke the script against a cloud-init template:
 ```bash
 ./synth [OPTIONS] <CLOUD_INIT_FILE> [DEPLOY_ID]
 ```
+
+> **Note:** If this is your first time running `synth`, it may take a little longer to execute as it initializes LXD in the background.
 
 ### Arguments
 | Argument | Description |
