@@ -1030,15 +1030,18 @@ if [ -n "$SSH_CLIENT" ] || [ -n "$SSH_TTY" ] || [ -n "$SSH_CONNECTION" ]; then
     # Generate and display the trust token for the UI
     echo -e "${BYELLOW}  Generating LXD UI Trust Token...${NC}"
     echo ""
-    UI_TOKEN=$(lxc auth identity create tls/lxd-ui --group admins 2>/dev/null)
+    
+    UI_IDENTITY="tls/se-polymerase-ui"
+    UI_TOKEN=$(lxc auth identity create "$UI_IDENTITY" --group admins 2>/dev/null | tail -n 1)
     
     if [ -n "$UI_TOKEN" ]; then
         echo "  Please copy the token below to authenticate in your browser:"
+        echo ""
         echo "${UI_TOKEN}"
     else
-        echo -e "  ${BRED}Failed to generate trust token automatically.${NC}"
-        echo "  You may need to run this manually in another tab:"
-        echo "  lxc auth identity create tls/lxd-ui --group admins"
+        echo "  LXD UI Trust already configured! ($UI_IDENTITY)"
+        echo "  If your browser was authenticated in a previous run, you can just log in."
+        echo "  (To reset trust, run: lxc auth identity delete $UI_IDENTITY)"
     fi
     echo ""
     
