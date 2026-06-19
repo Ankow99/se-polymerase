@@ -3,7 +3,7 @@
 
 # ---
 # openstack transcript: Automated scalable cloud-init install of Charmed OpenStack using Juju + MAAS
-# version: 1.0.1
+# version: 2.0.0
 #
 # Made by: Pablo Gonzalez De Greiff @ Canonical
 # ---
@@ -1120,6 +1120,7 @@ runcmd:
       maast $ADMIN_USER block-device add-tag $SYSTEM_ID $MAIN_BLOCK_ID tag=ssd
       maast $ADMIN_USER block-device remove-tag $SYSTEM_ID $MAIN_BLOCK_ID tag=rotary
       maast $ADMIN_USER block-device remove-tag $SYSTEM_ID $MAIN_BLOCK_ID tag=1rpm
+      maast $ADMIN_USER machine set-storage-layout $SYSTEM_ID storage_layout=flat boot_disk=$MAIN_BLOCK_ID
     fi
     
     echo "\n\n-------- Tagging '$HOST'... --------\n"
