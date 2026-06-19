@@ -1026,7 +1026,20 @@ if [ -n "$SSH_CLIENT" ] || [ -n "$SSH_TTY" ] || [ -n "$SSH_CONNECTION" ]; then
     echo -e "${BYELLOW}  Run:${NC} ssh -N -L 8444:localhost:8443 ${REMOTE_USER}@${SERVER_IP_STR}"
     echo -e "${BYELLOW}  URL:${NC} https://localhost:8444/ui/project/${LXD_PROJECT}/instances"
     echo ""
-    echo "  You may need to configure the LXD trust token..."
+    
+    # Generate and display the trust token for the UI
+    echo -e "${BYELLOW}  Generating LXD UI Trust Token...${NC}"
+    echo ""
+    UI_TOKEN=$(lxc auth identity create tls/lxd-ui --group admins 2>/dev/null)
+    
+    if [ -n "$UI_TOKEN" ]; then
+        echo "  Please copy the token below to authenticate in your browser:"
+        echo "${UI_TOKEN}"
+    else
+        echo -e "  ${BRED}Failed to generate trust token automatically.${NC}"
+        echo "  You may need to run this manually in another tab:"
+        echo "  lxc auth identity create tls/lxd-ui --group admins"
+    fi
     echo ""
     
     pause_to_continue "Press Enter to launch the VM and begin deployment tracking..."
