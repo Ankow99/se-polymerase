@@ -92,6 +92,8 @@ emergency_rollback() {
                     lxc delete -f --project "$LXD_PROJECT" "$inst"
                 done
                 
+                LXD_POOL="${LXD_POOL:-default}"
+                
                 for vol in $(lxc storage volume list "$LXD_POOL" --project "$LXD_PROJECT" --format json | jq -r '.[] | select(.type=="custom") | .name'); do
                     lxc storage volume delete "$LXD_POOL" "$vol" --project "$LXD_PROJECT"
                 done
@@ -123,6 +125,7 @@ emergency_rollback() {
             
             # Clean up the access file on rollback
             if [ -n "$ACCESS_FILE" ] && [ -f "$ACCESS_FILE" ]; then
+                echo "-> Cleaning up orphaned access file..."
                 rm -f "$ACCESS_FILE" 2>/dev/null || true
             fi
         fi
@@ -1186,10 +1189,10 @@ if [ "$NESTED" = false ]; then
 echo -e "${BYELLOW}-> Removing LXD trust for volatile certificate:${NC} ${VOLATILE_CERT_NAME}"
 echo ""
 # Fetch the certificate's fingerprint by matching its common name
-FINGERPRINT=\$(lxc config trust list --format json | jq -r '.[] | select(.name=="${VOLATILE_CERT_NAME}") | .fingerprint')
+FINGERPRINT=\$(lxc config trust list --format json | jq -r '.[] | select(.name=="${VOLATILE_CERT_NAME}") | .fingerprint') 2>/dev/null
 
 if [ -n "\$FINGERPRINT" ] && [ "\$FINGERPRINT" != "null" ]; then
-    lxc config trust remove "\$FINGERPRINT"
+    lxc config trust remove "\$FINGERPRINT" 2>/dev/null || true
 else
     echo "Certificate '${VOLATILE_CERT_NAME}' not found in trust store, skipping..."
     echo ""
@@ -1204,7 +1207,12 @@ fi
 cat << EOF >> "$CLEANUP_SCRIPT"
 
 echo -e "${BYELLOW}-> Removing Access Info File:${NC} access-${LXD_PROJECT}.txt"
-rm -f "$ACCESS_FILE" 2>/dev/null || true
+
+if [ -f "$ACCESS_FILE" ]; then
+    rm -f "$ACCESS_FILE"
+else
+    echo "Access info file 'access-${LXD_PROJECT}.txt' not found, skipping..."
+fi
 echo ""
 
 echo -e "${BYELLOW}-------------- Cleanup Complete --------------${NC}"
