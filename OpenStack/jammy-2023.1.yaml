@@ -81,11 +81,11 @@
 
 # Machines Defaults per node
 {% set custom_node_ha = "4" %}
-{% set custom_node_cpu = "4" %}                     # PROMPT:Machine CPU cores
-{% set custom_node_ram = "12GiB" %}                 # PROMPT:Machine RAM
-{% set custom_node_disk = "50GiB" %}                # PROMPT:Machine Root Disk
-{% set custom_node_osd_disk = "10GiB" %}            # PROMPT:Machine OSD Disk (Each)
-{% set custom_node_osd_count = 3 %}                 # PROMPT:Number of OSDs per Node
+{% set custom_node_cpu = "4" %}                     # PROMPT:Compute CPU cores
+{% set custom_node_ram = "12GiB" %}                 # PROMPT:Compute RAM
+{% set custom_node_disk = "50GiB" %}                # PROMPT:Compute Root Disk
+{% set custom_node_osd_disk = "10GiB" %}            # PROMPT:Compute OSD Disk (Each)
+{% set custom_node_osd_count = 3 %}                 # PROMPT:Number of OSDs per Compute Node
 
 # Juju watch trigger message and models (space separated, order matters)
 {% set custom_juju_trigger = "-------- Bootstrapping Juju Controller... --------" %}
@@ -1724,10 +1724,6 @@ runcmd:
   export OS_AUTH_VERSION=3
   # Gnocchi needs this
   export OS_AUTH_TYPE=password
-  
-  echo "To print the values to screen (including the admin password):"
-  echo
-  echo "   env | grep OS_"
   EOF
 
 - chown {{ sys_user }}:{{ sys_user }} /home/{{ sys_user }}/openrc

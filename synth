@@ -3,7 +3,7 @@
 # se-polymerase (synth)
 # Acts as the polymerase to synthesize an isolated, terraform-free LXD 
 # reproducer environment using the host's LXD for MAAS + Juju deployments.
-# version: 4.0.0
+# version: 5.0.0
 #
 # Synthesized by: Pablo Gonzalez De Greiff @ Canonical
 # ---
@@ -119,6 +119,11 @@ emergency_rollback() {
                 fi
                 rm -f "$CERT_DIR/${VOLATILE_CERT_NAME}.crt" "$CERT_DIR/${VOLATILE_CERT_NAME}.key"
                 rmdir "$CERT_DIR" 2>/dev/null || true
+            fi
+            
+            # Clean up the access file on rollback
+            if [ -n "$ACCESS_FILE" ] && [ -f "$ACCESS_FILE" ]; then
+                rm -f "$ACCESS_FILE" 2>/dev/null || true
             fi
         fi
         
@@ -1013,7 +1018,16 @@ echo ""
 echo -e "${BYELLOW}-> Opening LXD Web UI...${NC}"
 echo ""
 
+# Initialize the access file to save SSH tunnels and credentials
+ACCESS_FILE="$SCRIPT_DIR/access-${LXD_PROJECT}.txt"
+echo "==========================================" > "$ACCESS_FILE"
+echo " Access Details for ${LXD_PROJECT}" >> "$ACCESS_FILE"
+echo "==========================================" >> "$ACCESS_FILE"
+echo "" >> "$ACCESS_FILE"
+
 LXD_UI_URL="https://localhost:8443/ui/project/${LXD_PROJECT}/instances"
+
+echo "[ LXD Web UI ]" >> "$ACCESS_FILE"
 
 if [ -n "$SSH_CLIENT" ] || [ -n "$SSH_TTY" ] || [ -n "$SSH_CONNECTION" ]; then
     REMOTE_USER=$(whoami)
@@ -1026,6 +1040,11 @@ if [ -n "$SSH_CLIENT" ] || [ -n "$SSH_TTY" ] || [ -n "$SSH_CONNECTION" ]; then
     echo -e "${BYELLOW}  Run:${NC} ssh -N -L 8444:localhost:8443 ${REMOTE_USER}@${SERVER_IP_STR}"
     echo -e "${BYELLOW}  URL:${NC} https://localhost:8444/ui/project/${LXD_PROJECT}/instances"
     echo ""
+
+    # Append to access file
+    echo "  Tunnel:   ssh -N -L 8444:localhost:8443 ${REMOTE_USER}@${SERVER_IP_STR}" >> "$ACCESS_FILE"
+    echo "  URL:      https://localhost:8444/ui/project/${LXD_PROJECT}/instances" >> "$ACCESS_FILE"
+    echo "" >> "$ACCESS_FILE"
     
     # Generate and display the trust token for the UI
     echo -e "${BYELLOW}  Generating LXD UI Trust Token...${NC}"
@@ -1049,6 +1068,11 @@ if [ -n "$SSH_CLIENT" ] || [ -n "$SSH_TTY" ] || [ -n "$SSH_CONNECTION" ]; then
 else
     echo -e "${BYELLOW}  LXD Dashboard:${NC} $LXD_UI_URL"
     echo ""
+    
+    # Append to access file
+    echo "  URL:      $LXD_UI_URL" >> "$ACCESS_FILE"
+    echo "" >> "$ACCESS_FILE"
+    
     echo -e "${BYELLOW}  Local session detected. Opening LXD Dashboard...${NC}"
     if command -v xdg-open &> /dev/null; then
         xdg-open "$LXD_UI_URL" > /dev/null 2>&1 &
@@ -1178,6 +1202,11 @@ fi
 
 # 4. Footer
 cat << EOF >> "$CLEANUP_SCRIPT"
+
+echo -e "${BYELLOW}-> Removing Access Info File:${NC} access-${LXD_PROJECT}.txt"
+rm -f "$ACCESS_FILE" 2>/dev/null || true
+echo ""
+
 echo -e "${BYELLOW}-------------- Cleanup Complete --------------${NC}"
 
 # rm -- "\$0" # Self-deletion removed for auditing purposes.
@@ -1225,16 +1254,24 @@ echo ""
 lxc list --project "$LXD_PROJECT"
 
 # ==========================================
-# MAAS DASHBOARD ACCESS (ONLY REMOTE + MAAS)
+# MAAS DASHBOARD ACCESS
 # ==========================================
 
-if [ -n "$SSH_CLIENT" ] || [ -n "$SSH_TTY" ] || [ -n "$SSH_CONNECTION" ]; then
-    REMOTE_USER=$(whoami)
-    SERVER_IP_GUESS=$(echo "${SSH_CONNECTION:-}" | awk '{print $3}')
-    SERVER_IP_STR=${SERVER_IP_GUESS:-<SERVER_IP>}
+# 4. MAAS Dashboard Access (SSH-Aware)
+if grep -q "custom_maas_" "$CLOUD_INIT"; then
+    echo ""
+    echo -e "${BYELLOW}-> 4. Opening MAAS Dashboard...${NC}"
+    echo ""
     
-    if grep -q "custom_maas_" "$CLOUD_INIT"; then
-        echo ""
+    MAAS_UI_URL="http://$IP:5240/MAAS/"
+    
+    echo "[ MAAS Dashboard ]" >> "$ACCESS_FILE"
+    
+    if [ -n "$SSH_CLIENT" ] || [ -n "$SSH_TTY" ] || [ -n "$SSH_CONNECTION" ]; then
+        REMOTE_USER=$(whoami)
+        SERVER_IP_GUESS=$(echo "${SSH_CONNECTION:-}" | awk '{print $3}')
+        SERVER_IP_STR=${SERVER_IP_GUESS:-<SERVER_IP>}
+        
         echo -e "${BYELLOW}  Remote SSH Session Detected!${NC}"
         echo "  To access the MAAS dashboard (once ready) locally, open a new terminal tab on your host and run:"
         echo ""
@@ -1242,17 +1279,37 @@ if [ -n "$SSH_CLIENT" ] || [ -n "$SSH_TTY" ] || [ -n "$SSH_CONNECTION" ]; then
         echo -e "${BYELLOW}  URL:${NC} http://localhost:5241/MAAS/"
         echo ""
         
+        # Append to access file
+        echo "  Tunnel:   ssh -N -L 5241:$IP:5240 ${REMOTE_USER}@${SERVER_IP_STR}" >> "$ACCESS_FILE"
+        echo "  URL:      http://localhost:5241/MAAS/" >> "$ACCESS_FILE"
+        echo "" >> "$ACCESS_FILE"
+        
         pause_to_continue "Press Enter to continue with live cloud-init log tailing..."
+    else
+        echo -e "${BYELLOW}  MAAS Dashboard:${NC} $MAAS_UI_URL"
+        echo ""
+        
+        # Append to access file
+        echo "  URL:      http://$IP:5240/MAAS/" >> "$ACCESS_FILE"
+        echo "" >> "$ACCESS_FILE"
+        
+        echo -e "${BYELLOW}  Local session detected. Opening MAAS Dashboard...${NC}"
+        if command -v xdg-open &> /dev/null; then
+            xdg-open "$MAAS_UI_URL" > /dev/null 2>&1 &
+        fi
     fi
+else
+    echo ""
+    echo -e "${BYELLOW}-> 4. Skipping MAAS Dashboard... (no MAAS detected)${NC}"
 fi
 
 # ==========================================
 # LOG TAILING + JUJU STATUS
 # ==========================================
 
-# 4. Wait for cloud-init to finish and tail logs and then Juju watch
+# 5. Wait for cloud-init to finish and tail logs and then Juju watch
 echo ""
-echo -e "${BYELLOW}-> 4. Connecting to live cloud-init logs... (will switch to Juju status)${NC}"
+echo -e "${BYELLOW}-> 5. Connecting to live cloud-init logs... (will switch to Juju status)${NC}"
 echo ""
 
 SYS_USER="${SYS_USER:-ubuntu}"
@@ -1341,7 +1398,7 @@ while [ "$PHASE" != "DONE" ]; do
             exit 1
         elif [[ "$CI_STATUS" == *"status: done"* ]]; then
             # Print the final status one last time cleanly
-            echo -e "${CURSOR_TOP}${BYELLOW}-> 4. Juju Deployment Status (Finalizing...)${NC}${CLR_EOL}"
+            echo -e "${CURSOR_TOP}${BYELLOW}-> 5. Juju Deployment Status (Finalizing...)${NC}${CLR_EOL}"
             echo -e "Target IP: $IP | Updated: $(date +%T)${CLR_EOL}"
             echo -e "${BYELLOW}-------------------------------------------------------${NC}${CLR_EOL}"
             echo -e "$JUJU_OUTPUT" | sed "s/$/${CLR_EOL}/"
@@ -1358,7 +1415,7 @@ while [ "$PHASE" != "DONE" ]; do
             echo -ne "${CURSOR_TOP}"
             
             # Header
-            echo -e "${BYELLOW}-> 4. Juju Deployment Status (cloud-init is running...)${NC}${CLR_EOL}"
+            echo -e "${BYELLOW}-> 5. Juju Deployment Status (cloud-init is running...)${NC}${CLR_EOL}"
             echo -e "Target IP: $IP | Updated: $(date +%T)${CLR_EOL}"
             
             # Tail $CLOUD_INIT_LOG_LINES lines of cloud-init logs
@@ -1399,58 +1456,176 @@ while [ "$PHASE" != "DONE" ]; do
         fi
         
         # Standard refresh rate
-        sleep 3
+        sleep 2
     fi
 done
 # Force cursor to reappear
 echo -e "\033[?25h"
 
 # ==========================================
-# POST_DEPLOYMENT ACTIONS
+# HORIZON DASHBOARD
 # ==========================================
 
-# 5. MAAS Dashboard Access (SSH-Aware)
-if grep -q "custom_maas_" "$CLOUD_INIT"; then
+# 6. Horizon Dashboard Access (SSH-Aware)
+if grep -q "custom_os_" "$CLOUD_INIT"; then
     echo ""
-    echo -e "${BYELLOW}-> 5. Opening MAAS Dashboard...${NC}"
+    echo -e "${BYELLOW}-> 6. Opening OpenStack Horizon Dashboard...${NC}"
     echo ""
     
-    MAAS_UI_URL="http://$IP:5240/MAAS/"
+    HORIZON_URL=""
+    HORIZON_IP=""
+    HORIZON_PORT="80"
+    HORIZON_PATH="/horizon"
     
-    if [ -n "$SSH_CLIENT" ] || [ -n "$SSH_TTY" ] || [ -n "$SSH_CONNECTION" ]; then
-        REMOTE_USER=$(whoami)
-        SERVER_IP_GUESS=$(echo "${SSH_CONNECTION:-}" | awk '{print $3}')
-        SERVER_IP_STR=${SERVER_IP_GUESS:-<SERVER_IP>}
+    OS_USERNAME=""
+    OS_DOMAIN=""
+    OS_PASSWORD=""
+    
+    # Try Sunbeam first
+    SUNBEAM_URL=$(lxc exec "$VM_NAME" --project "$LXD_PROJECT" -- su - "$SYS_USER" -c "sunbeam dashboard-url 2>/dev/null")
+    
+    if [[ "$SUNBEAM_URL" == *"http"* ]]; then
+        echo -e "  ${BYELLOW}Sunbeam deployment detected.${NC}"
         
-        echo -e "${BYELLOW}  Remote SSH Session Detected!${NC}"
-        echo "  To access the MAAS dashboard locally, open a new terminal tab on your host and run:"
-        echo ""
-        echo -e "${BYELLOW}  Run:${NC} ssh -N -L 5241:$IP:5240 ${REMOTE_USER}@${SERVER_IP_STR}"
-        echo -e "${BYELLOW}  URL:${NC} http://localhost:5241/MAAS/"
-        echo ""
+        # Extract the raw URL string from the command output
+        HORIZON_URL=$(echo "$SUNBEAM_URL" | grep -oP 'https?://[^ ]+')
         
-        pause_to_continue "Press Enter to drop into the final interactive shell..."
+        # Extract the hostname, port, and path from the URL
+        read -r HORIZON_IP HORIZON_PORT HORIZON_PATH <<< "$(python3 -c "
+import urllib.parse, sys
+try:
+    url = sys.argv[1]
+    parsed = urllib.parse.urlparse(url)
+    port = parsed.port or (443 if parsed.scheme == 'https' else 80)
+    print(f'{parsed.hostname} {port} {parsed.path}')
+except Exception:
+    pass
+" "$HORIZON_URL")"
+        
+        # Fetch Sunbeam credentials
+        SUNBEAM_RC=$(lxc exec "$VM_NAME" --project "$LXD_PROJECT" -- su - "$SYS_USER" -c "sunbeam openrc 2>/dev/null")
+        
+        # Extract values, stripping quotes, single quotes, and carriage returns safely
+        TMP_USER=$(echo "$SUNBEAM_RC" | grep -oP 'OS_USERNAME=\K.*' | tr -d "'\"\r")
+        TMP_PASS=$(echo "$SUNBEAM_RC" | grep -oP 'OS_PASSWORD=\K.*' | tr -d "'\"\r")
+        TMP_DOM=$(echo "$SUNBEAM_RC" | grep -oP 'OS_USER_DOMAIN_NAME=\K.*' | tr -d "'\"\r")
+        
+        [ -n "$TMP_USER" ] && OS_USERNAME="$TMP_USER"
+        [ -n "$TMP_PASS" ] && OS_PASSWORD="$TMP_PASS"
+        [ -n "$TMP_DOM" ] && OS_DOMAIN="$TMP_DOM"
     else
-        echo -e "${BYELLOW}  MAAS Dashboard:${NC} $MAAS_UI_URL"
-        echo ""
-        echo -e "${BYELLOW}  Local session detected. Opening MAAS Dashboard...${NC}"
-        if command -v xdg-open &> /dev/null; then
-            xdg-open "$MAAS_UI_URL" > /dev/null 2>&1 &
+        # Try charmed OpenStack
+
+        # Identify the target model from the JUJU_MODELS string (grab the first word)
+        TARGET_MODEL=$(echo "$JUJU_MODELS" | awk '{print $1}')
+        [ -z "$TARGET_MODEL" ] && TARGET_MODEL="openstack"
+        
+        HORIZON_IP=$(lxc exec "$VM_NAME" --project "$LXD_PROJECT" -- su - "$SYS_USER" -c "juju status -m $TARGET_MODEL openstack-dashboard --format json 2>/dev/null" | jq -r '.applications["openstack-dashboard"].units | to_entries[0].value["public-address"]' 2>/dev/null)
+        
+        if [ -n "$HORIZON_IP" ] && [ "$HORIZON_IP" != "null" ]; then
+            echo -e "  ${BYELLOW}Charmed OpenStack deployment detected.${NC}"
+            
+            # Override IP if a Dashboard VIP is configured
+            VIP=$(lxc exec "$VM_NAME" --project "$LXD_PROJECT" -- su - "$SYS_USER" -c "juju config -m $TARGET_MODEL openstack-dashboard vip 2>/dev/null")
+            if [ -n "$VIP" ] && [ "$VIP" != "null" ]; then
+                # Grab the first IP if it happens to be a comma-separated list
+                HORIZON_IP=$(echo "$VIP" | awk -F, '{print $1}' | tr -d ' ')
+            fi
+            
+            HORIZON_URL="http://${HORIZON_IP}${HORIZON_PATH}"
+            
+            # Fetch charmed OpenStack credentials
+            OPENRC=$(lxc exec "$VM_NAME" --project "$LXD_PROJECT" -- cat /home/"$SYS_USER"/openrc 2>/dev/null)
+            if [ -n "$OPENRC" ]; then
+                TMP_USER=$(echo "$OPENRC" | grep -oP 'OS_USERNAME=\K.*' | tr -d "'\"\r")
+                [ -n "$TMP_USER" ] && OS_USERNAME="$TMP_USER"
+                
+                TMP_DOM=$(echo "$OPENRC" | grep -oP 'OS_USER_DOMAIN_NAME=\K.*' | tr -d "'\"\r")
+                [ -n "$TMP_DOM" ] && OS_DOMAIN="$TMP_DOM"
+            fi
+            
+            # Fallback Domain via Keystone config if missing from openrc
+            if [ -z "$OS_DOMAIN" ]; then
+                TMP_DOM=$(lxc exec "$VM_NAME" --project "$LXD_PROJECT" -- su - "$SYS_USER" -c "juju config -m $TARGET_MODEL keystone admin-domain-name 2>/dev/null" | tr -d '\r')
+                [ -n "$TMP_DOM" ] && [ "$TMP_DOM" != "null" ] && OS_DOMAIN="$TMP_DOM"
+            fi
+            
+            # Get admin password via Keystone
+            ACTION_CMD="juju run -m $TARGET_MODEL keystone/leader get-admin-password 2>/dev/null || juju run-action -m $TARGET_MODEL keystone/leader get-admin-password --wait 2>/dev/null"
+            TMP_PASS=$(lxc exec "$VM_NAME" --project "$LXD_PROJECT" -- su - "$SYS_USER" -c "$ACTION_CMD" | grep -oP 'admin-password:\s*\K\S+' | head -n 1 | tr -d '\r')
+            [ -n "$TMP_PASS" ] && [ "$TMP_PASS" != "null" ] && OS_PASSWORD="$TMP_PASS"
         fi
+    fi
+    
+    if [ -n "$HORIZON_IP" ] && [ "$HORIZON_IP" != "null" ]; then
+        
+        # Apply standard fallbacks just in case the extraction files were empty
+        [ -z "$OS_USERNAME" ] && OS_USERNAME="admin"
+        [ -z "$OS_DOMAIN" ] && OS_DOMAIN="admin_domain"
+        
+        echo -e "${BYELLOW}  --- Login Credentials ---${NC}"
+        echo -e "${BYELLOW}  Username: ${NC}${OS_USERNAME}"
+        if [ -n "$OS_PASSWORD" ]; then
+            echo -e "${BYELLOW}  Password: ${NC}${OS_PASSWORD}"
+        else
+            echo -e "${BYELLOW}  Password: ${NC}${BRED}(Could not fetch automatically)${NC}"
+        fi
+        echo -e "${BYELLOW}  Domain:   ${NC}${OS_DOMAIN}"
+        echo ""
+        
+        # Append to access file
+        echo "[ OpenStack Horizon Dashboard ]" >> "$ACCESS_FILE"
+        echo "  Username: ${OS_USERNAME}" >> "$ACCESS_FILE"
+        echo "  Password: ${OS_PASSWORD:-(Could not fetch automatically)}" >> "$ACCESS_FILE"
+        echo "  Domain:   ${OS_DOMAIN}" >> "$ACCESS_FILE"
+        
+        if [ -n "$SSH_CLIENT" ] || [ -n "$SSH_TTY" ] || [ -n "$SSH_CONNECTION" ]; then
+            REMOTE_USER=$(whoami)
+            SERVER_IP_GUESS=$(echo "${SSH_CONNECTION:-}" | awk '{print $3}')
+            SERVER_IP_STR=${SERVER_IP_GUESS:-<SERVER_IP>}
+            
+            echo -e "${BYELLOW}  Remote SSH Session Detected!${NC}"
+            echo "  To access the Horizon dashboard locally, open a new terminal tab on your host and run:"
+            echo ""
+            echo -e "${BYELLOW}  Run:${NC} ssh -N -L 8088:${HORIZON_IP}:${HORIZON_PORT} ${REMOTE_USER}@${SERVER_IP_STR}"
+            echo -e "${BYELLOW}  URL:${NC} http://localhost:8088${HORIZON_PATH}"
+            echo ""
+            
+            # Append to access file
+            echo "  Tunnel:   ssh -N -L 8088:${HORIZON_IP}:${HORIZON_PORT} ${REMOTE_USER}@${SERVER_IP_STR}" >> "$ACCESS_FILE"
+            echo "  URL:      http://localhost:8088${HORIZON_PATH}" >> "$ACCESS_FILE"
+            echo "" >> "$ACCESS_FILE"
+            
+            pause_to_continue "Press Enter to drop into the final interactive shell..."
+        else
+            echo -e "${BYELLOW}  Horizon Dashboard:${NC} $HORIZON_URL"
+            echo ""
+            
+            # Append to access file
+            echo "  URL:      $HORIZON_URL" >> "$ACCESS_FILE"
+            echo "" >> "$ACCESS_FILE"
+            
+            echo -e "${BYELLOW}  Local session detected. Opening Horizon Dashboard...${NC}"
+            if command -v xdg-open &> /dev/null; then
+                xdg-open "$HORIZON_URL" > /dev/null 2>&1 &
+            fi
+        fi
+    else
+        echo -e "  ${BRED}Could not automatically determine the Horizon URL/IP.${NC}"
+        echo "  (The dashboard unit may not be deployed or is still initializing)."
     fi
 else
     echo ""
-    echo -e "${BYELLOW}-> 5. Skipping MAAS Dashboard... (no MAAS detected)${NC}"
-    echo ""
+    echo -e "${BYELLOW}-> 6. Skipping Horizon Dashboard... (no OpenStack detected)${NC}"
 fi
 
 # ==========================================
 # FINAL SSH SHELL
 # ==========================================
 
-# 6. Final Interactive Shell
+# 7. Final Interactive Shell
 echo ""
-echo -e "${BYELLOW}-> 6. Dropping into interactive shell...${NC}"
+echo -e "${BYELLOW}-> 7. Dropping into interactive shell...${NC}"
 echo ""
 
 # Define SSH options dynamically
