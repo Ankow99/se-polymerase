@@ -9,6 +9,7 @@ At the core of the project is `synth`, a standalone LXD orchestrator that acts a
 * Supports nested LXD architectures or bare-metal LXD daemons.
 * Provisions `ipv4.nat` bridges, calculates CIDR gateways, and validates DHCP settings to prevent collisions.
 * Auto-injects local or Launchpad SSH keys and establishes secure SSH tunnel for dashboard port-forwarding.
+* Generates an `access-<project_name>.txt` manifest containing all URLs, local-forwarding tunnels, and passwords.
 * Tails `cloud-init` logs and seamlessly transitions to a live juju status watch-loop.
 * Generates a project-specific teardown script to destroy the LXD project, un-trust certificates, and remove dynamic networks.
 
@@ -60,7 +61,7 @@ Invoke the script against a cloud-init template:
 | `-a, --accept-defaults` | Bypass interactive CLI prompts and auto-accept all template defaults. |
 | `-n, --nested` | Deploy using a nested LXD architecture. |
 | `-d, --deb` | Force DEB packages for MAAS instead of the default snap. |
-| `--lp <id>` | Import SSH public keys from a Launchpad account. |
+| `-i, --id <lp_id>` | Import SSH public keys directly from a Launchpad account. |
 
 ### Examples
 
@@ -71,8 +72,20 @@ Deploy interactively with a custom ID:
 
 Deploy an automated nested cluster using Launchpad keys:
 ```bash
-./synth -a -n --lp pgdg99 Openstack/focal-ussuri.yaml
+./synth -a -n -i pgdg99 Openstack/focal-ussuri.yaml
 ```
+
+---
+
+## Access & Dashboards
+
+If `synth` detects that you are deploying over a remote SSH session, it will automatically calculate and provide the exact `ssh -L` port-forwarding commands required to access the internal dashboards (LXD, MAAS, OpenStack Horizon) securely from your local browser. 
+
+Additionally, `synth` performs dynamic credential extraction:
+* LXD UI: Automatically generates and displays a volatile trust token.
+* OpenStack Horizon: Natively queries Juju (or the `sunbeam` snap) to extract the dashboard VIP, Domain, Username, and Admin Password.
+
+All of these credentials, URLs, and tunnel commands are safely appended to an `access-<project_name>.txt` file generated in the same directory as your payload, ensuring you don't lose them if your terminal buffer clears.
 
 ---
 
@@ -80,7 +93,7 @@ Deploy an automated nested cluster using Launchpad keys:
 
 `synth` generates a `destroy-<project_name>.sh` file in the same directory as the payload. 
 
-Execute this script to wipe the LXD project, stop and delete instances, and remove the associated dynamic networks.
+Execute this script to wipe the LXD project, stop and delete instances, un-trust volatile certificates, remove the access manifest, and clean up the associated dynamic networks.
 
 ```bash
 ./destroy-maas-00436900.sh
