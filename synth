@@ -3,23 +3,27 @@
 # se-polymerase (synth)
 # Acts as the polymerase to synthesize an isolated, terraform-free LXD 
 # reproducer environment using the host's LXD for MAAS + Juju deployments.
-# version: 5.0.0
+# version: 5.1.0
 #
 # Synthesized by: Pablo Gonzalez De Greiff @ Canonical
 # ---
 
 set +e
 
-# Unified unique deployment ID (Can be changed to case number - 8 numbers)
-DEPLOY_ID="$(openssl rand -hex 4)"
+# Capture original arguments for headless re-execution
+ORIG_ARGS=("$@")
+
+# Unified unique deployment ID (Can be changed to case number - 8 numbers) (Inherit from parent if forked)
+DEPLOY_ID="${DEPLOY_ID:-$(openssl rand -hex 4)}"
 
 # Array to hold dynamic LXD Jinja flags
 LXC_OPTIONAL_ARGS=()
 
 # Deployment variables
-NESTED=false
-ACCEPT_DEFAULTS=false
-CLEANUP_HANDOVER=false
+NESTED=false # Use nested LXD instead of host's LXD (performance degradation)
+HEADLESS=false # Headless mode flag
+ACCEPT_DEFAULTS=false # Auto accept all defaults flag
+CLEANUP_HANDOVER=false # Emergency rollback cleanup handover flag
 CLOUD_INIT_LOG_LINES=7 # Lines to show while Juju status watch
 MAX_WAIT=300 # Maximum wait time in seconds for loops
 
@@ -52,14 +56,15 @@ ${BYELLOW}Options:${NC}
   -n, --nested              Deploy using a nested LXD architecture (default is non-nested).
   -d, --deb                 Use DEB packages for MAAS instead of the default snap.
   -i, --id <launchpad_id>   Import SSH public keys directly from a Launchpad account.
+  --headless                Run in the background, auto-accept defaults, and log output to a file.
 
 ${BYELLOW}Arguments:${NC}
   CLOUD_INIT_FILE           Path to the cloud-init.yaml template to deploy.
   DEPLOY_ID                 Specify a custom alphanumeric deployment ID (max 8 chars).
 
 ${BYELLOW}Example:${NC}
-  # Synthesize a nested environment accepting all defaults, and use '00426900' as the ID:
-  $0 sunbeam/cloud-init.yaml -an 00426900
+  # Synthesize an environment accepting all defaults, using deb MAAS, and use '00426900' as the ID:
+  $0 sunbeam/cloud-init.yaml -ad 00426900
 
 EOF
     )"
@@ -509,6 +514,11 @@ while [[ $# -gt 0 ]]; do
             LXC_OPTIONAL_ARGS+=("-c" "user.ssh_import_id=lp:$2")
             shift 2
             ;;
+        --headless)
+            HEADLESS=true
+            ACCEPT_DEFAULTS=true
+            shift 1
+            ;;
         -*)
             echo -e "${BRED}Error: Unknown flag '${NC}${1}${BRED}'${NC}"
             exit 1
@@ -610,32 +620,46 @@ trap 'emergency_rollback; exit 1' INT TERM
 # INTERACTIVE VARIABLE COLLECTION
 # ==========================================
 
+# Obtain primary VM variables
 REPRO_NAME=$(get_default "repro_name")
 PRETTY_REPRO=$(echo "$REPRO_NAME" | awk '{print toupper(substr($0,1,1))substr($0,2)}')
 VM_NAME=$(get_default "vm_name")
 IMAGE=$(get_default "vm_image")
 
-# Generate the random resources using the specific prefix + unified ID (8 hex chars)
-VOLATILE_CERT_NAME="${REPRO_NAME}-cert-${DEPLOY_ID}"
-
 # Obtain Juju watch variables
 JUJU_TRIGGER_MSG=$(get_default "juju_trigger")
 JUJU_MODELS=$(get_default "juju_models")
 
-if [ "$ACCEPT_DEFAULTS" = false ]; then
-    echo -e "${BYELLOW}-> -------- Dynamic ${PRETTY_REPRO} Payload Configuration ---------${NC}"
-    echo ""
-fi
-
-# Prompt for the host's unique LXD Project Name
+# Default project name using the specific prefix + unified ID (8 hex chars)
 DEFAULT_PROJECT="${REPRO_NAME}-${DEPLOY_ID}"
 
+# Prompt for the host's unique LXD Project Name
 if [ "$ACCEPT_DEFAULTS" = true ]; then
     LXD_PROJECT="$DEFAULT_PROJECT"
 else
+    echo -e "${BYELLOW}-> -------- Dynamic ${PRETTY_REPRO} Payload Configuration ---------${NC}"
+    echo ""
     echo -ne "  ${BYELLOW}Host LXD Project Name [${NC}${DEFAULT_PROJECT}${BYELLOW}]: ${NC}"
     read -r user_input </dev/tty
     LXD_PROJECT="${user_input:-$DEFAULT_PROJECT}"
+fi
+
+# Generate the random resources using the selected LXD project name
+VOLATILE_CERT_NAME="cert-${LXD_PROJECT}"
+
+# Headless background handshake
+if [ "$HEADLESS" = true ] && [ "$IS_BG_RUN" != "true" ]; then
+    # Set the log path to mirror the destruction script directory and project name
+    LOG_FILE="$SCRIPT_DIR/synth-${LXD_PROJECT}.log"
+    
+    echo -e "${BYELLOW}-> Launching in headless background mode...${NC}"
+    echo -e "  All output redirected to: ${BYELLOW}${LOG_FILE}${NC}"
+    echo ""
+    
+    export IS_BG_RUN="true"
+    export DEPLOY_ID="$DEPLOY_ID"
+    nohup "$0" "${ORIG_ARGS[@]}" < /dev/null > "$LOG_FILE" 2>&1 &
+    exit 0
 fi
 
 # Inject project name only if non-nested
@@ -981,6 +1005,14 @@ LXC_OPTIONAL_ARGS+=("-n" "$PRIMARY_BRIDGE")
 # CREATE LXD PROJECT
 # ==========================================
 
+# Discover storage pool
+if [ -z "$LXD_POOL" ]; then
+    LXD_POOL=$(lxc profile device get default root pool 2>/dev/null || lxc storage list --format json | jq -r '.[0].name')
+    if [ -z "$LXD_POOL" ] || [ "$LXD_POOL" = "null" ]; then
+        LXD_POOL="default"
+    fi
+fi
+
 # Create LXD Project
 if [ "$LXD_PROJECT" != "default" ]; then
     if ! lxc project list | grep -q " $LXD_PROJECT "; then
@@ -993,16 +1025,9 @@ if [ "$LXD_PROJECT" != "default" ]; then
         lxc project create "$LXD_PROJECT" -c features.images=true -c features.profiles=true -c features.storage.volumes=true
         lxc project set "$LXD_PROJECT" --property description="${PRETTY_REPRO} Isolated Environment ($DEPLOY_ID)"
         
-        if [ -z "$LXD_POOL" ]; then
-            LXD_POOL=$(lxc profile device get default root pool 2>/dev/null || lxc storage list --format json | jq -r '.[0].name')
-            if [ -z "$LXD_POOL" ] || [ "$LXD_POOL" = "null" ]; then
-                LXD_POOL="default"
-            fi
-        fi
-        
         # Initialize the blank default profile with a root disk and MAAS bridge
         lxc profile device add default root disk path=/ pool="$LXD_POOL" --project "$LXD_PROJECT"
-
+        
         # Only attach the MAAS bridge to the host profile if non-nested
         if [ "$NESTED" = false ]; then
             lxc profile device add default eth0 nic network="$PRIMARY_BRIDGE" name=eth0 --project "$LXD_PROJECT"
@@ -1023,10 +1048,12 @@ echo ""
 
 # Initialize the access file to save SSH tunnels and credentials
 ACCESS_FILE="$SCRIPT_DIR/access-${LXD_PROJECT}.txt"
-echo "==========================================" > "$ACCESS_FILE"
-echo " Access Details for ${LXD_PROJECT}" >> "$ACCESS_FILE"
-echo "==========================================" >> "$ACCESS_FILE"
-echo "" >> "$ACCESS_FILE"
+{
+    echo "=========================================="
+    echo " Access Details for ${LXD_PROJECT}"
+    echo "=========================================="
+    echo ""
+} > "$ACCESS_FILE"
 
 LXD_UI_URL="https://localhost:8443/ui/project/${LXD_PROJECT}/instances"
 
@@ -1045,9 +1072,11 @@ if [ -n "$SSH_CLIENT" ] || [ -n "$SSH_TTY" ] || [ -n "$SSH_CONNECTION" ]; then
     echo ""
 
     # Append to access file
-    echo "  Tunnel:   ssh -N -L 8444:localhost:8443 ${REMOTE_USER}@${SERVER_IP_STR}" >> "$ACCESS_FILE"
-    echo "  URL:      https://localhost:8444/ui/project/${LXD_PROJECT}/instances" >> "$ACCESS_FILE"
-    echo "" >> "$ACCESS_FILE"
+    {
+        echo "  Tunnel:   ssh -N -L 8444:localhost:8443 ${REMOTE_USER}@${SERVER_IP_STR}"
+        echo "  URL:      https://localhost:8444/ui/project/${LXD_PROJECT}/instances"
+        echo ""
+    } >> "$ACCESS_FILE"
     
     # Generate and display the trust token for the UI
     echo -e "${BYELLOW}  Generating LXD UI Trust Token...${NC}"
@@ -1073,8 +1102,10 @@ else
     echo ""
     
     # Append to access file
-    echo "  URL:      $LXD_UI_URL" >> "$ACCESS_FILE"
-    echo "" >> "$ACCESS_FILE"
+    {
+        echo "  URL:      $LXD_UI_URL"
+        echo ""
+    } >> "$ACCESS_FILE"
     
     echo -e "${BYELLOW}  Local session detected. Opening LXD Dashboard...${NC}"
     if command -v xdg-open &> /dev/null; then
@@ -1203,15 +1234,15 @@ rmdir "$CERT_DIR" 2>/dev/null || true
 EOF
 fi
 
-# 4. Footer
+# 4. Access file removal & Footer
 cat << EOF >> "$CLEANUP_SCRIPT"
 
-echo -e "${BYELLOW}-> Removing Access Info File:${NC} access-${LXD_PROJECT}.txt"
+echo -e "${BYELLOW}-> Removing Access Info File:${NC} $ACCESS_FILE"
 
 if [ -f "$ACCESS_FILE" ]; then
     rm -f "$ACCESS_FILE"
 else
-    echo "Access info file 'access-${LXD_PROJECT}.txt' not found, skipping..."
+    echo "Access info file '$ACCESS_FILE' not found, skipping..."
 fi
 echo ""
 
@@ -1288,9 +1319,11 @@ if grep -q "custom_maas_" "$CLOUD_INIT"; then
         echo ""
         
         # Append to access file
-        echo "  Tunnel:   ssh -N -L 5241:$IP:5240 ${REMOTE_USER}@${SERVER_IP_STR}" >> "$ACCESS_FILE"
-        echo "  URL:      http://localhost:5241/MAAS/" >> "$ACCESS_FILE"
-        echo "" >> "$ACCESS_FILE"
+        {
+            echo "  Tunnel:   ssh -N -L 5241:$IP:5240 ${REMOTE_USER}@${SERVER_IP_STR}"
+            echo "  URL:      http://localhost:5241/MAAS/"
+            echo ""
+        } >> "$ACCESS_FILE"
         
         pause_to_continue "Press Enter to continue with live cloud-init log tailing..."
     else
@@ -1298,8 +1331,10 @@ if grep -q "custom_maas_" "$CLOUD_INIT"; then
         echo ""
         
         # Append to access file
-        echo "  URL:      http://$IP:5240/MAAS/" >> "$ACCESS_FILE"
-        echo "" >> "$ACCESS_FILE"
+        {
+            echo "  URL:      http://$IP:5240/MAAS/"
+            echo ""
+        } >> "$ACCESS_FILE"
         
         echo -e "${BYELLOW}  Local session detected. Opening MAAS Dashboard...${NC}"
         if command -v xdg-open &> /dev/null; then
@@ -1582,10 +1617,12 @@ except Exception:
         echo ""
         
         # Append to access file
-        echo "[ OpenStack Horizon Dashboard ]" >> "$ACCESS_FILE"
-        echo "  Username: ${OS_USERNAME}" >> "$ACCESS_FILE"
-        echo "  Password: ${OS_PASSWORD:-(Could not fetch automatically)}" >> "$ACCESS_FILE"
-        echo "  Domain:   ${OS_DOMAIN}" >> "$ACCESS_FILE"
+        {
+            echo "[ OpenStack Horizon Dashboard ]"
+            echo "  Username: ${OS_USERNAME}"
+            echo "  Password: ${OS_PASSWORD:-(Could not fetch automatically)}"
+            echo "  Domain:   ${OS_DOMAIN}"
+        } >> "$ACCESS_FILE"
         
         if [ -n "$SSH_CLIENT" ] || [ -n "$SSH_TTY" ] || [ -n "$SSH_CONNECTION" ]; then
             REMOTE_USER=$(whoami)
@@ -1600,9 +1637,11 @@ except Exception:
             echo ""
             
             # Append to access file
-            echo "  Tunnel:   ssh -N -L 8088:${HORIZON_IP}:${HORIZON_PORT} ${REMOTE_USER}@${SERVER_IP_STR}" >> "$ACCESS_FILE"
-            echo "  URL:      http://localhost:8088${HORIZON_PATH}" >> "$ACCESS_FILE"
-            echo "" >> "$ACCESS_FILE"
+            {
+                echo "  Tunnel:   ssh -N -L 8088:${HORIZON_IP}:${HORIZON_PORT} ${REMOTE_USER}@${SERVER_IP_STR}"
+                echo "  URL:      http://localhost:8088${HORIZON_PATH}"
+                echo ""
+            } >> "$ACCESS_FILE"
             
             pause_to_continue "Press Enter to drop into the final interactive shell..."
         else
@@ -1610,8 +1649,10 @@ except Exception:
             echo ""
             
             # Append to access file
-            echo "  URL:      $HORIZON_URL" >> "$ACCESS_FILE"
-            echo "" >> "$ACCESS_FILE"
+            {
+                echo "  URL:      $HORIZON_URL"
+                echo ""
+            } >> "$ACCESS_FILE"
             
             echo -e "${BYELLOW}  Local session detected. Opening Horizon Dashboard...${NC}"
             if command -v xdg-open &> /dev/null; then
@@ -1631,11 +1672,6 @@ fi
 # FINAL SSH SHELL
 # ==========================================
 
-# 7. Final Interactive Shell
-echo ""
-echo -e "${BYELLOW}-> 7. Dropping into interactive shell...${NC}"
-echo ""
-
 # Define SSH options dynamically
 if [ -f "$SSH_ID" ]; then
     SSH_OPTS=(-i "$SSH_ID" -o "StrictHostKeyChecking=no" -o "UserKnownHostsFile=/dev/null")
@@ -1643,8 +1679,19 @@ else
     SSH_OPTS=(-o "StrictHostKeyChecking=no" -o "UserKnownHostsFile=/dev/null")
 fi
 
-# shellcheck disable=SC2029
-ssh "${SSH_OPTS[@]}" "${SYS_USER}@$IP"
+# 7. Final Interactive Shell
+if [ "$HEADLESS" = false ]; then
+    echo ""
+    echo -e "${BYELLOW}-> 7. Dropping into interactive shell...${NC}"
+    echo ""
+    
+    # shellcheck disable=SC2029
+    ssh "${SSH_OPTS[@]}" "${SYS_USER}@$IP"
+else
+    echo ""
+    echo -e "${BYELLOW}-> 7. Deployment complete! Connect to your environment using:${NC}"
+    echo "  ssh ${SSH_OPTS[*]} ${SYS_USER}@$IP"
+fi
 
 # ==========================================
 # DONE

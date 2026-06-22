@@ -11,6 +11,7 @@ At the core of the project is `synth`, a standalone LXD orchestrator that acts a
 * Auto-injects local or Launchpad SSH keys and establishes secure SSH tunnel for dashboard port-forwarding.
 * Generates an `access-<project_name>.txt` manifest containing all URLs, local-forwarding tunnels, and passwords.
 * Tails `cloud-init` logs and seamlessly transitions to a live juju status watch-loop.
+* Supports a detached `--headless` mode for asynchronous background deployments and execution logging.
 * Generates a project-specific teardown script to destroy the LXD project, un-trust certificates, and remove dynamic networks.
 
 ---
@@ -62,6 +63,7 @@ Invoke the script against a cloud-init template:
 | `-n, --nested` | Deploy using a nested LXD architecture. |
 | `-d, --deb` | Force DEB packages for MAAS instead of the default snap. |
 | `-i, --id <lp_id>` | Import SSH public keys directly from a Launchpad account. |
+| `--headless` | Run `synth` in the background, auto-accept all defaults, and redirect output to a `synth-<project_name>.log` file. |
 
 ### Examples
 
@@ -70,9 +72,14 @@ Deploy interactively with a custom ID:
 ./synth Sunbeam/sunbeam.yaml 00426900
 ```
 
-Deploy an automated nested cluster using Launchpad keys:
+Deploy an automated cluster using deb MAAS and Launchpad keys:
 ```bash
-./synth -a -n -i pgdg99 Openstack/focal-ussuri.yaml
+./synth -a -d -i pgdg99 Openstack/focal-ussuri.yaml
+```
+
+Deploy headless in the background (output is redirected to `synth-<project_name>.log`):
+```bash
+./synth Sunbeam/sunbeam.yaml --headless
 ```
 
 ---
