@@ -1,7 +1,7 @@
 # Transcript: Sunbeam
 
 ## Description
-A fully automated, scalable OpenStack environment deployed via Canonical Sunbeam on top of MAAS. This Transcript synthesizes a primary MAAS controller, provisions a fleet of LXD virtual machines, enlists them as bare-metal nodes, and executes the Sunbeam cluster bootstrap and deployment processes. It serves as a comprehensive reproducer for microk8s-based OpenStack architectures using the Sunbeam snap.
+A fully automated, scalable OpenStack environment deployed via Canonical Sunbeam on top of MAAS. This Transcript synthesizes a primary MAAS controller, provisions a fleet of LXD virtual machines, enlists them as bare-metal nodes, and executes the Sunbeam cluster bootstrap and deployment processes. It serves as a comprehensive reproducer for Canonical OpenStack architectures deployed using Sunbeam.
 
 ## Requirements
 To successfully synthesize this environment, your host machine must meet the following minimum specifications using the default topology.
@@ -36,6 +36,7 @@ When launching this Transcript, `synth` will parse the payload and optionally pr
 | maas_cidr | 10.10.0.0/22 | Subnet CIDR for the MAAS network |
 | maas_ip_count | 30 | Number of IPs to reserve for the MAAS dynamic DHCP pool |
 | os_deployment | sunbeam | Internal logical name for the Sunbeam deployment |
+| os_run_demo | True | Run the Sunbeam demo user setup |
 | os_neutron_bridge | nbr0 | Name of the dedicated Neutron network bridge |
 | os_neutron_cidr | 10.20.0.0/22 | Subnet CIDR for the OpenStack provider network |
 | os_pub_api_ip_count | 50 | Number of IPs to reserve for the OpenStack Public API |
@@ -74,7 +75,7 @@ Deploy with a nested LXD architecture, prompt for all variables interactively, a
 ## Access and Cleanup
 Once the payload finishes executing, `synth` will automatically drop you into a secure multiplexed SSH shell connected to the primary MAAS controller.
 
-A `sunrc` file is automatically generated in your user directory and sourced at login. You can interact with the OpenStack CLI and manage the newly deployed cloud:
+Both an `admin-openrc` and a `demo-openrc` (if `os_run_demo` is true) file are automatically generated in your user directory. The `admin-openrc` file is automatically sourced at login. You can interact with the OpenStack CLI and manage the newly deployed cloud:
 ```bash
 openstack server list
 ```
