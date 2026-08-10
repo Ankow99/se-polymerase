@@ -950,7 +950,7 @@ runcmd:
     # Tag main disks as SSDs
     echo "\n\n-------- Tagging main disks as SSDs for '$HOST'... --------\n"
     
-    MAIN_BLOCK_ID=$(maas $ADMIN_USER block-devices read $SYSTEM_ID | jq -r '.[] | select(.serial == "lxd_root" or ((.name == "sda" or .name == "vda") and (.serial | tostring | contains("lxd_osd") | not))) | .id' | head -n 1)
+    MAIN_BLOCK_ID=$(maas $ADMIN_USER block-devices read $SYSTEM_ID | jq -r '.[] | select(.serial | tostring | contains("lxd_osd") | not) | .id' | head -n 1)
     if [ -n "$MAIN_BLOCK_ID" ] && [ "$MAIN_BLOCK_ID" != "null" ]; then
       maast $ADMIN_USER block-device add-tag $SYSTEM_ID $MAIN_BLOCK_ID tag=ssd
       maast $ADMIN_USER block-device remove-tag $SYSTEM_ID $MAIN_BLOCK_ID tag=rotary
