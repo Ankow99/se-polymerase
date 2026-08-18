@@ -1,5 +1,6 @@
 .certs/
 destroy-*
 access-*
+log-*
 credentials
 source/

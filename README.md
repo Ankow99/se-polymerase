@@ -7,12 +7,14 @@ At the core of the project is `synth`, a standalone LXD orchestrator that acts a
 ### Key Features
 * Parses Jinja `cloud-config.yaml` payloads to dynamically calculate hardware requirements and generate interactive CLI prompts.
 * Supports nested LXD architectures or bare-metal LXD daemons.
+* Leverages the host's LXD image cache by default to massively speed up VM provisioning, with an option to isolate images per project.
 * Provisions `ipv4.nat` bridges, calculates CIDR gateways, and validates DHCP settings to prevent collisions.
-* Auto-injects local or Launchpad SSH keys and establishes secure SSH tunnel for dashboard port-forwarding.
-* Generates an `access-<project_name>.txt` manifest containing all URLs, local-forwarding tunnels, and passwords.
+* Auto-injects local or Launchpad SSH keys and establishes secure SSH tunnels for dashboard port-forwarding.
+* Generates an `access-<project_name>.txt` manifest containing all URLs, local-forwarding tunnels, passwords, and a final cluster IP inventory table.
 * Tails `cloud-init` logs and seamlessly transitions to a live juju status watch-loop.
-* Supports a detached `--headless` mode for asynchronous background deployments and execution logging.
-* Generates a project-specific teardown script to destroy the LXD project, un-trust certificates, and remove dynamic networks.
+* Automatically records all deployment stdout/stderr to a `log-<project_name>.log` file.
+* Seamless Background Detachment: Press `Ctrl+C` at any time during the deployment phase to instantly drop back to your local terminal while `synth` finishes provisioning and logging in the background.
+* Generates a project-specific teardown script to safely destroy the LXD project, un-trust certificates, and remove dynamic networks.
 
 ---
 
@@ -59,11 +61,11 @@ Invoke the script against a cloud-init template:
 | Flag | Description |
 | :--- | :--- |
 | `-h, --help` | Show the help menu. |
-| `-a, --accept-defaults` | Bypass interactive CLI prompts and auto-accept all template defaults. |
+| `-y, --yes` | Bypass interactive CLI prompts and auto-accept all template defaults. |
 | `-n, --nested` | Deploy using a nested LXD architecture. |
 | `-d, --deb` | Force DEB packages for MAAS instead of the default snap. |
 | `-i, --id <lp_id>` | Import SSH public keys directly from a Launchpad account. |
-| `--headless` | Run `synth` in the background, auto-accept all defaults, and redirect output to a `synth-<project_name>.log` file. |
+| `-I, --isolate-images` | Isolate LXD images per project (disables host image sharing). |
 
 ### Examples
 
@@ -74,12 +76,12 @@ Deploy interactively with a custom ID:
 
 Deploy an automated cluster using deb MAAS and Launchpad keys:
 ```bash
-./synth -a -d -i pgdg99 Openstack/focal-ussuri.yaml
+./synth -y -d -i pgdg99 Openstack/focal-ussuri.yaml
 ```
 
-Deploy headless in the background (output is redirected to `synth-<project_name>.log`):
+Run a fully automated background deployment (Start it, and press `Ctrl+C` to detach once the logs begin):
 ```bash
-./synth Sunbeam/sunbeam.yaml --headless
+./synth -y Sunbeam/sunbeam.yaml
 ```
 
 ---
@@ -91,6 +93,7 @@ If `synth` detects that you are deploying over a remote SSH session, it will aut
 Additionally, `synth` performs dynamic credential extraction:
 * LXD UI: Automatically generates and displays a volatile trust token.
 * OpenStack Horizon: Natively queries Juju (or the `sunbeam` snap) to extract the dashboard VIP, Domain, Username, and Admin Password.
+* Cluster Inventory: Captures all node hostnames, states, and IPv4 addresses.
 
 All of these credentials, URLs, and tunnel commands are safely appended to an `access-<project_name>.txt` file generated in the same directory as your payload, ensuring you don't lose them if your terminal buffer clears.
 
@@ -100,7 +103,7 @@ All of these credentials, URLs, and tunnel commands are safely appended to an `a
 
 `synth` generates a `destroy-<project_name>.sh` file in the same directory as the payload. 
 
-Execute this script to wipe the LXD project, stop and delete instances, un-trust volatile certificates, remove the access manifest, and clean up the associated dynamic networks.
+Execute this script to wipe the LXD project, stop and delete instances, un-trust volatile certificates, remove the access manifest and logs, and clean up the associated dynamic networks.
 
 ```bash
 ./destroy-maas-00436900.sh

@@ -3,15 +3,15 @@
 # se-polymerase (synth)
 # Acts as the polymerase to synthesize an isolated, terraform-free LXD 
 # reproducer environment using the host's LXD for MAAS + Juju deployments.
-# version: 5.1.0
+# version: 6.0.0
 #
 # Synthesized by: Pablo Gonzalez De Greiff @ Canonical
 # ---
 
 set +e
 
-# Capture original arguments for headless re-execution
-ORIG_ARGS=("$@")
+# Save original stdout/stderr for later restoration (needed for final interactive ssh and UI separation)
+exec 3>&1 4>&2
 
 # Unified unique deployment ID (Can be changed to case number - 8 numbers) (Inherit from parent if forked)
 DEPLOY_ID="${DEPLOY_ID:-$(openssl rand -hex 4)}"
@@ -21,9 +21,10 @@ LXC_OPTIONAL_ARGS=()
 
 # Deployment variables
 NESTED=false # Use nested LXD instead of host's LXD (performance degradation)
-HEADLESS=false # Headless mode flag
 ACCEPT_DEFAULTS=false # Auto accept all defaults flag
+SHARED_IMAGES=true # Share host LXD images by default (false = isolated images per project)
 CLEANUP_HANDOVER=false # Emergency rollback cleanup handover flag
+PROJECT_CREATED=false # Tracks if it created the LXD project to prevent wiping existing ones
 CLOUD_INIT_LOG_LINES=7 # Lines to show while Juju status watch
 MAX_WAIT=300 # Maximum wait time in seconds for loops
 
@@ -49,14 +50,15 @@ ${BYELLOW}se-polymerase: LXD Reproducer Synthesis Automation${NC}
 Usage: $0 [OPTIONS] <CLOUD_INIT_FILE> [DEPLOY_ID]
 
 Acts as the polymerase to synthesize an isolated, cloud-init based LXD reproducer environment.
+Logs are always saved to 'log-<LXD_PROJECT>.log'. Once the deployment phase begins, you can safely press Ctrl+C to detach your terminal and let it finish in the background.
 
 ${BYELLOW}Options:${NC}
   -h, --help                Show this help message and exit.
-  -a, --accept-defaults     Bypass interactive prompts and accept all defaults.
+  -y, --yes                 Bypass interactive prompts and accept all defaults.
   -n, --nested              Deploy using a nested LXD architecture (default is non-nested).
   -d, --deb                 Use DEB packages for MAAS instead of the default snap.
   -i, --id <launchpad_id>   Import SSH public keys directly from a Launchpad account.
-  --headless                Run in the background, auto-accept defaults, and log output to a file.
+  -I, --isolate-images      Isolate LXD images per project (disables host image sharing).
 
 ${BYELLOW}Arguments:${NC}
   CLOUD_INIT_FILE           Path to the cloud-init.yaml template to deploy.
@@ -64,7 +66,7 @@ ${BYELLOW}Arguments:${NC}
 
 ${BYELLOW}Example:${NC}
   # Synthesize an environment accepting all defaults, using deb MAAS, and use '00426900' as the ID:
-  $0 sunbeam/cloud-init.yaml -ad 00426900
+  $0 sunbeam/cloud-init.yaml -yd 00426900
 
 EOF
     )"
@@ -75,12 +77,20 @@ emergency_rollback() {
     # If the script dies before the destroy.sh script is created, clean up the host
     if [ "$CLEANUP_HANDOVER" = false ]; then
         
+        # Kill the UI tailer if it's running
+        [ -n "$TAIL_PID" ] && kill "$TAIL_PID" 2>/dev/null
+        exec 1>&3 2>&4 # Restore terminal output
+        
         local rollback_needed=false
         
         # Fast checks for actionable resources
         if [ ${#CREATED_BRIDGES[@]} -gt 0 ] || { [ -n "$VOLATILE_CERT_NAME" ] && [ -f "$CERT_DIR/${VOLATILE_CERT_NAME}.crt" ]; }; then
             rollback_needed=true
-        elif [ -n "$LXD_PROJECT" ] && [ "$LXD_PROJECT" != "default" ] && lxc project list 2>/dev/null | grep -q " $LXD_PROJECT "; then
+        elif [ "$PROJECT_CREATED" = true ]; then
+            rollback_needed=true
+        elif [ -n "$LOG_FILE" ] && [ -f "$LOG_FILE" ]; then
+            rollback_needed=true
+        elif [ -n "$ACCESS_FILE" ] && [ -f "$ACCESS_FILE" ]; then
             rollback_needed=true
         fi
         
@@ -88,9 +98,10 @@ emergency_rollback() {
         if [ "$rollback_needed" = true ]; then
             echo ""
             echo -e "${BRED}Script interrupted! Performing emergency rollback of orphaned resources...${NC}"
-            sleep 5
+            sleep 3
             
-            if [ -n "$LXD_PROJECT" ] && [ "$LXD_PROJECT" != "default" ] && lxc project list 2>/dev/null | grep -q " $LXD_PROJECT "; then
+            # ONLY delete the project if this specific execution created it
+            if [ "$PROJECT_CREATED" = true ]; then
                 echo "-> Deleting orphaned LXD project: $LXD_PROJECT"
                 for inst in $(lxc list --project "$LXD_PROJECT" --format json | jq -r '.[].name'); do
                     lxc stop -f --project "$LXD_PROJECT" "$inst" 2>/dev/null || true
@@ -103,9 +114,12 @@ emergency_rollback() {
                     lxc storage volume delete "$LXD_POOL" "$vol" --project "$LXD_PROJECT"
                 done
                 
-                for img in $(lxc image list --project "$LXD_PROJECT" --format json | jq -r '.[].fingerprint'); do
-                    lxc image delete --project "$LXD_PROJECT" "$img"
-                done
+                # Only delete images if the project was created with isolated images
+                if [ "$SHARED_IMAGES" = false ]; then
+                    for img in $(lxc image list --project "$LXD_PROJECT" --format json | jq -r '.[].fingerprint'); do
+                        lxc image delete --project "$LXD_PROJECT" "$img"
+                    done
+                fi
                 
                 lxc project switch default 2>/dev/null
                 lxc project delete "$LXD_PROJECT"
@@ -126,6 +140,12 @@ emergency_rollback() {
                 fi
                 rm -f "$CERT_DIR/${VOLATILE_CERT_NAME}.crt" "$CERT_DIR/${VOLATILE_CERT_NAME}.key"
                 rmdir "$CERT_DIR" 2>/dev/null || true
+            fi
+            
+            # Clean up the log file on rollback
+            if [ -n "$LOG_FILE" ] && [ -f "$LOG_FILE" ]; then
+                echo "-> Cleaning up orphaned log file..."
+                rm -f "$LOG_FILE" 2>/dev/null || true
             fi
             
             # Clean up the access file on rollback
@@ -159,7 +179,7 @@ pause_to_continue() {
     fi
     
     echo -ne "${prompt_msg} "
-    read -r </dev/tty
+    read -r </dev/tty || true
 }
 
 confirm_or_abort() {
@@ -262,7 +282,7 @@ create_dynamic_bridge() {
             if [ "$current_dhcp" != "$dhcp_flag" ]; then
                 echo ""
                 echo -e "${BRED}Error: Existing bridge '${NC}${bridge_name}${BRED}' has 'ipv4.dhcp=${NC}${current_dhcp}${BRED}', but this network requires 'ipv4.dhcp=${NC}${dhcp_flag}${BRED}'!${NC}"
-                echo -e "Please specify a different bridge name or delete the conflicting bridge."
+                echo "Please specify a different bridge name or delete the conflicting bridge."
                 echo ""
                 if [ "$ACCEPT_DEFAULTS" = true ]; then
                     exit 1
@@ -278,7 +298,7 @@ create_dynamic_bridge() {
             if [ "$current_nat" != "true" ]; then
                 echo ""
                 echo -e "${BRED}Error: Existing bridge '${NC}${bridge_name}${BRED}' has 'ipv4.nat=${NC}${current_nat}${BRED}', but this network requires 'ipv4.nat=${NC}true${BRED}' for outbound internet!${NC}"
-                echo -e "Please specify a different bridge name or enable NAT on this bridge."
+                echo "Please specify a different bridge name or enable NAT on this bridge."
                 echo ""
                 if [ "$ACCEPT_DEFAULTS" = true ]; then
                     exit 1
@@ -492,7 +512,7 @@ while [[ $# -gt 0 ]]; do
         -h|--help)
             show_help
             ;;
-        -a|--accept-defaults)
+        -y|--yes)
             echo -e "${BYELLOW}-> Accepting all default template values${NC}"
             echo ""
             ACCEPT_DEFAULTS=true
@@ -514,9 +534,10 @@ while [[ $# -gt 0 ]]; do
             LXC_OPTIONAL_ARGS+=("-c" "user.ssh_import_id=lp:$2")
             shift 2
             ;;
-        --headless)
-            HEADLESS=true
-            ACCEPT_DEFAULTS=true
+        -I|--isolate-images)
+            echo -e "${BYELLOW}-> Isolating LXD images per project${NC}"
+            echo ""
+            SHARED_IMAGES=false
             shift 1
             ;;
         -*)
@@ -646,20 +667,23 @@ fi
 
 # Generate the random resources using the selected LXD project name
 VOLATILE_CERT_NAME="cert-${LXD_PROJECT}"
+CLEANUP_SCRIPT="$SCRIPT_DIR/destroy-${LXD_PROJECT}.sh"
+ACCESS_FILE="$SCRIPT_DIR/access-${LXD_PROJECT}.txt"
+LOG_FILE="$SCRIPT_DIR/log-${LXD_PROJECT}.log"
 
-# Headless background handshake
-if [ "$HEADLESS" = true ] && [ "$IS_BG_RUN" != "true" ]; then
-    # Set the log path to mirror the destruction script directory and project name
-    LOG_FILE="$SCRIPT_DIR/synth-${LXD_PROJECT}.log"
-    
-    echo -e "${BYELLOW}-> Launching in headless background mode...${NC}"
-    echo -e "  All output redirected to: ${BYELLOW}${LOG_FILE}${NC}"
-    echo ""
-    
-    export IS_BG_RUN="true"
-    export DEPLOY_ID="$DEPLOY_ID"
-    nohup "$0" "${ORIG_ARGS[@]}" < /dev/null > "$LOG_FILE" 2>&1 &
-    exit 0
+# Pre-flight check: Prevent deploying over an existing VM
+TARGET_VM_NAME="$VM_NAME"
+[ "$NESTED" = true ] && TARGET_VM_NAME="${LXD_PROJECT}"
+
+if lxc project list 2>/dev/null | grep -q " $LXD_PROJECT "; then
+    if lxc list --project "$LXD_PROJECT" -c n --format csv 2>/dev/null | grep -q "^${TARGET_VM_NAME}$"; then
+        echo ""
+        echo -e "${BRED}Error: VM '${TARGET_VM_NAME}' already exists in LXD project '${LXD_PROJECT}'.${NC}"
+        echo "Please use a different deployment ID or destroy the existing environment first."
+        # Disable the rollback so it exits completely silently
+        CLEANUP_HANDOVER=true
+        exit 1
+    fi
 fi
 
 # Inject project name only if non-nested
@@ -821,121 +845,123 @@ if [ "$HOST_DISK" -gt 0 ] && [ "$TOT_DISK" -gt "$HOST_DISK" ]; then
     DANGER=true
 fi
 
-echo ""
-echo -e "${BYELLOW}-> -------------- Deployment Summary --------------${NC}"
-echo ""
-printf "  %-28s %s\n" "Project Name:" "$LXD_PROJECT"
-
-# Network Summary
-if [ "$NESTED" = true ]; then
-    printf "  %-28s %b\n" "Architecture:" "${BRED}nested (using own LXD inside VM)${NC}"
-    echo -e "${BYELLOW}  -------------------- Network --------------------${NC}"
-    printf "  %-28s %s\n" "Uplink Bridge:" "$PRIMARY_BRIDGE (Gateway: $PRIMARY_GW_IP)"
-    printf "  %-30s %s\n" "  - Subnet CIDR:" "$HOST_CIDR"
-else
-    printf "  %-28s %s\n" "Architecture:" "non-nested (using host's bare-metal LXD)"
-    echo -e "${BYELLOW}  -------------------- Network --------------------${NC}"
-    printf "  %-28s %s\n" "Primary Uplink:" "$PRIMARY_BRIDGE (Gateway: $PRIMARY_GW_IP)"
+{
+    echo ""
+    echo -e "${BYELLOW}-> -------------- Deployment Summary --------------${NC}"
+    echo ""
+    printf "  %-28s %s\n" "Project Name:" "$LXD_PROJECT"
     
-    # Loop over cloud-init to find defined bridges and their original prompt text
-    while read -r line; do
-        PROMPT_MSG=$(echo "$line" | sed -n 's/.*PROMPT:\([^[]*\).*/\1/p' | xargs)
-        VAR_KEY=$(echo "$line" | sed -E 's/.*set custom_([a-zA-Z0-9_]+).*/\1/')
-        CIDR_VAR=$(echo "$line" | grep -oP 'cidr=\K[a-zA-Z0-9_]+')
+    # Network Summary
+    if [ "$NESTED" = true ]; then
+        printf "  %-28s %b\n" "Architecture:" "${BRED}nested (using own LXD inside VM)${NC}"
+        echo -e "${BYELLOW}  -------------------- Network --------------------${NC}"
+        printf "  %-28s %s\n" "Uplink Bridge:" "$PRIMARY_BRIDGE (Gateway: $PRIMARY_GW_IP)"
+        printf "  %-30s %s\n" "  - Subnet CIDR:" "$HOST_CIDR"
+    else
+        printf "  %-28s %s\n" "Architecture:" "non-nested (using host's bare-metal LXD)"
+        echo -e "${BYELLOW}  -------------------- Network --------------------${NC}"
+        printf "  %-28s %s\n" "Primary Uplink:" "$PRIMARY_BRIDGE (Gateway: $PRIMARY_GW_IP)"
         
-        # Map back to the Bash exported variables
-        BASH_BR_VAR=$(echo "$VAR_KEY" | tr '[:lower:]' '[:upper:]')
-        BASH_CIDR_VAR=$(echo "$CIDR_VAR" | tr '[:lower:]' '[:upper:]')
-        
-        BR_VAL="${!BASH_BR_VAR}"
-        CIDR_VAL="${!BASH_CIDR_VAR}"
-        
-        if [ -n "$BR_VAL" ]; then
-            printf "  %-28s %s\n" "${PROMPT_MSG}:" "$BR_VAL"
-            printf "  %-30s %s\n" "  - Subnet CIDR:" "$CIDR_VAL"
+        # Loop over cloud-init to find defined bridges and their original prompt text
+        while read -r line; do
+            PROMPT_MSG=$(echo "$line" | sed -n 's/.*PROMPT:\([^[]*\).*/\1/p' | xargs)
+            VAR_KEY=$(echo "$line" | sed -E 's/.*set custom_([a-zA-Z0-9_]+).*/\1/')
+            CIDR_VAR=$(echo "$line" | grep -oP 'cidr=\K[a-zA-Z0-9_]+')
             
-            # Dynamically fetch matching IP counts based on the prefix (e.g., MAAS_ or OS_)
-            BR_PREFIX=$(echo "$BASH_BR_VAR" | cut -d'_' -f1) 
-            for ip_var in $(compgen -v | grep "^${BR_PREFIX}_.*IP_COUNT$"); do
-                # Clean up the name for display and force 'API' capitalization\
-                clean_name=$(echo "$ip_var" | sed "s/^${BR_PREFIX}_//" | sed 's/_*IP_COUNT$//' | tr '[:upper:]' '[:lower:]' | tr '_' ' ' | awk '{for(i=1;i<=NF;i++)sub(/./,toupper(substr($i,1,1)),$i)}1' | sed 's/Api/API/g')
-                if [ -z "$clean_name" ]; then clean_name="Reserved"; fi
+            # Map back to the Bash exported variables
+            BASH_BR_VAR=$(echo "$VAR_KEY" | tr '[:lower:]' '[:upper:]')
+            BASH_CIDR_VAR=$(echo "$CIDR_VAR" | tr '[:lower:]' '[:upper:]')
+            
+            BR_VAL="${!BASH_BR_VAR}"
+            CIDR_VAL="${!BASH_CIDR_VAR}"
+            
+            if [ -n "$BR_VAL" ]; then
+                printf "  %-28s %s\n" "${PROMPT_MSG}:" "$BR_VAL"
+                printf "  %-30s %s\n" "  - Subnet CIDR:" "$CIDR_VAL"
                 
-                ip_val="${!ip_var}"
-                printf "  %-30s %s\n" "  - $clean_name IPs:" "$ip_val"
-            done
-        fi
-    done < <(grep -E '.*\[BRIDGE:' "$CLOUD_INIT")
-fi
-
-# Node Allocation Summary
-echo -e "${BYELLOW}  ---------------- Node Allocation ----------------${NC}"
-
-for pref in $(echo "$UNIQUE_PREFIXES" | tr ' ' '\n' | sort -u | grep -v '^$'); do
-    bash_cpu=$(echo "${pref}_cpu" | tr '[:lower:]' '[:upper:]')
-    cpu_val="${!bash_cpu:-$(get_default "${pref}_cpu")}"
+                # Dynamically fetch matching IP counts based on the prefix (e.g., MAAS_ or OS_)
+                BR_PREFIX=$(echo "$BASH_BR_VAR" | cut -d'_' -f1) 
+                for ip_var in $(compgen -v | grep "^${BR_PREFIX}_.*IP_COUNT$"); do
+                    # Clean up the name for display and force 'API' capitalization\
+                    clean_name=$(echo "$ip_var" | sed "s/^${BR_PREFIX}_//" | sed 's/_*IP_COUNT$//' | tr '[:upper:]' '[:lower:]' | tr '_' ' ' | awk '{for(i=1;i<=NF;i++)sub(/./,toupper(substr($i,1,1)),$i)}1' | sed 's/Api/API/g')
+                    if [ -z "$clean_name" ]; then clean_name="Reserved"; fi
+                    
+                    ip_val="${!ip_var}"
+                    printf "  %-30s %s\n" "  - $clean_name IPs:" "$ip_val"
+                done
+            fi
+        done < <(grep -E '.*\[BRIDGE:' "$CLOUD_INIT")
+    fi
     
-    if [ -n "$cpu_val" ]; then
-        bash_ram=$(echo "${pref}_ram" | tr '[:lower:]' '[:upper:]')
-        ram_val="${!bash_ram:-$(get_default "${pref}_ram")}"
+    # Node Allocation Summary
+    echo -e "${BYELLOW}  ---------------- Node Allocation ----------------${NC}"
+    
+    for pref in $(echo "$UNIQUE_PREFIXES" | tr ' ' '\n' | sort -u | grep -v '^$'); do
+        bash_cpu=$(echo "${pref}_cpu" | tr '[:lower:]' '[:upper:]')
+        cpu_val="${!bash_cpu:-$(get_default "${pref}_cpu")}"
         
-        bash_disk=$(echo "${pref}_disk" | tr '[:lower:]' '[:upper:]')
-        disk_val="${!bash_disk:-$(get_default "${pref}_disk")}"
-        
-        bash_ha=$(echo "${pref}_ha" | tr '[:lower:]' '[:upper:]')
-        ha_val="${!bash_ha:-$(get_default "${pref}_ha")}"
-        [ -z "$ha_val" ] && ha_val=1
-        
-        # Fetch the EXACT first word of the CPU prompt for perfect capitalization (e.g., "MAAS", "Juju")
-        pretty_name=$(grep -E "^\s*\{\%\s*set\s+custom_${pref}_cpu\s*=" "$CLOUD_INIT" | sed -n 's/.*PROMPT:\([^ ]*\).*/\1/p')
-        
-        # Fallback to title-case if no prompt is found
-        if [ -z "$pretty_name" ]; then
-            pretty_name=$(echo "$pref" | tr '_' ' ' | awk '{for(i=1;i<=NF;i++)sub(/./,toupper(substr($i,1,1)),$i)}1')
-        fi
-
-        # Dynamic Child Resource Append (e.g. OSDs)
-        extra_disks=""
-        for sub_pref in $(echo "$UNIQUE_PREFIXES" | tr ' ' '\n' | sort -u | grep -v '^$'); do
-            # If it's a child of the current prefix (e.g. cloud_osd is a child of cloud)
-            if [[ "$sub_pref" == "${pref}_"* ]]; then
-                sub_cpu_var=$(echo "${sub_pref}_cpu" | tr '[:lower:]' '[:upper:]')
-                sub_cpu="${!sub_cpu_var:-$(get_default "${sub_pref}_cpu")}"
-                
-                # If it has NO CPU, it's an attached resource, not a standalone node
-                if [ -z "$sub_cpu" ]; then
-                    sub_disk_var=$(echo "${sub_pref}_disk" | tr '[:lower:]' '[:upper:]')
-                    sub_disk="${!sub_disk_var:-$(get_default "${sub_pref}_disk")}"
+        if [ -n "$cpu_val" ]; then
+            bash_ram=$(echo "${pref}_ram" | tr '[:lower:]' '[:upper:]')
+            ram_val="${!bash_ram:-$(get_default "${pref}_ram")}"
+            
+            bash_disk=$(echo "${pref}_disk" | tr '[:lower:]' '[:upper:]')
+            disk_val="${!bash_disk:-$(get_default "${pref}_disk")}"
+            
+            bash_ha=$(echo "${pref}_ha" | tr '[:lower:]' '[:upper:]')
+            ha_val="${!bash_ha:-$(get_default "${pref}_ha")}"
+            [ -z "$ha_val" ] && ha_val=1
+            
+            # Fetch the EXACT first word of the CPU prompt for perfect capitalization (e.g., "MAAS", "Juju")
+            pretty_name=$(grep -E "^\s*\{\%\s*set\s+custom_${pref}_cpu\s*=" "$CLOUD_INIT" | sed -n 's/.*PROMPT:\([^ ]*\).*/\1/p')
+            
+            # Fallback to title-case if no prompt is found
+            if [ -z "$pretty_name" ]; then
+                pretty_name=$(echo "$pref" | tr '_' ' ' | awk '{for(i=1;i<=NF;i++)sub(/./,toupper(substr($i,1,1)),$i)}1')
+            fi
+            
+            # Dynamic Child Resource Append (e.g. OSDs)
+            extra_disks=""
+            for sub_pref in $(echo "$UNIQUE_PREFIXES" | tr ' ' '\n' | sort -u | grep -v '^$'); do
+                # If it's a child of the current prefix (e.g. cloud_osd is a child of cloud)
+                if [[ "$sub_pref" == "${pref}_"* ]]; then
+                    sub_cpu_var=$(echo "${sub_pref}_cpu" | tr '[:lower:]' '[:upper:]')
+                    sub_cpu="${!sub_cpu_var:-$(get_default "${sub_pref}_cpu")}"
                     
-                    sub_count_var=$(echo "${sub_pref}_count" | tr '[:lower:]' '[:upper:]')
-                    sub_count="${!sub_count_var:-$(get_default "${sub_pref}_count")}"
-                    
-                    if [ -n "$sub_disk" ] && [ -n "$sub_count" ]; then
-                        # Format nicely: cloud_osd -> OSD
-                        sub_name=$(echo "${sub_pref}" | sed "s/^${pref}_//" | tr '[:lower:]' '[:upper:]')
-                        extra_disks+=" + ${sub_count}x ${sub_disk/GiB/ GiB} ${sub_name}s"
+                    # If it has NO CPU, it's an attached resource, not a standalone node
+                    if [ -z "$sub_cpu" ]; then
+                        sub_disk_var=$(echo "${sub_pref}_disk" | tr '[:lower:]' '[:upper:]')
+                        sub_disk="${!sub_disk_var:-$(get_default "${sub_pref}_disk")}"
+                        
+                        sub_count_var=$(echo "${sub_pref}_count" | tr '[:lower:]' '[:upper:]')
+                        sub_count="${!sub_count_var:-$(get_default "${sub_pref}_count")}"
+                        
+                        if [ -n "$sub_disk" ] && [ -n "$sub_count" ]; then
+                            # Format nicely: cloud_osd -> OSD
+                            sub_name=$(echo "${sub_pref}" | sed "s/^${pref}_//" | tr '[:lower:]' '[:upper:]')
+                            extra_disks+=" + ${sub_count}x ${sub_disk/GiB/ GiB} ${sub_name}s"
+                        fi
                     fi
                 fi
-            fi
-        done
-        
-        left_col="${ha_val}x ${pretty_name} Node(s):"
-        right_col="${cpu_val} cores, ${ram_val/GiB/ GiB} RAM, ${disk_val/GiB/ GiB} Disk${extra_disks} (each)"
-        printf "  %-28s %s\n" "$left_col" "$right_col"
+            done
+            
+            left_col="${ha_val}x ${pretty_name} Node(s):"
+            right_col="${cpu_val} cores, ${ram_val/GiB/ GiB} RAM, ${disk_val/GiB/ GiB} Disk${extra_disks} (each)"
+            printf "  %-28s %s\n" "$left_col" "$right_col"
+        fi
+    done
+    
+    # Constraints Summary
+    echo -e "${BYELLOW}  ------------- Capacity & Constraints ------------${NC}"
+    printf "  %-28s %s\n" "Primary VM Size:" "${CPU_LIMIT} cores, ${RAM_LIMIT/GiB/ GiB} RAM, ${DISK_LIMIT/GiB/ GiB} Disk"
+    printf "  %-28s %s\n" "Total Footprint:" "${TOT_CPU} cores, ${TOT_RAM} GiB RAM, ${TOT_DISK} GiB Disk"
+    printf "  %-28s %s\n" "Host Capacity:" "${HOST_CPU} cores, ${HOST_RAM} GiB RAM, ~${HOST_DISK} GiB Disk"
+    echo ""
+    
+    if [ -n "$WARNINGS" ]; then
+        echo -e "${BRED}-> --------------- RESOURCE WARNINGS --------------${NC}"
+        echo -e "$WARNINGS"
     fi
-done
-
-# Constraints Summary
-echo -e "${BYELLOW}  ------------- Capacity & Constraints ------------${NC}"
-printf "  %-28s %s\n" "Primary VM Size:" "${CPU_LIMIT} cores, ${RAM_LIMIT/GiB/ GiB} RAM, ${DISK_LIMIT/GiB/ GiB} Disk"
-printf "  %-28s %s\n" "Total Footprint:" "${TOT_CPU} cores, ${TOT_RAM} GiB RAM, ${TOT_DISK} GiB Disk"
-printf "  %-28s %s\n" "Host Capacity:" "${HOST_CPU} cores, ${HOST_RAM} GiB RAM, ~${HOST_DISK} GiB Disk"
-echo ""
-
-if [ -n "$WARNINGS" ]; then
-    echo -e "${BRED}-> --------------- RESOURCE WARNINGS --------------${NC}"
-    echo -e "$WARNINGS"
-fi
+} | tee "$LOG_FILE"
 
 if [ "$DANGER" = true ]; then
     ORIG_ACCEPT="$ACCEPT_DEFAULTS"
@@ -944,6 +970,27 @@ if [ "$DANGER" = true ]; then
     ACCEPT_DEFAULTS="$ORIG_ACCEPT"
 else
     confirm_or_abort "Proceed with deployment using these resources and networks?"
+fi
+
+# ==========================================
+# BACKGROUND LOGGING SETUP
+# ==========================================
+
+echo ""
+echo -e "${BYELLOW}-> Logging all output to:${NC} $LOG_FILE"
+
+# Redirect all future output to the log file natively
+exec >> "$LOG_FILE" 2>&1
+
+# Start tailing the log file in the background, rendering straight back to the original terminal stdout
+tail -f -n 0 "$LOG_FILE" >&3 &
+TAIL_PID=$!
+
+# Define SSH options dynamically for later use
+if [ -f "$SSH_ID" ]; then
+    SSH_OPTS=(-i "$SSH_ID" -o "StrictHostKeyChecking=no" -o "UserKnownHostsFile=/dev/null")
+else
+    SSH_OPTS=(-o "StrictHostKeyChecking=no" -o "UserKnownHostsFile=/dev/null")
 fi
 
 # ==========================================
@@ -1021,8 +1068,13 @@ if [ "$LXD_PROJECT" != "default" ]; then
         echo ""
         confirm_or_abort "Create custom LXD project '$LXD_PROJECT'?"
         
-        # Create project with isolated images and profiles, but shared networks
-        lxc project create "$LXD_PROJECT" -c features.images=true -c features.profiles=true -c features.storage.volumes=true
+        # Create project with isolated profiles and volumes, and conditionally shared images
+        if [ "$SHARED_IMAGES" = false ]; then
+            lxc project create "$LXD_PROJECT" -c features.images=true -c features.profiles=true -c features.storage.volumes=true
+        else
+            lxc project create "$LXD_PROJECT" -c features.images=false -c features.profiles=true -c features.storage.volumes=true
+        fi
+        PROJECT_CREATED=true
         lxc project set "$LXD_PROJECT" --property description="${PRETTY_REPRO} Isolated Environment ($DEPLOY_ID)"
         
         # Initialize the blank default profile with a root disk and MAAS bridge
@@ -1047,7 +1099,6 @@ echo -e "${BYELLOW}-> Opening LXD Web UI...${NC}"
 echo ""
 
 # Initialize the access file to save SSH tunnels and credentials
-ACCESS_FILE="$SCRIPT_DIR/access-${LXD_PROJECT}.txt"
 {
     echo "=========================================="
     echo " Access Details for ${LXD_PROJECT}"
@@ -1144,9 +1195,6 @@ lxc config set "$VM_NAME" --project "$LXD_PROJECT"
 # ==========================================
 
 # 2. Generate Cleanup Script
-CLEANUP_SCRIPT="$SCRIPT_DIR/destroy-${LXD_PROJECT}.sh"
-
-# Write Header
 cat << EOF > "$CLEANUP_SCRIPT"
 #!/bin/bash
 echo ""
@@ -1177,12 +1225,21 @@ if lxc project list | grep -q "$LXD_PROJECT"; then
         lxc storage volume delete "$LXD_POOL" "\$vol" --project "$LXD_PROJECT"
     done
     
+EOF
+    
+    # Only inject image deletion logic if images are isolated
+    if [ "$SHARED_IMAGES" = false ]; then
+        cat << EOF >> "$CLEANUP_SCRIPT"
     # Delete all images inside the "$LXD_PROJECT" project
     echo "Deleting images in project '$LXD_PROJECT'..."
     for img in \$(lxc image list --project "$LXD_PROJECT" --format json | jq -r '.[].fingerprint'); do
         lxc image delete --project "$LXD_PROJECT" "\$img"
     done
     
+EOF
+    fi
+    
+    cat << EOF >> "$CLEANUP_SCRIPT"
     # Switch to default to ensure we aren't "inside" the project we are deleting
     lxc project switch default 2>/dev/null
     lxc project delete "$LXD_PROJECT"
@@ -1234,7 +1291,7 @@ rmdir "$CERT_DIR" 2>/dev/null || true
 EOF
 fi
 
-# 4. Access file removal & Footer
+# 4. Access file, log file removal & Footer
 cat << EOF >> "$CLEANUP_SCRIPT"
 
 echo -e "${BYELLOW}-> Removing Access Info File:${NC} $ACCESS_FILE"
@@ -1243,6 +1300,15 @@ if [ -f "$ACCESS_FILE" ]; then
     rm -f "$ACCESS_FILE"
 else
     echo "Access info file '$ACCESS_FILE' not found, skipping..."
+fi
+echo ""
+
+echo -e "${BYELLOW}-> Removing Log File:${NC} $LOG_FILE"
+
+if [ -f "$LOG_FILE" ]; then
+    rm -f "$LOG_FILE"
+else
+    echo "Log file '$LOG_FILE' not found, skipping..."
 fi
 echo ""
 
@@ -1260,281 +1326,306 @@ echo ""
 echo -e "${BYELLOW}-> 2. Cleanup script created:${NC} $CLEANUP_SCRIPT"
 
 # ==========================================
-# OBTAIN LXD PRIMARY IP ADDRESS
+# BACKGROUND HANDOVER
 # ==========================================
 
-# 3. Watch for IP Address
-echo ""
-echo -e "${BYELLOW}-> 3. Obtaining IP Address...${NC}"
-echo ""
-
-# Loop until we get an IPv4 address on eth0 (or enp5s0)
-IP=""
-TIMEOUT=0
-
-while [ -z "$IP" ]; do
-    if [ "$TIMEOUT" -ge "$MAX_WAIT" ]; then
-        echo -e "${BRED}Error: Timed out waiting for VM to get an IP address.${NC}"
-        echo -e "Run '${CLEANUP_SCRIPT}' to clean up the environment."
-        exit 1
-    fi
-
-    IP=$(lxc list "$VM_NAME" --project "$LXD_PROJECT" --format=json | jq -r '.[0].state.network | to_entries[] | select(.key=="eth0" or .key=="enp5s0") | .value.addresses[] | select(.family=="inet" and .scope=="global") | .address' | head -n 1)
-
-    if [ -z "$IP" ]; then
-        sleep 2
-        TIMEOUT=$((TIMEOUT + 2))
-    fi
-done
-
-echo "Target IP: $IP"
-echo ""
-
-lxc list --project "$LXD_PROJECT"
-
-# ==========================================
-# MAAS DASHBOARD ACCESS
-# ==========================================
-
-# 4. MAAS Dashboard Access (SSH-Aware)
-if grep -q "custom_maas_" "$CLOUD_INIT"; then
+# Parent Trap: If the user presses Ctrl+C or connection breaks, detach the worker and exit cleanly.
+trap '
+    [ -n "$TAIL_PID" ] && kill "$TAIL_PID" 2>/dev/null
+    exec 1>&3 2>&4 # Restore terminal output
     echo ""
-    echo -e "${BYELLOW}-> 4. Opening MAAS Dashboard...${NC}"
+    echo -e "${BYELLOW}-> Detaching... Deployment will continue in background...${NC}"
+    echo ""
+    echo -e "To monitor progress: ${BYELLOW}tail -f $LOG_FILE${NC}"
+    echo -e "To abort, run: ${BYELLOW}$CLEANUP_SCRIPT${NC}"
+    echo ""
+    exit 0
+' INT TERM HUP
+
+# Fork remaining logic into a subshell so it can safely run headless
+(
+    # Close inherited terminal file descriptors to guarantee true detachment
+    exec 3>&- 4>&-
+    
+    # Worker Trap: Enter auto-accept mode to breeze past remaining prompts silently if terminal detaches
+    trap 'ACCEPT_DEFAULTS=true' INT HUP TERM
+    
+    # ==========================================
+    # OBTAIN LXD PRIMARY IP ADDRESS
+    # ==========================================
+    
+    # 3. Watch for IP Address
+    echo ""
+    echo -e "${BYELLOW}-> 3. Obtaining IP Address...${NC}"
     echo ""
     
-    MAAS_UI_URL="http://$IP:5240/MAAS/"
+    # Loop until we get an IPv4 address on eth0 (or enp5s0)
+    IP=""
+    TIMEOUT=0
     
-    echo "[ MAAS Dashboard ]" >> "$ACCESS_FILE"
-    
-    if [ -n "$SSH_CLIENT" ] || [ -n "$SSH_TTY" ] || [ -n "$SSH_CONNECTION" ]; then
-        REMOTE_USER=$(whoami)
-        SERVER_IP_GUESS=$(echo "${SSH_CONNECTION:-}" | awk '{print $3}')
-        SERVER_IP_STR=${SERVER_IP_GUESS:-<SERVER_IP>}
-        
-        echo -e "${BYELLOW}  Remote SSH Session Detected!${NC}"
-        echo "  To access the MAAS dashboard (once ready) locally, open a new terminal tab on your host and run:"
-        echo ""
-        echo -e "${BYELLOW}  Run:${NC} ssh -N -L 5241:$IP:5240 ${REMOTE_USER}@${SERVER_IP_STR}"
-        echo -e "${BYELLOW}  URL:${NC} http://localhost:5241/MAAS/"
-        echo ""
-        
-        # Append to access file
-        {
-            echo "  Tunnel:   ssh -N -L 5241:$IP:5240 ${REMOTE_USER}@${SERVER_IP_STR}"
-            echo "  URL:      http://localhost:5241/MAAS/"
-            echo ""
-        } >> "$ACCESS_FILE"
-        
-        pause_to_continue "Press Enter to continue with live cloud-init log tailing..."
-    else
-        echo -e "${BYELLOW}  MAAS Dashboard:${NC} $MAAS_UI_URL"
-        echo ""
-        
-        # Append to access file
-        {
-            echo "  URL:      http://$IP:5240/MAAS/"
-            echo ""
-        } >> "$ACCESS_FILE"
-        
-        echo -e "${BYELLOW}  Local session detected. Opening MAAS Dashboard...${NC}"
-        if command -v xdg-open &> /dev/null; then
-            xdg-open "$MAAS_UI_URL" > /dev/null 2>&1 &
-        fi
-    fi
-else
-    echo ""
-    echo -e "${BYELLOW}-> 4. Skipping MAAS Dashboard... (no MAAS detected)${NC}"
-fi
-
-# ==========================================
-# LOG TAILING + JUJU STATUS
-# ==========================================
-
-# 5. Wait for cloud-init to finish and tail logs and then Juju watch
-echo ""
-echo -e "${BYELLOW}-> 5. Connecting to live cloud-init logs... (will switch to Juju status)${NC}"
-echo ""
-
-SYS_USER="${SYS_USER:-ubuntu}"
-PHASE="LOG_TAIL" # Phase options: LOG_TAIL, JUJU_WATCH, DONE
-CURSOR_TOP='\033[H'
-CLEAR_REST='\033[J'
-CLR_EOL=$'\033[K'
-
-while [ "$PHASE" != "DONE" ]; do
-    
-    # PHASE A: LOG TAILING
-    if [ "$PHASE" == "LOG_TAIL" ]; then
-        
-        # Build the sed command dynamically based on whether a Juju trigger exists, quit 'q' if we see the Trigger Message OR "finished at"
-        if [ -n "$JUJU_TRIGGER_MSG" ]; then
-            lxc exec "$VM_NAME" --project "$LXD_PROJECT" -- sh -c "tail -f /var/log/cloud-init-output.log 2>/dev/null | sed '/$JUJU_TRIGGER_MSG/ q; /finished at/ q'"
-        else
-            lxc exec "$VM_NAME" --project "$LXD_PROJECT" -- sh -c "tail -f /var/log/cloud-init-output.log 2>/dev/null | sed '/finished at/ q'"
-        fi
-        
-        EXIT_CODE=$?
-        
-        if [ $EXIT_CODE -eq 0 ]; then
-            # Success! The 'sed' command found the Juju model deploy start and quit cleanly.
-            sleep 2
-            STATUS_CHECK=$(lxc exec "$VM_NAME" --project "$LXD_PROJECT" -- cloud-init status 2>/dev/null)
-            
-            if [[ "$STATUS_CHECK" == *"status: error"* ]]; then
-                echo ""
-                echo -e "${BRED}Error: cloud-init crashed during payload execution! Check the logs above.${NC}${CLR_EOL}"
-                echo -e "Run '${CLEANUP_SCRIPT}' to clean up the environment."
-                exit 1
-            elif [[ "$STATUS_CHECK" == *"status: done"* ]]; then
-                echo ""
-                echo -e "${BYELLOW}cloud-init finished successfully! ${NC}${CLR_EOL}"
-                PHASE="DONE"
-            elif [ -n "$JUJU_TRIGGER_MSG" ] && lxc exec "$VM_NAME" --project "$LXD_PROJECT" -- grep -Fq -- "$JUJU_TRIGGER_MSG" /var/log/cloud-init-output.log 2>/dev/null; then
-                echo ""
-                echo -e "${BYELLOW}Juju Deployment Trigger Detected. Switching to Watch Mode...${NC}${CLR_EOL}"
-                sleep 2
-                PHASE="JUJU_WATCH"
-            else
-                sleep 2
-            fi
-        elif [ $EXIT_CODE -eq 255 ]; then
-            # 255 = SSH died (Connection Refused / Network Down / Rebooting)
-            echo -ne "${BYELLOW}Connection lost (Rebooting?) retrying...${NC}${CLR_EOL}\r"
-            sleep 3
-        else
-            # Other errors (file not found yet, etc)
-            echo -ne "${BYELLOW}Waiting for log file creation...${NC}${CLR_EOL}\r"
-            sleep 2
-        fi
-    fi
-    
-    # PHASE B: JUJU WATCH
-    if [ "$PHASE" == "JUJU_WATCH" ]; then
-        
-        # Dynamically construct the Juju status command based on defined models
-        if [ -n "$JUJU_MODELS" ]; then
-            JUJU_CMD=""
-            for model in $JUJU_MODELS; do
-                if [ -z "$JUJU_CMD" ]; then
-                    JUJU_CMD="juju status -m $model --color 2>/dev/null"
-                else
-                    JUJU_CMD="$JUJU_CMD || juju status -m $model --color 2>/dev/null"
-                fi
-            done
-            JUJU_CMD="$JUJU_CMD || juju status -m controller --color 2>/dev/null || echo 'Waiting for Juju models to initialize...'"
-        else
-            # Universal fallback if the payload doesn't define specific models
-            JUJU_CMD="juju status --color 2>/dev/null || juju status -m controller --color 2>/dev/null || echo 'Waiting for Juju models to initialize...'"
-        fi
-        
-        # Capture both status commands first
-        JUJU_OUTPUT=$(lxc exec "$VM_NAME" --project "$LXD_PROJECT" -- su - "$SYS_USER" -c "$JUJU_CMD" 2>/dev/null)
-        LOG_OUTPUT=$(lxc exec "$VM_NAME" --project "$LXD_PROJECT" -- sh -c "tail -n $CLOUD_INIT_LOG_LINES /var/log/cloud-init-output.log | sed 's/\r$//' | sed 's/.*\r//' | sed 's/\x1b\[[0-9;]*[a-zA-Z]//g'" 2>/dev/null)
-        LXC_EXIT=$?
-        CI_STATUS=$(lxc exec "$VM_NAME" --project "$LXD_PROJECT" -- cloud-init status 2>/dev/null)
-        
-        # Check if we should stop (Is cloud-init done?)
-        if [[ "$CI_STATUS" == *"status: error"* ]]; then
-            echo ""
-            echo -e "${BRED}Error: cloud-init crashed during deployment! Check the logs above.${NC}${CLR_EOL}"
-            echo -e "Run '${CLEANUP_SCRIPT}' to clean up the environment."
+    while [ -z "$IP" ]; do
+        if [ "$TIMEOUT" -ge "$MAX_WAIT" ]; then
+            echo -e "${BRED}Error: Timed out waiting for VM to get an IP address.${NC}"
+            echo "Run '${CLEANUP_SCRIPT}' to clean up the environment."
             exit 1
-        elif [[ "$CI_STATUS" == *"status: done"* ]]; then
-            # Print the final status one last time cleanly
-            echo -e "${CURSOR_TOP}${BYELLOW}-> 5. Juju Deployment Status (Finalizing...)${NC}${CLR_EOL}"
-            echo -e "Target IP: $IP | Updated: $(date +%T)${CLR_EOL}"
-            echo -e "${BYELLOW}-------------------------------------------------------${NC}${CLR_EOL}"
-            echo -e "$JUJU_OUTPUT" | sed "s/$/${CLR_EOL}/"
-            echo -e "${CLEAR_REST}" # Clean up bottom
+        fi
+        
+        IP=$(lxc list "$VM_NAME" --project "$LXD_PROJECT" --format=json | jq -r '.[0].state.network | to_entries[] | select(.key=="eth0" or .key=="enp5s0") | .value.addresses[] | select(.family=="inet" and .scope=="global") | .address' | head -n 1)
+        
+        if [ -z "$IP" ]; then
+            sleep 2
+            TIMEOUT=$((TIMEOUT + 2))
+        fi
+    done
+    
+    echo "Target IP: $IP"
+    echo ""
+    
+    lxc list --project "$LXD_PROJECT"
+    
+    # ==========================================
+    # MAAS DASHBOARD ACCESS
+    # ==========================================
+    
+    # 4. MAAS Dashboard Access (SSH-Aware)
+    if grep -q "custom_maas_" "$CLOUD_INIT"; then
+        echo ""
+        echo -e "${BYELLOW}-> 4. Opening MAAS Dashboard...${NC}"
+        echo ""
+        
+        MAAS_UI_URL="http://$IP:5240/MAAS/"
+        
+        echo "[ MAAS Dashboard ]" >> "$ACCESS_FILE"
+        
+        if [ -n "$SSH_CLIENT" ] || [ -n "$SSH_TTY" ] || [ -n "$SSH_CONNECTION" ]; then
+            REMOTE_USER=$(whoami)
+            SERVER_IP_GUESS=$(echo "${SSH_CONNECTION:-}" | awk '{print $3}')
+            SERVER_IP_STR=${SERVER_IP_GUESS:-<SERVER_IP>}
+            
+            echo -e "${BYELLOW}  Remote SSH Session Detected!${NC}"
+            echo "  To access the MAAS dashboard (once ready) locally, open a new terminal tab on your host and run:"
             echo ""
-            echo -e "${BYELLOW}cloud-init finished successfully!${NC}"
-            PHASE="DONE"
-            break
-        fi
-        
-        # Repaint screen
-        if [ $LXC_EXIT -eq 0 ]; then
-            # Move cursor to top (0,0) -> Print Data -> Clear remaining junk at bottom
-            echo -ne "${CURSOR_TOP}"
+            echo -e "${BYELLOW}  Run:${NC} ssh -N -L 5241:$IP:5240 ${REMOTE_USER}@${SERVER_IP_STR}"
+            echo -e "${BYELLOW}  URL:${NC} http://localhost:5241/MAAS/"
+            echo ""
             
-            # Header
-            echo -e "${BYELLOW}-> 5. Juju Deployment Status (cloud-init is running...)${NC}${CLR_EOL}"
-            echo -e "Target IP: $IP | Updated: $(date +%T)${CLR_EOL}"
+            # Append to access file
+            {
+                echo "  Tunnel:   ssh -N -L 5241:$IP:5240 ${REMOTE_USER}@${SERVER_IP_STR}"
+                echo "  URL:      http://localhost:5241/MAAS/"
+                echo ""
+            } >> "$ACCESS_FILE"
             
-            # Tail $CLOUD_INIT_LOG_LINES lines of cloud-init logs
-            echo -e "${BYELLOW}---------------- Latest cloud-init Logs ----------------${NC}${CLR_EOL}"
-            # Print logs, ensuring we wipe the end of the line for every log entry
-            if [ -n "$LOG_OUTPUT" ]; then
-                echo -e "$LOG_OUTPUT" | sed "s/$/${CLR_EOL}/"
-            else
-                echo -e "(Waiting for logs...)${CLR_EOL}"
-            fi
-            
-            # Juju watch
-            echo -e "${BYELLOW}--------------------- Juju Status ----------------------${NC}${CLR_EOL}"
-            
-            # Get terminal height (default to 64 if it fails)
-            TERM_HEIGHT=$(tput lines 2>/dev/null || echo 64)
-            
-            # Reserve lines for cloud-init logs + header (6)
-            MAX_JUJU_LINES=$(( TERM_HEIGHT - ( 6 + CLOUD_INIT_LOG_LINES )))
-            if [ "$MAX_JUJU_LINES" -lt 5 ]; then MAX_JUJU_LINES=5; fi # Fallback for tiny windows
-            
-            JUJU_LINE_COUNT=$(echo "$JUJU_OUTPUT" | wc -l)
-            
-            # Print Juju output: Truncate if it exceeds available terminal lines
-            if [ "$JUJU_LINE_COUNT" -gt "$MAX_JUJU_LINES" ]; then
-                HIDDEN_LINES=$(( JUJU_LINE_COUNT - MAX_JUJU_LINES ))
-                echo -e "$JUJU_OUTPUT" | head -n "$MAX_JUJU_LINES" | sed "s/$/${CLR_EOL}/"
-                echo -e "... [ Output truncated by $HIDDEN_LINES lines to fit terminal. Maximize window to see more! ] ...${CLR_EOL}"
-            else
-                echo -e "$JUJU_OUTPUT" | sed "s/$/${CLR_EOL}/"
-            fi
-            
-            # Clear whatever is left at the very bottom of the screen (in case list got shorter)
-            echo -ne "${CLEAR_REST}"
+            pause_to_continue "Press Enter to continue with live cloud-init log tailing..."
         else
-            # If SSH fails, just print a warning on top, don't wipe screen
-            echo -ne "${CURSOR_TOP}${BYELLOW}Connection lost. Reconnecting...${NC}${CLR_EOL}\r"
+            echo -e "${BYELLOW}  MAAS Dashboard:${NC} $MAAS_UI_URL"
+            echo ""
+            
+            # Append to access file
+            {
+                echo "  URL:      http://$IP:5240/MAAS/"
+                echo ""
+            } >> "$ACCESS_FILE"
+            
+            echo -e "${BYELLOW}  Local session detected. Opening MAAS Dashboard...${NC}"
+            if command -v xdg-open &> /dev/null; then
+                xdg-open "$MAAS_UI_URL" > /dev/null 2>&1 &
+            fi
+        fi
+    else
+        echo ""
+        echo -e "${BYELLOW}-> 4. Skipping MAAS Dashboard... (no MAAS detected)${NC}"
+    fi
+    
+    # ==========================================
+    # LOG TAILING + JUJU STATUS
+    # ==========================================
+    
+    # 5. Wait for cloud-init to finish and tail logs and then Juju watch
+    echo ""
+    echo -e "${BYELLOW}-> 5. Connecting to live cloud-init logs... (will switch to Juju status)${NC}"
+    echo ""
+    
+    SYS_USER="${SYS_USER:-ubuntu}"
+    PHASE="LOG_TAIL" # Phase options: LOG_TAIL, JUJU_WATCH, DONE
+    CURSOR_TOP='\033[H'
+    CLEAR_REST='\033[J'
+    CLR_EOL=$'\033[K'
+    
+    while [ "$PHASE" != "DONE" ]; do
+        
+        # PHASE A: LOG TAILING
+        if [ "$PHASE" == "LOG_TAIL" ]; then
+            
+            # Build the sed (unbuffered -u) command dynamically based on whether a Juju trigger exists, quit 'q' if we see the Trigger Message OR "finished at"
+            if [ -n "$JUJU_TRIGGER_MSG" ]; then
+                lxc exec "$VM_NAME" --project "$LXD_PROJECT" -- sh -c "tail -f /var/log/cloud-init-output.log 2>/dev/null | sed -u '/$JUJU_TRIGGER_MSG/ q; /finished at/ q'"
+            else
+                lxc exec "$VM_NAME" --project "$LXD_PROJECT" -- sh -c "tail -f /var/log/cloud-init-output.log 2>/dev/null | sed -u '/finished at/ q'"
+            fi
+            
+            EXIT_CODE=$?
+            
+            if [ $EXIT_CODE -eq 0 ]; then
+                # Success! The 'sed' command found the Juju model deploy start and quit cleanly.
+                sleep 2
+                STATUS_CHECK=$(lxc exec "$VM_NAME" --project "$LXD_PROJECT" -- cloud-init status 2>/dev/null)
+                
+                if [[ "$STATUS_CHECK" == *"status: error"* ]]; then
+                    echo ""
+                    echo -e "${BRED}Error: cloud-init crashed during payload execution! Check the logs above.${NC}${CLR_EOL}"
+                    echo "Run '${CLEANUP_SCRIPT}' to clean up the environment."
+                    exit 1
+                elif [[ "$STATUS_CHECK" == *"status: done"* ]]; then
+                    echo ""
+                    echo -e "${BYELLOW}cloud-init finished successfully! ${NC}${CLR_EOL}"
+                    PHASE="DONE"
+                elif [ -n "$JUJU_TRIGGER_MSG" ] && lxc exec "$VM_NAME" --project "$LXD_PROJECT" -- grep -Fq -- "$JUJU_TRIGGER_MSG" /var/log/cloud-init-output.log 2>/dev/null; then
+                    echo ""
+                    echo -e "${BYELLOW}Juju Deployment Trigger Detected. Switching to Watch Mode...${NC}${CLR_EOL}"
+                    sleep 2
+                    PHASE="JUJU_WATCH"
+                else
+                    sleep 2
+                fi
+            elif [ $EXIT_CODE -eq 255 ]; then
+                # 255 = SSH died (Connection Refused / Network Down / Rebooting)
+                echo -ne "${BYELLOW}Connection lost (Rebooting?) retrying...${NC}${CLR_EOL}\r"
+                sleep 3
+            else
+                # Other errors (file not found yet, etc)
+                echo -ne "${BYELLOW}Waiting for log file creation...${NC}${CLR_EOL}\r"
+                sleep 2
+            fi
         fi
         
-        # Standard refresh rate
-        sleep 2
-    fi
-done
-# Force cursor to reappear
-echo -e "\033[?25h"
-
-# ==========================================
-# HORIZON DASHBOARD
-# ==========================================
-
-# 6. Horizon Dashboard Access (SSH-Aware)
-if grep -q "custom_os_" "$CLOUD_INIT"; then
-    echo ""
-    echo -e "${BYELLOW}-> 6. Opening OpenStack Horizon Dashboard...${NC}"
-    echo ""
+        # PHASE B: JUJU WATCH
+        if [ "$PHASE" == "JUJU_WATCH" ]; then
+            
+            # Dynamically construct the Juju status command based on defined models
+            if [ -n "$JUJU_MODELS" ]; then
+                JUJU_CMD=""
+                for model in $JUJU_MODELS; do
+                    if [ -z "$JUJU_CMD" ]; then
+                        JUJU_CMD="juju status -m $model --color 2>/dev/null"
+                    else
+                        JUJU_CMD="$JUJU_CMD || juju status -m $model --color 2>/dev/null"
+                    fi
+                done
+                JUJU_CMD="$JUJU_CMD || juju status -m controller --color 2>/dev/null || echo 'Waiting for Juju models to initialize...'"
+            else
+                # Universal fallback if the payload doesn't define specific models
+                JUJU_CMD="juju status --color 2>/dev/null || juju status -m controller --color 2>/dev/null || echo 'Waiting for Juju models to initialize...'"
+            fi
+            
+            # Capture both status commands first
+            JUJU_OUTPUT=$(lxc exec "$VM_NAME" --project "$LXD_PROJECT" -- su - "$SYS_USER" -c "$JUJU_CMD" 2>/dev/null)
+            LOG_OUTPUT=$(lxc exec "$VM_NAME" --project "$LXD_PROJECT" -- sh -c "tail -n $CLOUD_INIT_LOG_LINES /var/log/cloud-init-output.log | sed 's/\r$//' | sed 's/.*\r//' | sed 's/\x1b\[[0-9;]*[a-zA-Z]//g'" 2>/dev/null)
+            LXC_EXIT=$?
+            CI_STATUS=$(lxc exec "$VM_NAME" --project "$LXD_PROJECT" -- cloud-init status 2>/dev/null)
+            
+            # Check if we should stop (Is cloud-init done?)
+            if [[ "$CI_STATUS" == *"status: error"* ]]; then
+                echo ""
+                echo -e "${BRED}Error: cloud-init crashed during deployment! Check the logs above.${NC}${CLR_EOL}"
+                echo "Run '${CLEANUP_SCRIPT}' to clean up the environment."
+                exit 1
+            elif [[ "$CI_STATUS" == *"status: done"* ]]; then
+                # Print the final status one last time cleanly
+                echo -e "${CURSOR_TOP}${BYELLOW}-> 5. Juju Deployment Status (Finalizing...)${NC}${CLR_EOL}"
+                echo -e "Target IP: $IP | Updated: $(date +%T)${CLR_EOL}"
+                echo -e "${BYELLOW}-------------------------------------------------------${NC}${CLR_EOL}"
+                echo -e "$JUJU_OUTPUT" | sed "s/$/${CLR_EOL}/"
+                echo -e "${CLEAR_REST}" # Clean up bottom
+                echo ""
+                echo -e "${BYELLOW}cloud-init finished successfully!${NC}"
+                PHASE="DONE"
+                break
+            fi
+            
+            # Repaint interactive UI terminal screen
+            if [ $LXC_EXIT -eq 0 ]; then
+                # Move cursor to top (0,0) -> Print Data -> Clear remaining junk at bottom
+                echo -ne "${CURSOR_TOP}"
+                
+                # Header
+                echo -e "${BYELLOW}-> 5. Juju Deployment Status (cloud-init is running...)${NC}${CLR_EOL}"
+                echo -e "Target IP: $IP | Updated: $(date +%T)${CLR_EOL}"
+                
+                # Tail $CLOUD_INIT_LOG_LINES lines of cloud-init logs
+                echo -e "${BYELLOW}---------------- Latest cloud-init Logs ----------------${NC}${CLR_EOL}"
+                # Print logs, ensuring we wipe the end of the line for every log entry
+                if [ -n "$LOG_OUTPUT" ]; then
+                    echo -e "$LOG_OUTPUT" | sed "s/$/${CLR_EOL}/"
+                else
+                    echo -e "(Waiting for logs...)${CLR_EOL}"
+                fi
+                
+                # Juju watch
+                echo -e "${BYELLOW}--------------------- Juju Status ----------------------${NC}${CLR_EOL}"
+                
+                # Get terminal height (default to 64 if it fails)
+                TERM_HEIGHT=$(tput lines 2>/dev/null || echo 64)
+                
+                # Reserve lines for cloud-init logs + header (6)
+                MAX_JUJU_LINES=$(( TERM_HEIGHT - ( 6 + CLOUD_INIT_LOG_LINES )))
+                if [ "$MAX_JUJU_LINES" -lt 5 ]; then MAX_JUJU_LINES=5; fi # Fallback for tiny windows
+                
+                JUJU_LINE_COUNT=$(echo "$JUJU_OUTPUT" | wc -l)
+                
+                # Print Juju output: Truncate if it exceeds available terminal lines
+                if [ "$JUJU_LINE_COUNT" -gt "$MAX_JUJU_LINES" ]; then
+                    HIDDEN_LINES=$(( JUJU_LINE_COUNT - MAX_JUJU_LINES ))
+                    echo -e "$JUJU_OUTPUT" | head -n "$MAX_JUJU_LINES" | sed "s/$/${CLR_EOL}/"
+                    echo -e "... [ Output truncated by $HIDDEN_LINES lines to fit terminal. Maximize window to see more! ] ...${CLR_EOL}"
+                else
+                    echo -e "$JUJU_OUTPUT" | sed "s/$/${CLR_EOL}/"
+                fi
+                
+                # Clear whatever is left at the very bottom of the screen (in case list got shorter)
+                echo -ne "${CLEAR_REST}"
+            else
+                # If SSH fails, just print a warning on top, don't wipe screen
+                echo -ne "${CURSOR_TOP}${BYELLOW}Connection lost. Reconnecting...${NC}${CLR_EOL}\r"
+            fi
+            
+            # Standard refresh rate
+            sleep 2
+        fi
+    done
+    # Force cursor to reappear
+    echo -e "\033[?25h"
     
-    HORIZON_URL=""
-    HORIZON_IP=""
-    HORIZON_PORT="80"
-    HORIZON_PATH="/horizon"
+    # ==========================================
+    # HORIZON DASHBOARD
+    # ==========================================
     
-    OS_USERNAME=""
-    OS_DOMAIN=""
-    OS_PASSWORD=""
-    
-    # Try Sunbeam first
-    SUNBEAM_URL=$(lxc exec "$VM_NAME" --project "$LXD_PROJECT" -- su - "$SYS_USER" -c "sunbeam dashboard-url 2>/dev/null")
-    
-    if [[ "$SUNBEAM_URL" == *"http"* ]]; then
-        echo -e "  ${BYELLOW}Sunbeam deployment detected.${NC}"
+    # 6. Horizon Dashboard Access (SSH-Aware)
+    if grep -q "custom_os_" "$CLOUD_INIT"; then
+        echo ""
+        echo -e "${BYELLOW}-> 6. Opening OpenStack Horizon Dashboard...${NC}"
+        echo ""
         
-        # Extract the raw URL string from the command output
-        HORIZON_URL=$(echo "$SUNBEAM_URL" | grep -oP 'https?://[^ ]+')
+        HORIZON_URL=""
+        HORIZON_IP=""
+        HORIZON_PORT="80"
+        HORIZON_PATH="/horizon"
         
-        # Extract the hostname, port, and path from the URL
-        read -r HORIZON_IP HORIZON_PORT HORIZON_PATH <<< "$(python3 -c "
+        OS_USERNAME=""
+        OS_DOMAIN=""
+        OS_PASSWORD=""
+        
+        # Try Sunbeam first
+        SUNBEAM_URL=$(lxc exec "$VM_NAME" --project "$LXD_PROJECT" -- su - "$SYS_USER" -c "sunbeam dashboard-url 2>/dev/null")
+        
+        if [[ "$SUNBEAM_URL" == *"http"* ]]; then
+            echo -e "  ${BYELLOW}Sunbeam deployment detected.${NC}"
+            
+            # Extract the raw URL string from the command output
+            HORIZON_URL=$(echo "$SUNBEAM_URL" | grep -oP 'https?://[^ ]+')
+            
+            # Extract the hostname, port, and path from the URL
+            read -r HORIZON_IP HORIZON_PORT HORIZON_PATH <<< "$(python3 -c "
 import urllib.parse, sys
 try:
     url = sys.argv[1]
@@ -1544,153 +1635,194 @@ try:
 except Exception:
     pass
 " "$HORIZON_URL")"
-        
-        # Fetch Sunbeam credentials
-        SUNBEAM_RC=$(lxc exec "$VM_NAME" --project "$LXD_PROJECT" -- su - "$SYS_USER" -c "sunbeam openrc 2>/dev/null")
-        
-        # Extract values, stripping quotes, single quotes, and carriage returns safely
-        TMP_USER=$(echo "$SUNBEAM_RC" | grep -oP 'OS_USERNAME=\K.*' | tr -d "'\"\r")
-        TMP_PASS=$(echo "$SUNBEAM_RC" | grep -oP 'OS_PASSWORD=\K.*' | tr -d "'\"\r")
-        TMP_DOM=$(echo "$SUNBEAM_RC" | grep -oP 'OS_USER_DOMAIN_NAME=\K.*' | tr -d "'\"\r")
-        
-        [ -n "$TMP_USER" ] && OS_USERNAME="$TMP_USER"
-        [ -n "$TMP_PASS" ] && OS_PASSWORD="$TMP_PASS"
-        [ -n "$TMP_DOM" ] && OS_DOMAIN="$TMP_DOM"
-    else
-        # Try charmed OpenStack
+            
+            # Fetch Sunbeam credentials
+            SUNBEAM_RC=$(lxc exec "$VM_NAME" --project "$LXD_PROJECT" -- su - "$SYS_USER" -c "sunbeam openrc 2>/dev/null")
+            
+            # Extract values, stripping quotes, single quotes, and carriage returns safely
+            TMP_USER=$(echo "$SUNBEAM_RC" | grep -oP 'OS_USERNAME=\K.*' | tr -d "'\"\r")
+            TMP_PASS=$(echo "$SUNBEAM_RC" | grep -oP 'OS_PASSWORD=\K.*' | tr -d "'\"\r")
+            TMP_DOM=$(echo "$SUNBEAM_RC" | grep -oP 'OS_USER_DOMAIN_NAME=\K.*' | tr -d "'\"\r")
+            
+            [ -n "$TMP_USER" ] && OS_USERNAME="$TMP_USER"
+            [ -n "$TMP_PASS" ] && OS_PASSWORD="$TMP_PASS"
+            [ -n "$TMP_DOM" ] && OS_DOMAIN="$TMP_DOM"
+        else
+            # Try charmed OpenStack
 
-        # Identify the target model from the JUJU_MODELS string (grab the first word)
-        TARGET_MODEL=$(echo "$JUJU_MODELS" | awk '{print $1}')
-        [ -z "$TARGET_MODEL" ] && TARGET_MODEL="openstack"
-        
-        HORIZON_IP=$(lxc exec "$VM_NAME" --project "$LXD_PROJECT" -- su - "$SYS_USER" -c "juju status -m $TARGET_MODEL openstack-dashboard --format json 2>/dev/null" | jq -r '.applications["openstack-dashboard"].units | to_entries[0].value["public-address"]' 2>/dev/null)
+            # Identify the target model from the JUJU_MODELS string (grab the first word)
+            TARGET_MODEL=$(echo "$JUJU_MODELS" | awk '{print $1}')
+            [ -z "$TARGET_MODEL" ] && TARGET_MODEL="openstack"
+            
+            HORIZON_IP=$(lxc exec "$VM_NAME" --project "$LXD_PROJECT" -- su - "$SYS_USER" -c "juju status -m $TARGET_MODEL openstack-dashboard --format json 2>/dev/null" | jq -r '.applications["openstack-dashboard"].units | to_entries[0].value["public-address"]' 2>/dev/null)
+            
+            if [ -n "$HORIZON_IP" ] && [ "$HORIZON_IP" != "null" ]; then
+                echo -e "  ${BYELLOW}Charmed OpenStack deployment detected.${NC}"
+                
+                # Override IP if a Dashboard VIP is configured
+                VIP=$(lxc exec "$VM_NAME" --project "$LXD_PROJECT" -- su - "$SYS_USER" -c "juju config -m $TARGET_MODEL openstack-dashboard vip 2>/dev/null")
+                if [ -n "$VIP" ] && [ "$VIP" != "null" ]; then
+                    # Grab the first IP if it happens to be a comma-separated list
+                    HORIZON_IP=$(echo "$VIP" | awk -F, '{print $1}' | tr -d ' ')
+                fi
+                
+                HORIZON_URL="http://${HORIZON_IP}${HORIZON_PATH}"
+                
+                # Fetch charmed OpenStack credentials
+                OPENRC=$(lxc exec "$VM_NAME" --project "$LXD_PROJECT" -- cat /home/"$SYS_USER"/openrc 2>/dev/null)
+                if [ -n "$OPENRC" ]; then
+                    TMP_USER=$(echo "$OPENRC" | grep -oP 'OS_USERNAME=\K.*' | tr -d "'\"\r")
+                    [ -n "$TMP_USER" ] && OS_USERNAME="$TMP_USER"
+                    
+                    TMP_DOM=$(echo "$OPENRC" | grep -oP 'OS_USER_DOMAIN_NAME=\K.*' | tr -d "'\"\r")
+                    [ -n "$TMP_DOM" ] && OS_DOMAIN="$TMP_DOM"
+                fi
+                
+                # Fallback Domain via Keystone config if missing from openrc
+                if [ -z "$OS_DOMAIN" ]; then
+                    TMP_DOM=$(lxc exec "$VM_NAME" --project "$LXD_PROJECT" -- su - "$SYS_USER" -c "juju config -m $TARGET_MODEL keystone admin-domain-name 2>/dev/null" | tr -d '\r')
+                    [ -n "$TMP_DOM" ] && [ "$TMP_DOM" != "null" ] && OS_DOMAIN="$TMP_DOM"
+                fi
+                
+                # Get admin password via Keystone
+                ACTION_CMD="juju run -m $TARGET_MODEL keystone/leader get-admin-password 2>/dev/null || juju run-action -m $TARGET_MODEL keystone/leader get-admin-password --wait 2>/dev/null"
+                TMP_PASS=$(lxc exec "$VM_NAME" --project "$LXD_PROJECT" -- su - "$SYS_USER" -c "$ACTION_CMD" | grep -oP 'admin-password:\s*\K\S+' | head -n 1 | tr -d '\r')
+                [ -n "$TMP_PASS" ] && [ "$TMP_PASS" != "null" ] && OS_PASSWORD="$TMP_PASS"
+            fi
+        fi
         
         if [ -n "$HORIZON_IP" ] && [ "$HORIZON_IP" != "null" ]; then
-            echo -e "  ${BYELLOW}Charmed OpenStack deployment detected.${NC}"
             
-            # Override IP if a Dashboard VIP is configured
-            VIP=$(lxc exec "$VM_NAME" --project "$LXD_PROJECT" -- su - "$SYS_USER" -c "juju config -m $TARGET_MODEL openstack-dashboard vip 2>/dev/null")
-            if [ -n "$VIP" ] && [ "$VIP" != "null" ]; then
-                # Grab the first IP if it happens to be a comma-separated list
-                HORIZON_IP=$(echo "$VIP" | awk -F, '{print $1}' | tr -d ' ')
+            # Apply standard fallbacks just in case the extraction files were empty
+            [ -z "$OS_USERNAME" ] && OS_USERNAME="admin"
+            [ -z "$OS_DOMAIN" ] && OS_DOMAIN="admin_domain"
+            
+            echo -e "${BYELLOW}  --- Login Credentials ---${NC}"
+            echo -e "${BYELLOW}  Username: ${NC}${OS_USERNAME}"
+            if [ -n "$OS_PASSWORD" ]; then
+                echo -e "${BYELLOW}  Password: ${NC}${OS_PASSWORD}"
+            else
+                echo -e "${BYELLOW}  Password: ${NC}${BRED}(Could not fetch automatically)${NC}"
             fi
+            echo -e "${BYELLOW}  Domain:   ${NC}${OS_DOMAIN}"
+            echo ""
             
-            HORIZON_URL="http://${HORIZON_IP}${HORIZON_PATH}"
+            # Append to access file
+            {
+                echo "[ OpenStack Horizon Dashboard ]"
+                echo "  Username: ${OS_USERNAME}"
+                echo "  Password: ${OS_PASSWORD:-(Could not fetch automatically)}"
+                echo "  Domain:   ${OS_DOMAIN}"
+            } >> "$ACCESS_FILE"
             
-            # Fetch charmed OpenStack credentials
-            OPENRC=$(lxc exec "$VM_NAME" --project "$LXD_PROJECT" -- cat /home/"$SYS_USER"/openrc 2>/dev/null)
-            if [ -n "$OPENRC" ]; then
-                TMP_USER=$(echo "$OPENRC" | grep -oP 'OS_USERNAME=\K.*' | tr -d "'\"\r")
-                [ -n "$TMP_USER" ] && OS_USERNAME="$TMP_USER"
+            if [ -n "$SSH_CLIENT" ] || [ -n "$SSH_TTY" ] || [ -n "$SSH_CONNECTION" ]; then
+                REMOTE_USER=$(whoami)
+                SERVER_IP_GUESS=$(echo "${SSH_CONNECTION:-}" | awk '{print $3}')
+                SERVER_IP_STR=${SERVER_IP_GUESS:-<SERVER_IP>}
                 
-                TMP_DOM=$(echo "$OPENRC" | grep -oP 'OS_USER_DOMAIN_NAME=\K.*' | tr -d "'\"\r")
-                [ -n "$TMP_DOM" ] && OS_DOMAIN="$TMP_DOM"
-            fi
-            
-            # Fallback Domain via Keystone config if missing from openrc
-            if [ -z "$OS_DOMAIN" ]; then
-                TMP_DOM=$(lxc exec "$VM_NAME" --project "$LXD_PROJECT" -- su - "$SYS_USER" -c "juju config -m $TARGET_MODEL keystone admin-domain-name 2>/dev/null" | tr -d '\r')
-                [ -n "$TMP_DOM" ] && [ "$TMP_DOM" != "null" ] && OS_DOMAIN="$TMP_DOM"
-            fi
-            
-            # Get admin password via Keystone
-            ACTION_CMD="juju run -m $TARGET_MODEL keystone/leader get-admin-password 2>/dev/null || juju run-action -m $TARGET_MODEL keystone/leader get-admin-password --wait 2>/dev/null"
-            TMP_PASS=$(lxc exec "$VM_NAME" --project "$LXD_PROJECT" -- su - "$SYS_USER" -c "$ACTION_CMD" | grep -oP 'admin-password:\s*\K\S+' | head -n 1 | tr -d '\r')
-            [ -n "$TMP_PASS" ] && [ "$TMP_PASS" != "null" ] && OS_PASSWORD="$TMP_PASS"
-        fi
-    fi
-    
-    if [ -n "$HORIZON_IP" ] && [ "$HORIZON_IP" != "null" ]; then
-        
-        # Apply standard fallbacks just in case the extraction files were empty
-        [ -z "$OS_USERNAME" ] && OS_USERNAME="admin"
-        [ -z "$OS_DOMAIN" ] && OS_DOMAIN="admin_domain"
-        
-        echo -e "${BYELLOW}  --- Login Credentials ---${NC}"
-        echo -e "${BYELLOW}  Username: ${NC}${OS_USERNAME}"
-        if [ -n "$OS_PASSWORD" ]; then
-            echo -e "${BYELLOW}  Password: ${NC}${OS_PASSWORD}"
-        else
-            echo -e "${BYELLOW}  Password: ${NC}${BRED}(Could not fetch automatically)${NC}"
-        fi
-        echo -e "${BYELLOW}  Domain:   ${NC}${OS_DOMAIN}"
-        echo ""
-        
-        # Append to access file
-        {
-            echo "[ OpenStack Horizon Dashboard ]"
-            echo "  Username: ${OS_USERNAME}"
-            echo "  Password: ${OS_PASSWORD:-(Could not fetch automatically)}"
-            echo "  Domain:   ${OS_DOMAIN}"
-        } >> "$ACCESS_FILE"
-        
-        if [ -n "$SSH_CLIENT" ] || [ -n "$SSH_TTY" ] || [ -n "$SSH_CONNECTION" ]; then
-            REMOTE_USER=$(whoami)
-            SERVER_IP_GUESS=$(echo "${SSH_CONNECTION:-}" | awk '{print $3}')
-            SERVER_IP_STR=${SERVER_IP_GUESS:-<SERVER_IP>}
-            
-            echo -e "${BYELLOW}  Remote SSH Session Detected!${NC}"
-            echo "  To access the Horizon dashboard locally, open a new terminal tab on your host and run:"
-            echo ""
-            echo -e "${BYELLOW}  Run:${NC} ssh -N -L 8088:${HORIZON_IP}:${HORIZON_PORT} ${REMOTE_USER}@${SERVER_IP_STR}"
-            echo -e "${BYELLOW}  URL:${NC} http://localhost:8088${HORIZON_PATH}"
-            echo ""
-            
-            # Append to access file
-            {
-                echo "  Tunnel:   ssh -N -L 8088:${HORIZON_IP}:${HORIZON_PORT} ${REMOTE_USER}@${SERVER_IP_STR}"
-                echo "  URL:      http://localhost:8088${HORIZON_PATH}"
+                echo -e "${BYELLOW}  Remote SSH Session Detected!${NC}"
+                echo "  To access the Horizon dashboard locally, open a new terminal tab on your host and run:"
                 echo ""
-            } >> "$ACCESS_FILE"
-            
-            pause_to_continue "Press Enter to drop into the final interactive shell..."
-        else
-            echo -e "${BYELLOW}  Horizon Dashboard:${NC} $HORIZON_URL"
-            echo ""
-            
-            # Append to access file
-            {
-                echo "  URL:      $HORIZON_URL"
+                echo -e "${BYELLOW}  Run:${NC} ssh -N -L 8088:${HORIZON_IP}:${HORIZON_PORT} ${REMOTE_USER}@${SERVER_IP_STR}"
+                echo -e "${BYELLOW}  URL:${NC} http://localhost:8088${HORIZON_PATH}"
                 echo ""
-            } >> "$ACCESS_FILE"
-            
-            echo -e "${BYELLOW}  Local session detected. Opening Horizon Dashboard...${NC}"
-            if command -v xdg-open &> /dev/null; then
-                xdg-open "$HORIZON_URL" > /dev/null 2>&1 &
+                
+                # Append to access file
+                {
+                    echo "  Tunnel:   ssh -N -L 8088:${HORIZON_IP}:${HORIZON_PORT} ${REMOTE_USER}@${SERVER_IP_STR}"
+                    echo "  URL:      http://localhost:8088${HORIZON_PATH}"
+                    echo ""
+                } >> "$ACCESS_FILE"
+                
+                pause_to_continue "Press Enter to drop into the final interactive shell..."
+            else
+                echo -e "${BYELLOW}  Horizon Dashboard:${NC} $HORIZON_URL"
+                echo ""
+                
+                # Append to access file
+                {
+                    echo "  URL:      $HORIZON_URL"
+                    echo ""
+                } >> "$ACCESS_FILE"
+                
+                echo -e "${BYELLOW}  Local session detected. Opening Horizon Dashboard...${NC}"
+                if command -v xdg-open &> /dev/null; then
+                    xdg-open "$HORIZON_URL" > /dev/null 2>&1 &
+                fi
             fi
+        else
+            echo -e "  ${BRED}Could not automatically determine the Horizon URL/IP.${NC}"
+            echo "  (The dashboard unit may not be deployed or is still initializing)."
         fi
     else
-        echo -e "  ${BRED}Could not automatically determine the Horizon URL/IP.${NC}"
-        echo "  (The dashboard unit may not be deployed or is still initializing)."
+        echo ""
+        echo -e "${BYELLOW}-> 6. Skipping Horizon Dashboard... (no OpenStack detected)${NC}"
     fi
-else
+    
+    # ==========================================
+    # CLUSTER IP INVENTORY
+    # ==========================================
+    
+    # Wait a brief moment to ensure all Juju nodes have flushed their final IPs to LXD
+    sleep 3
+    
+    # Generate the LXD cluster inventory list (Name, State, IPv4)
+    CLUSTER_LIST=$(lxc list --project "$LXD_PROJECT" -c ns4)
+    
+    # Append to the access file (no color codes)
+    {
+        echo "=========================================="
+        echo " Cluster Instances & IPs"
+        echo "=========================================="
+        echo ""
+        echo "$CLUSTER_LIST"
+        echo ""
+    } >> "$ACCESS_FILE"
+    
+    # Print natively
     echo ""
-    echo -e "${BYELLOW}-> 6. Skipping Horizon Dashboard... (no OpenStack detected)${NC}"
-fi
+    echo -e "${BYELLOW}==========================================${NC}"
+    echo -e "${BYELLOW} Cluster Instances & IPs${NC}"
+    echo -e "${BYELLOW}==========================================${NC}"
+    echo ""
+    echo "$CLUSTER_LIST"
+    
+    # Write the connection string directly to the log out in case the terminal detached
+    {
+        echo ""
+        echo -e "${BYELLOW}-> 7. Deployment complete! Connect to your environment using:${NC}"
+        echo "  ssh ${SSH_OPTS[*]} ${SYS_USER}@$IP"
+        echo ""
+    } >> "$LOG_FILE"
+) &
+WORKER_PID=$!
+
+# Wait for the background worker to finish naturally
+wait $WORKER_PID
+
+# Kill the tail process
+[ -n "$TAIL_PID" ] && kill "$TAIL_PID" 2>/dev/null
+
+# If we get here, the user DID NOT interrupt (Ctrl+C). Restore normal traps
+trap 'emergency_rollback; exit 1' INT TERM HUP
+
+# Restore stdout/stderr back to the terminal for a clean interactive ssh session
+exec 1>&3 2>&4
+
+# Fetch the IP directly from LXD since we are in the parent shell and the worker has finished
+IP=$(lxc list "$VM_NAME" --project "$LXD_PROJECT" --format=json 2>/dev/null | jq -r '.[0].state.network | to_entries[] | select(.key=="eth0" or .key=="enp5s0") | .value.addresses[] | select(.family=="inet" and .scope=="global") | .address' | head -n 1)
 
 # ==========================================
 # FINAL SSH SHELL
 # ==========================================
 
-# Define SSH options dynamically
-if [ -f "$SSH_ID" ]; then
-    SSH_OPTS=(-i "$SSH_ID" -o "StrictHostKeyChecking=no" -o "UserKnownHostsFile=/dev/null")
-else
-    SSH_OPTS=(-o "StrictHostKeyChecking=no" -o "UserKnownHostsFile=/dev/null")
-fi
-
-# 7. Final Interactive Shell
-if [ "$HEADLESS" = false ]; then
+if [ -n "$IP" ]; then
     echo ""
     echo -e "${BYELLOW}-> 7. Dropping into interactive shell...${NC}"
     echo ""
     
     # shellcheck disable=SC2029
     ssh "${SSH_OPTS[@]}" "${SYS_USER}@$IP"
-else
-    echo ""
-    echo -e "${BYELLOW}-> 7. Deployment complete! Connect to your environment using:${NC}"
-    echo "  ssh ${SSH_OPTS[*]} ${SYS_USER}@$IP"
 fi
 
 # ==========================================
