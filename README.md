@@ -6,6 +6,8 @@ At the core of the project is `synth`, a standalone LXD orchestrator that acts a
 
 ### Key Features
 * Parses Jinja `cloud-config.yaml` payloads to dynamically calculate hardware requirements and generate interactive CLI prompts.
+* Saves the deployment state into a reusable `config-<project>.yaml` file, allowing 1:1 declarative environment replication.
+* Consolidates all generated artifacts (logs, certificates, teardown scripts, credentials) cleanly into an isolated project directory.
 * Supports nested LXD architectures or bare-metal LXD daemons.
 * Leverages the host's LXD image cache by default to massively speed up VM provisioning, with an option to isolate images per project.
 * Provisions `ipv4.nat` bridges, calculates CIDR gateways, and validates DHCP settings to prevent collisions.
@@ -66,6 +68,7 @@ Invoke the script against a cloud-init template:
 | `-d, --deb` | Force DEB packages for MAAS instead of the default snap. |
 | `-i, --id <lp_id>` | Import SSH public keys directly from a Launchpad account. |
 | `-I, --isolate-images` | Isolate LXD images per project (disables host image sharing). |
+| `-c, --config <file>`| Load a pre-defined YAML configuration file to bypass prompts and replicate an environment. |
 
 ### Examples
 
@@ -77,6 +80,11 @@ Deploy interactively with a custom ID:
 Deploy an automated cluster using deb MAAS and Launchpad keys:
 ```bash
 ./synth -y -d -i pgdg99 Openstack/focal-ussuri.yaml
+```
+
+Redeploy a previous exact environment using a saved configuration file:
+```bash
+./synth -y -c Juju/b737170d/config-juju-b737170d.yaml Juju/juju.yaml
 ```
 
 Run a fully automated background deployment (Start it, and press `Ctrl+C` to detach once the logs begin):
@@ -95,7 +103,7 @@ Additionally, `synth` performs dynamic credential extraction:
 * OpenStack Horizon: Natively queries Juju (or the `sunbeam` snap) to extract the dashboard VIP, Domain, Username, and Admin Password.
 * Cluster Inventory: Captures all node hostnames, states, and IPv4 addresses.
 
-All of these credentials, URLs, and tunnel commands are safely appended to an `access-<project_name>.txt` file generated in the same directory as your payload, ensuring you don't lose them if your terminal buffer clears.
+All of these credentials, URLs, and tunnel commands are safely appended to an `access-<project_name>.txt` file generated in the project directory, ensuring you don't lose them if your terminal buffer clears.
 
 ---
 
@@ -106,8 +114,10 @@ All of these credentials, URLs, and tunnel commands are safely appended to an `a
 Execute this script to wipe the LXD project, stop and delete instances, un-trust volatile certificates, remove the access manifest and logs, and clean up the associated dynamic networks.
 
 ```bash
-./destroy-maas-00436900.sh
+./Juju/b737170d/destroy-juju-b737170d.sh
 ```
+
+> **Note:** The cleanup script will safely self-delete and attempt to remove its parent project directory. It will deliberately leave the directory intact if you choose to keep your `config-<project_name>.yaml` file for future redeployments.
 
 ---
 

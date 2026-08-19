@@ -1,6 +1,14 @@
-.certs/
-destroy-*
-access-*
-log-*
+# Ignore generated se-polymerase deployment directories (8-char hex DEPLOY_ID)
+*/[0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f]/
+
+# Fallback explicit ignore for generated artifacts if they leak out of a folder
+destroy-*.sh
+config-*.yaml
+config-*.yaml.tmp
+access-*.txt
+log-*.log
+.cert-*
+
+# Ignore custom folders and files
 credentials
 source/

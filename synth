@@ -3,7 +3,7 @@
 # se-polymerase (synth)
 # Acts as the polymerase to synthesize an isolated, terraform-free LXD 
 # reproducer environment using the host's LXD for MAAS + Juju deployments.
-# version: 6.0.0
+# version: 7.1.0
 #
 # Synthesized by: Pablo Gonzalez De Greiff @ Canonical
 # ---
@@ -16,8 +16,12 @@ exec 3>&1 4>&2
 # Unified unique deployment ID (Can be changed to case number - 8 numbers) (Inherit from parent if forked)
 DEPLOY_ID="${DEPLOY_ID:-$(openssl rand -hex 4)}"
 
-# Array to hold dynamic LXD Jinja flags
+# Arrays to hold dynamic configuration
 LXC_OPTIONAL_ARGS=()
+DEFERRED_CONFIG=()
+
+# Prevent specific dynamic/internal variables from being hardcoded into the config file
+PROCESSED_KEYS=("ssh_key" "ssh_import_id" "nested_lxd" "maas_snap" "deploy_id" "lxd_project")
 
 # Deployment variables
 NESTED=false # Use nested LXD instead of host's LXD (performance degradation)
@@ -27,6 +31,8 @@ CLEANUP_HANDOVER=false # Emergency rollback cleanup handover flag
 PROJECT_CREATED=false # Tracks if it created the LXD project to prevent wiping existing ones
 CLOUD_INIT_LOG_LINES=7 # Lines to show while Juju status watch
 MAX_WAIT=300 # Maximum wait time in seconds for loops
+
+INPUT_CONFIG_FILE=""
 
 # --- Colors ---
 # Check if stderr is a TTY
@@ -59,6 +65,7 @@ ${BYELLOW}Options:${NC}
   -d, --deb                 Use DEB packages for MAAS instead of the default snap.
   -i, --id <launchpad_id>   Import SSH public keys directly from a Launchpad account.
   -I, --isolate-images      Isolate LXD images per project (disables host image sharing).
+  -c, --config <file>       Load a pre-defined YAML configuration file to bypass prompts.
 
 ${BYELLOW}Arguments:${NC}
   CLOUD_INIT_FILE           Path to the cloud-init.yaml template to deploy.
@@ -66,7 +73,10 @@ ${BYELLOW}Arguments:${NC}
 
 ${BYELLOW}Example:${NC}
   # Synthesize an environment accepting all defaults, using deb MAAS, and use '00426900' as the ID:
-  $0 sunbeam/cloud-init.yaml -yd 00426900
+  $0 Sunbeam/sunbeam.yaml -yd 00426900
+
+  # Synthesize an environment using pre-defined options from a previous run:
+  $0 Sunbeam/sunbeam.yaml -y -c config-sunbeam-00426900.yaml
 
 EOF
     )"
@@ -84,13 +94,17 @@ emergency_rollback() {
         local rollback_needed=false
         
         # Fast checks for actionable resources
-        if [ ${#CREATED_BRIDGES[@]} -gt 0 ] || { [ -n "$VOLATILE_CERT_NAME" ] && [ -f "$CERT_DIR/${VOLATILE_CERT_NAME}.crt" ]; }; then
+        if [ ${#CREATED_BRIDGES[@]} -gt 0 ] || { [ -n "$VOLATILE_CERT" ] && [ -f "${VOLATILE_CERT}.crt" ]; }; then
             rollback_needed=true
         elif [ "$PROJECT_CREATED" = true ]; then
             rollback_needed=true
         elif [ -n "$LOG_FILE" ] && [ -f "$LOG_FILE" ]; then
             rollback_needed=true
         elif [ -n "$ACCESS_FILE" ] && [ -f "$ACCESS_FILE" ]; then
+            rollback_needed=true
+        elif [ -n "$CONFIG_FILE_TMP" ] && [ -f "$CONFIG_FILE_TMP" ]; then
+            rollback_needed=true
+        elif [ -n "$CONFIG_FILE" ] && [ -f "$CONFIG_FILE" ] && [ "$CONFIG_FILE" != "$INPUT_CONFIG_FILE" ]; then
             rollback_needed=true
         fi
         
@@ -132,27 +146,32 @@ emergency_rollback() {
                 done
             fi
             
-            if [ -n "$VOLATILE_CERT_NAME" ] && [ -f "$CERT_DIR/${VOLATILE_CERT_NAME}.crt" ]; then
+            if [ -n "$VOLATILE_CERT" ] && [ -f "${VOLATILE_CERT}.crt" ]; then
                 echo "-> Cleaning up orphaned certificates..."
-                FINGERPRINT=$(lxc config trust list --format json | jq -r ".[] | select(.name==\"${VOLATILE_CERT_NAME}\") | .fingerprint")
+                CERT_NAME="$(basename "$VOLATILE_CERT")"
+                FINGERPRINT=$(lxc config trust list --format json | jq -r ".[] | select(.name==\"${CERT_NAME}\") | .fingerprint")
                 if [ -n "$FINGERPRINT" ] && [ "$FINGERPRINT" != "null" ]; then
                     lxc config trust remove "$FINGERPRINT"
                 fi
-                rm -f "$CERT_DIR/${VOLATILE_CERT_NAME}.crt" "$CERT_DIR/${VOLATILE_CERT_NAME}.key"
-                rmdir "$CERT_DIR" 2>/dev/null || true
+                rm -f "${VOLATILE_CERT}.crt" "${VOLATILE_CERT}.key"
             fi
             
-            # Clean up the log file on rollback
-            if [ -n "$LOG_FILE" ] && [ -f "$LOG_FILE" ]; then
-                echo "-> Cleaning up orphaned log file..."
-                rm -f "$LOG_FILE" 2>/dev/null || true
+            # Clean up generated files on rollback
+            for r_file in "$LOG_FILE" "$ACCESS_FILE" "$CONFIG_FILE_TMP"; do
+                if [ -n "$r_file" ] && [ -f "$r_file" ]; then
+                    echo "-> Cleaning up orphaned $(basename "$r_file")..."
+                    rm -f "$r_file" 2>/dev/null || true
+                fi
+            done
+            
+            # Only remove the full config file if it wasn't the pre-existing input config file
+            if [ -n "$CONFIG_FILE" ] && [ -f "$CONFIG_FILE" ] && [ "$CONFIG_FILE" != "$INPUT_CONFIG_FILE" ]; then
+                echo "-> Cleaning up generated $(basename "$CONFIG_FILE")..."
+                rm -f "$CONFIG_FILE" 2>/dev/null || true
             fi
             
-            # Clean up the access file on rollback
-            if [ -n "$ACCESS_FILE" ] && [ -f "$ACCESS_FILE" ]; then
-                echo "-> Cleaning up orphaned access file..."
-                rm -f "$ACCESS_FILE" 2>/dev/null || true
-            fi
+            # Safely remove project directory if it's completely empty
+            [ -n "$PROJECT_DIR" ] && [ -d "$PROJECT_DIR" ] && rmdir "$PROJECT_DIR" 2>/dev/null || true
         fi
         
         # Prevent double-execution if multiple exit signals are caught
@@ -204,16 +223,22 @@ ask_var() {
     local prompt_text="$1"
     local config_key="$2"
     local default_val=""
-    local user_input
-    local bash_var_name
+    local user_input=""
+    local bash_var_name=""
+    local provided_key_var=""
     
     # Extract default value from Jinja cloud-init template
     if [ -n "$config_key" ] && [ -f "$CLOUD_INIT" ]; then
         default_val=$(get_default "$config_key")
     fi
     
-    # Prompt for value if accept defaults is false
-    if [ "$ACCEPT_DEFAULTS" = true ]; then
+    # Check if value was provided in config file
+    provided_key_var="CONFIG_PROVIDED_${config_key}"
+    
+    if [ -n "${!provided_key_var}" ]; then
+        user_input="${!provided_key_var}"
+        echo -e "  ${BYELLOW}${prompt_text} [${NC}from config${BYELLOW}]: ${NC}${user_input}"
+    elif [ "$ACCEPT_DEFAULTS" = true ]; then
         user_input="$default_val"
     else
         echo -ne "  ${BYELLOW}${prompt_text} [${NC}${default_val}${BYELLOW}]: ${NC}"
@@ -224,6 +249,12 @@ ask_var() {
     # Smart GiB appending
     if [[ "$default_val" == *"GiB" ]] && [[ "$user_input" =~ ^[0-9]+$ ]]; then
         user_input="${user_input}GiB"
+    fi
+    
+    # Save the selected choice to the output config file temporarily
+    if [ -n "$CONFIG_FILE_TMP" ] && [ -n "$config_key" ]; then
+        echo "${config_key}: \"${user_input}\"" >> "$CONFIG_FILE_TMP"
+        PROCESSED_KEYS+=("$config_key")
     fi
     
     # Export to LXC args if a config key exists and export as uppercase bash variable
@@ -246,22 +277,39 @@ create_dynamic_bridge() {
     local clean_name="${var_key#os_}"
     local default_br="${clean_name:0:1}br-${DEPLOY_ID}"
     
-    local bridge_name
-    local bridge_cidr
-    local auto_ip
-    local default_cidr
-    local user_cidr
-    local current_dhcp
-    local current_nat
-
+    local bridge_name=""
+    local bridge_cidr=""
+    local auto_ip=""
+    local default_cidr=""
+    local user_cidr=""
+    local current_dhcp=""
+    local current_nat=""
+    
     # Setup our loop control variable
     local valid_bridge=false
-
+    
+    # Check config file for provided inputs
+    local provided_br=""
+    local provided_cidr=""
+    local provided_key_var="CONFIG_PROVIDED_${var_key}"
+    local provided_cidr_var="CONFIG_PROVIDED_${cidr_var}"
+    
+    if [ -n "${!provided_key_var}" ]; then
+        provided_br="${!provided_key_var}"
+    fi
+    if [ -n "${!provided_cidr_var}" ]; then
+        provided_cidr="${!provided_cidr_var}"
+    fi
+    
     # Keep prompting until a valid bridge is selected or created
     while [ "$valid_bridge" = false ]; do
-    
+        
         # Prompt for value if accept defaults is false
-        if [ "$ACCEPT_DEFAULTS" = true ]; then
+        if [ -n "$provided_br" ]; then
+            bridge_name="$provided_br"
+            echo -e "  ${BYELLOW}${prompt_text} [${NC}from config${BYELLOW}]: ${NC}${bridge_name}"
+            provided_br="" # Clear so it drops to default prompt if validation fails
+        elif [ "$ACCEPT_DEFAULTS" = true ]; then
             bridge_name="$default_br"
         else
             echo -ne "  ${BYELLOW}${prompt_text} [${NC}${default_br}${BYELLOW}]: ${NC}"
@@ -284,7 +332,7 @@ create_dynamic_bridge() {
                 echo -e "${BRED}Error: Existing bridge '${NC}${bridge_name}${BRED}' has 'ipv4.dhcp=${NC}${current_dhcp}${BRED}', but this network requires 'ipv4.dhcp=${NC}${dhcp_flag}${BRED}'!${NC}"
                 echo "Please specify a different bridge name or delete the conflicting bridge."
                 echo ""
-                if [ "$ACCEPT_DEFAULTS" = true ]; then
+                if [ "$ACCEPT_DEFAULTS" = true ] || [ -n "$INPUT_CONFIG_FILE" ]; then
                     exit 1
                 else
                     continue
@@ -300,7 +348,7 @@ create_dynamic_bridge() {
                 echo -e "${BRED}Error: Existing bridge '${NC}${bridge_name}${BRED}' has 'ipv4.nat=${NC}${current_nat}${BRED}', but this network requires 'ipv4.nat=${NC}true${BRED}' for outbound internet!${NC}"
                 echo "Please specify a different bridge name or enable NAT on this bridge."
                 echo ""
-                if [ "$ACCEPT_DEFAULTS" = true ]; then
+                if [ "$ACCEPT_DEFAULTS" = true ] || [ -n "$INPUT_CONFIG_FILE" ]; then
                     exit 1
                 else
                     continue
@@ -310,17 +358,19 @@ create_dynamic_bridge() {
             auto_ip=$(lxc network get "$bridge_name" ipv4.address)
             bridge_cidr=$(echo "$auto_ip" | awk -F'[/.]' '{print $1"."$2"."$3".0/"$5}')
             
-            if [ "$ACCEPT_DEFAULTS" = false ]; then
+            if [ "$ACCEPT_DEFAULTS" = false ] && [ -z "$INPUT_CONFIG_FILE" ]; then
                 echo -e "  ${BYELLOW}${prompt_text% Name} fetched CIDR: ${NC}${bridge_cidr}"
             fi
             
             valid_bridge=true
             
-        elif [ "$bridge_name" = "$default_br" ]; then
+        elif [ "$bridge_name" = "$default_br" ] && [ -z "$provided_cidr" ]; then
             
             # Using random bridge, create it and obtain CIDR
             echo ""
-            confirm_or_abort "Create new random ${prompt_text% Name} '$bridge_name' to auto-assign CIDR?"
+            if [ -z "$INPUT_CONFIG_FILE" ]; then
+                confirm_or_abort "Create new random ${prompt_text% Name} '$bridge_name' to auto-assign CIDR?"
+            fi
             
             echo "Creating random managed '$bridge_name' (DHCP=${dhcp_flag})..."
             if ! lxc network create "$bridge_name" \
@@ -330,7 +380,7 @@ create_dynamic_bridge() {
                 echo ""
                 echo -e "${BRED}Error: Failed to create random ${prompt_text% Name} '${NC}$bridge_name${BRED}'. Please try again...${NC}"
                 echo ""
-                if [ "$ACCEPT_DEFAULTS" = true ]; then
+                if [ "$ACCEPT_DEFAULTS" = true ] || [ -n "$INPUT_CONFIG_FILE" ]; then
                     exit 1
                 else
                     continue
@@ -343,7 +393,7 @@ create_dynamic_bridge() {
             auto_ip=$(lxc network get "$bridge_name" ipv4.address)
             bridge_cidr=$(echo "$auto_ip" | awk -F'[/.]' '{print $1"."$2"."$3".0/"$5}')
             echo ""
-            if [ "$ACCEPT_DEFAULTS" = false ]; then
+            if [ "$ACCEPT_DEFAULTS" = false ] && [ -z "$INPUT_CONFIG_FILE" ]; then
                 echo -e "  ${BYELLOW}${prompt_text% Name} Auto-Assigned CIDR: ${NC}${bridge_cidr}"
             fi
             
@@ -357,12 +407,20 @@ create_dynamic_bridge() {
             default_cidr=$(get_default "$cidr_var")
             [ -z "$default_cidr" ] && default_cidr="10.0.0.0/22"
             
-            echo -ne "  ${BYELLOW}${prompt_text% Name} CIDR [${NC}${default_cidr}${BYELLOW}]: ${NC}"
-            read -r user_cidr </dev/tty
-            bridge_cidr="${user_cidr:-$default_cidr}"
+            if [ -n "$provided_cidr" ]; then
+                bridge_cidr="$provided_cidr"
+                echo -e "  ${BYELLOW}${prompt_text% Name} CIDR [${NC}from config${BYELLOW}]: ${NC}${bridge_cidr}"
+                provided_cidr=""
+            else
+                echo -ne "  ${BYELLOW}${prompt_text% Name} CIDR [${NC}${default_cidr}${BYELLOW}]: ${NC}"
+                read -r user_cidr </dev/tty
+                bridge_cidr="${user_cidr:-$default_cidr}"
+            fi
             
             echo ""
-            confirm_or_abort "Create custom managed ${prompt_text% Name} '$bridge_name' ($bridge_cidr)?"
+            if [ -z "$INPUT_CONFIG_FILE" ]; then
+                confirm_or_abort "Create custom managed ${prompt_text% Name} '$bridge_name' ($bridge_cidr)?"
+            fi
             
             echo "Creating custom managed '$bridge_name' ($bridge_cidr DHCP=${dhcp_flag})..."
             read -r gw_ip prefix <<< "$(python3 -c "
@@ -405,6 +463,13 @@ except Exception:
             valid_bridge=true
         fi
     done
+    
+    # Save the selected choice to the output config file temporarily
+    if [ -n "$CONFIG_FILE_TMP" ]; then
+        echo "${var_key}: \"${bridge_name}\"" >> "$CONFIG_FILE_TMP"
+        echo "${cidr_var}: \"${bridge_cidr}\"" >> "$CONFIG_FILE_TMP"
+        PROCESSED_KEYS+=("$var_key" "$cidr_var")
+    fi
     
     # Export Bridge Name into LXC args and bash env
     LXC_OPTIONAL_ARGS+=("-c" "user.${var_key}=${bridge_name}")
@@ -505,6 +570,9 @@ for arg in "$@"; do
 done
 set -- "${parsed_args[@]}"
 
+CLI_MAAS_SNAP=""
+CLI_NESTED_LXD=""
+
 # --- Argument Parsing ---
 echo ""
 while [[ $# -gt 0 ]]; do
@@ -519,13 +587,11 @@ while [[ $# -gt 0 ]]; do
             shift 1
             ;;
         -n|--nested)
-            NESTED=true
+            CLI_NESTED_LXD="true"
             shift 1
             ;;
         -d|--deb)
-            echo -e "${BYELLOW}-> Using deb MAAS packages instead of snap${NC}"
-            echo ""
-            LXC_OPTIONAL_ARGS+=("-c" "user.maas_snap=false")
+            CLI_MAAS_SNAP="false"
             shift 1
             ;;
         -i|--id)
@@ -540,6 +606,12 @@ while [[ $# -gt 0 ]]; do
             SHARED_IMAGES=false
             shift 1
             ;;
+        -c|--config)
+            INPUT_CONFIG_FILE="$2"
+            echo -e "${BYELLOW}-> Loading configuration from:${NC} $INPUT_CONFIG_FILE"
+            echo ""
+            shift 2
+            ;;
         -*)
             echo -e "${BRED}Error: Unknown flag '${NC}${1}${BRED}'${NC}"
             exit 1
@@ -551,17 +623,6 @@ while [[ $# -gt 0 ]]; do
             ;;
     esac
 done
-
-# Nested architecture toggle
-if [ "$NESTED" = false ]; then
-    echo -e "${BYELLOW}-> Using default non-nested LXD architecture.${NC}"
-    echo ""
-    LXC_OPTIONAL_ARGS+=("-c" "user.nested_lxd=false")
-else
-    echo -e "${BYELLOW}-> Using nested LXD architecture${NC} - ${BRED}WARNING: DEGRADED PERFORMANCE IF NOT RUNNING IN BARE METAL${NC}"
-    echo ""
-    LXC_OPTIONAL_ARGS+=("-c" "user.nested_lxd=true")
-fi
 
 # ==========================================
 # POSITIONAL ARGUMENT RESOLUTION
@@ -581,15 +642,41 @@ if [ ! -f "$CLOUD_INIT_FILE" ]; then
     exit 1
 fi
 
+if [ -n "$INPUT_CONFIG_FILE" ]; then
+    if [ ! -f "$INPUT_CONFIG_FILE" ]; then
+        echo -e "${BRED}Error: Configuration file '${NC}${INPUT_CONFIG_FILE}${BRED}' not found!${NC}"
+        exit 1
+    fi
+    # Force absolute path immediately so later comparisons don't fail
+    INPUT_CONFIG_FILE="$(realpath "$INPUT_CONFIG_FILE")"
+fi
+
 # Dynamically set directories based on the resolved absolute path of the file
 CLOUD_INIT="$(realpath "$CLOUD_INIT_FILE")"
 SCRIPT_DIR="$(dirname "$CLOUD_INIT")"
-CERT_DIR="$SCRIPT_DIR/.certs"
+
+# Pre-Load Config Variables
+if [ -n "$INPUT_CONFIG_FILE" ]; then
+    while IFS=':' read -r key val; do
+        # Skip comments and empty lines
+        [[ "$key" =~ ^#.*$ || -z "$key" ]] && continue
+        
+        # Clean up key and val spaces and quotes
+        key=$(echo "$key" | xargs)
+        val=$(echo "$val" | sed -E 's/^[[:space:]]*//' | sed 's/^"\(.*\)"$/\1/' | sed "s/^'\(.*\)'$/\1/" | xargs)
+        
+        export "CONFIG_PROVIDED_${key}=${val}"
+    done < "$INPUT_CONFIG_FILE"
+fi
 
 # Resolve the Deploy ID Overwrite (If provided)
 if [ ${#POSITIONAL_ARGS[@]} -ge 2 ]; then
     # Directly override and lowercase the default Deploy ID
     DEPLOY_ID=$(echo "${POSITIONAL_ARGS[1]}" | tr '[:upper:]' '[:lower:]')
+elif [ -n "${CONFIG_PROVIDED_deploy_id}" ]; then
+    DEPLOY_ID="${CONFIG_PROVIDED_deploy_id}"
+elif [ -n "${CONFIG_PROVIDED_lxd_project}" ] && [[ "${CONFIG_PROVIDED_lxd_project}" == *"-"* ]]; then
+    DEPLOY_ID="${CONFIG_PROVIDED_lxd_project##*-}"
 fi
 
 # Verify deploy ID
@@ -599,6 +686,34 @@ if [[ ! "$DEPLOY_ID" =~ ^[a-z0-9]{1,8}$ ]]; then
     exit 1
 fi
 
+# ==========================================
+# EARLY ARCHITECTURE & SSH RESOLUTION
+# ==========================================
+
+# Architecture resolution
+if [ "$CLI_NESTED_LXD" = "true" ] || [ "${CONFIG_PROVIDED_nested_lxd}" = "true" ]; then
+    echo -e "${BYELLOW}-> Using nested LXD architecture${NC} - ${BRED}WARNING: DEGRADED PERFORMANCE IF NOT RUNNING IN BARE METAL${NC}"
+    echo ""
+    LXC_OPTIONAL_ARGS+=("-c" "user.nested_lxd=true")
+    NESTED=true
+    DEFERRED_CONFIG+=("nested_lxd: \"true\"")
+else
+    echo -e "${BYELLOW}-> Using default non-nested LXD architecture.${NC}"
+    echo ""
+    LXC_OPTIONAL_ARGS+=("-c" "user.nested_lxd=false")
+    DEFERRED_CONFIG+=("nested_lxd: \"false\"")
+fi
+
+# Deb/Snap resolution
+if [ "$CLI_MAAS_SNAP" = "false" ] || [ "${CONFIG_PROVIDED_maas_snap}" = "false" ]; then
+    echo -e "${BYELLOW}-> Using deb MAAS packages instead of snap${NC}"
+    echo ""
+    LXC_OPTIONAL_ARGS+=("-c" "user.maas_snap=false")
+    DEFERRED_CONFIG+=("maas_snap: \"false\"")
+else
+    DEFERRED_CONFIG+=("maas_snap: \"true\"")
+fi
+
 # Smart SSH Key Detection
 if [ -f ~/.ssh/id_ed25519 ]; then
     SSH_ID=~/.ssh/id_ed25519
@@ -606,7 +721,7 @@ elif [ -f ~/.ssh/id_rsa ]; then
     SSH_ID=~/.ssh/id_rsa
 else
     # Only prompt for a local key if no Launchpad ID was provided
-    if [[ ! " ${LXC_OPTIONAL_ARGS[*]} " == *"user.ssh_import_id"* ]]; then
+    if [[ ! " ${LXC_OPTIONAL_ARGS[*]} " == *"user.ssh_import_id"* ]] && [ -z "${CONFIG_PROVIDED_ssh_import_id}" ]; then
         echo -ne "No SSH identity found, please insert path to one: "
         read -r user_input </dev/tty
         
@@ -617,8 +732,15 @@ else
     fi
 fi
 
+# If Launchpad key was in config file and not passed via CLI flag, inject it
+if [[ ! " ${LXC_OPTIONAL_ARGS[*]} " == *"user.ssh_import_id"* ]] && [ -n "${CONFIG_PROVIDED_ssh_import_id}" ]; then
+    echo -e "${BYELLOW}-> Importing SSH keys from Launchpad (from config):${NC} ${CONFIG_PROVIDED_ssh_import_id}"
+    echo ""
+    LXC_OPTIONAL_ARGS+=("-c" "user.ssh_import_id=${CONFIG_PROVIDED_ssh_import_id}")
+fi
+
 # Auto-inject local SSH public key
-if [ -f "${SSH_ID}.pub" ]; then
+if [ -n "$SSH_ID" ] && [ -f "${SSH_ID}.pub" ]; then
     echo -e "${BYELLOW}-> Auto-injecting local SSH public key:${NC} ${SSH_ID}.pub"
     echo ""
     PUB_KEY=$(cat "${SSH_ID}.pub")
@@ -654,22 +776,51 @@ JUJU_MODELS=$(get_default "juju_models")
 # Default project name using the specific prefix + unified ID (8 hex chars)
 DEFAULT_PROJECT="${REPRO_NAME}-${DEPLOY_ID}"
 
-# Prompt for the host's unique LXD Project Name
-if [ "$ACCEPT_DEFAULTS" = true ]; then
+# Resolve the Host's unique LXD Project Name
+echo -e "${BYELLOW}-> -------- Dynamic ${PRETTY_REPRO} Payload Configuration ---------${NC}"
+echo ""
+
+if [ -n "${CONFIG_PROVIDED_lxd_project}" ]; then
+    LXD_PROJECT="${CONFIG_PROVIDED_lxd_project}"
+    echo -e "  ${BYELLOW}Host LXD Project Name [${NC}from config${BYELLOW}]: ${NC}${LXD_PROJECT}"
+elif [ "$ACCEPT_DEFAULTS" = true ]; then
     LXD_PROJECT="$DEFAULT_PROJECT"
 else
-    echo -e "${BYELLOW}-> -------- Dynamic ${PRETTY_REPRO} Payload Configuration ---------${NC}"
-    echo ""
     echo -ne "  ${BYELLOW}Host LXD Project Name [${NC}${DEFAULT_PROJECT}${BYELLOW}]: ${NC}"
     read -r user_input </dev/tty
     LXD_PROJECT="${user_input:-$DEFAULT_PROJECT}"
 fi
 
-# Generate the random resources using the selected LXD project name
-VOLATILE_CERT_NAME="cert-${LXD_PROJECT}"
-CLEANUP_SCRIPT="$SCRIPT_DIR/destroy-${LXD_PROJECT}.sh"
-ACCESS_FILE="$SCRIPT_DIR/access-${LXD_PROJECT}.txt"
-LOG_FILE="$SCRIPT_DIR/log-${LXD_PROJECT}.log"
+# Create the isolated project directory to store all resources
+PROJECT_DIR="$SCRIPT_DIR/${DEPLOY_ID}"
+mkdir -p "$PROJECT_DIR"
+
+# Generate the resources scoped to the selected LXD project directory
+VOLATILE_CERT="$PROJECT_DIR/.cert-${LXD_PROJECT}"
+CLEANUP_SCRIPT="$PROJECT_DIR/destroy-${LXD_PROJECT}.sh"
+ACCESS_FILE="$PROJECT_DIR/access-${LXD_PROJECT}.txt"
+LOG_FILE="$PROJECT_DIR/log-${LXD_PROJECT}.log"
+CONFIG_FILE="$PROJECT_DIR/config-${LXD_PROJECT}.yaml"
+CONFIG_FILE_TMP="${CONFIG_FILE}.tmp"
+
+# Initialize configuration file to a temporary file (Prevents overwrite if using the same file as input -c)
+echo "# ==========================================" > "$CONFIG_FILE_TMP"
+echo "# Polymerase ${PRETTY_REPRO} deployment configuration" >> "$CONFIG_FILE_TMP"
+echo "# ==========================================" >> "$CONFIG_FILE_TMP"
+echo "# Payload: $(basename "$CLOUD_INIT")" >> "$CONFIG_FILE_TMP"
+echo "# Project: $LXD_PROJECT" >> "$CONFIG_FILE_TMP"
+echo "# Date:    $(date)" >> "$CONFIG_FILE_TMP"
+echo "# ==========================================" >> "$CONFIG_FILE_TMP"
+echo "" >> "$CONFIG_FILE_TMP"
+
+# Persist deploy_id and lxd_project in YAML
+echo "deploy_id: \"$DEPLOY_ID\"" >> "$CONFIG_FILE_TMP"
+echo "lxd_project: \"$LXD_PROJECT\"" >> "$CONFIG_FILE_TMP"
+
+# Flush deferred configs to tmp file now that we know the project path ("nested_lxd" "maas_snap")
+for conf in "${DEFERRED_CONFIG[@]}"; do
+    echo "$conf" >> "$CONFIG_FILE_TMP"
+done
 
 # Pre-flight check: Prevent deploying over an existing VM
 TARGET_VM_NAME="$VM_NAME"
@@ -678,8 +829,15 @@ TARGET_VM_NAME="$VM_NAME"
 if lxc project list 2>/dev/null | grep -q " $LXD_PROJECT "; then
     if lxc list --project "$LXD_PROJECT" -c n --format csv 2>/dev/null | grep -q "^${TARGET_VM_NAME}$"; then
         echo ""
-        echo -e "${BRED}Error: VM '${TARGET_VM_NAME}' already exists in LXD project '${LXD_PROJECT}'.${NC}"
+        echo -e "${BRED}Error: VM '${NC}${TARGET_VM_NAME}${BRED}' already exists in LXD project '${NC}${LXD_PROJECT}${BRED}'.${NC}"
         echo "Please use a different deployment ID or destroy the existing environment first."
+        
+        # Clean up temporary config file generated in the active project directory
+        rm -f "$CONFIG_FILE_TMP" 2>/dev/null || true
+        
+        # Safely remove project directory if it's completely empty
+        [ -n "$PROJECT_DIR" ] && [ -d "$PROJECT_DIR" ] && rmdir "$PROJECT_DIR" 2>/dev/null || true
+        
         # Disable the rollback so it exits completely silently
         CLEANUP_HANDOVER=true
         exit 1
@@ -720,6 +878,25 @@ done < <(grep -E '\{\%\s*set\s+custom_.*PROMPT:' "$CLOUD_INIT")
 if [ "$NESTED" = true ]; then
     create_dynamic_bridge "Nested Host Uplink" "host_bridge" "true" "host_cidr"
 fi
+
+# Ensure all config-provided variables (even unprompted ones) are replicated to the payload and new config file
+for var in $(compgen -e | grep "^CONFIG_PROVIDED_"); do
+    key="${var#CONFIG_PROVIDED_}"
+    val="${!var}"
+    
+    # Check if we already processed it through the prompt loops
+    if [[ ! " ${PROCESSED_KEYS[*]} " == *" $key "* ]]; then
+        echo "${key}: \"${val}\"" >> "$CONFIG_FILE_TMP"
+        LXC_OPTIONAL_ARGS+=("-c" "user.${key}=${val}")
+        export "$(echo "$key" | tr '[:lower:]' '[:upper:]')"="$val"
+    fi
+done
+
+# Finalize the config file
+[ -f "$CONFIG_FILE_TMP" ] && mv "$CONFIG_FILE_TMP" "$CONFIG_FILE"
+
+echo ""
+echo -e "${BYELLOW}-> Configuration file saved to:${NC} $CONFIG_FILE"
 
 # ==========================================
 # DYNAMIC RESOURCE CALCULATION
@@ -1002,21 +1179,19 @@ if [ "$NESTED" = false ]; then
     
     # Generate and Trust Volatile LXD Certificate
     echo ""
-    echo -e "${BYELLOW}-> Generating volatile LXD certificate:${NC} ${CERT_DIR}/${VOLATILE_CERT_NAME}"
+    echo -e "${BYELLOW}-> Generating volatile LXD certificate:${NC} ${VOLATILE_CERT}"
     
-    mkdir -p "$CERT_DIR"
-    CLIENT_CRT="$CERT_DIR/${VOLATILE_CERT_NAME}.crt"
-    CLIENT_KEY="$CERT_DIR/${VOLATILE_CERT_NAME}.key"
+    CERT_NAME="$(basename "$VOLATILE_CERT")"
     
     # Generate the cert pair silently
-    openssl req -x509 -newkey rsa:2048 -keyout "$CLIENT_KEY" -out "$CLIENT_CRT" -nodes -days 30 -subj "/CN=${VOLATILE_CERT_NAME}" 2>/dev/null
+    openssl req -x509 -newkey rsa:2048 -keyout "${VOLATILE_CERT}.key" -out "${VOLATILE_CERT}.crt" -nodes -days 30 -subj "/CN=${CERT_NAME}" 2>/dev/null
     
     # Trust the cert in the Host's LXD daemon
-    lxc config trust add "$CLIENT_CRT" --name "$VOLATILE_CERT_NAME"
+    lxc config trust add "${VOLATILE_CERT}.crt" --name "${CERT_NAME}"
     
     # Read contents and base64 encode to safely inject via LXD config
-    CRT_B64=$(base64 -w0 "$CLIENT_CRT")
-    KEY_B64=$(base64 -w0 "$CLIENT_KEY")
+    CRT_B64=$(base64 -w0 "${VOLATILE_CERT}.crt")
+    KEY_B64=$(base64 -w0 "${VOLATILE_CERT}.key")
     
     LXC_OPTIONAL_ARGS+=("-c" "user.lxd_cert_b64=$CRT_B64")
     LXC_OPTIONAL_ARGS+=("-c" "user.lxd_key_b64=$KEY_B64")
@@ -1240,7 +1415,7 @@ EOF
     fi
     
     cat << EOF >> "$CLEANUP_SCRIPT"
-    # Switch to default to ensure we aren't "inside" the project we are deleting
+    # Switch to default to ensure we are not "inside" the project we are deleting
     lxc project switch default 2>/dev/null
     lxc project delete "$LXD_PROJECT"
 else
@@ -1273,21 +1448,21 @@ fi
 
 # 3. Volatile LXD Certificate Cleanup (Non-nested only)
 if [ "$NESTED" = false ]; then
+    CERT_NAME="$(basename "$VOLATILE_CERT")"
     cat << EOF >> "$CLEANUP_SCRIPT"
-echo -e "${BYELLOW}-> Removing LXD trust for volatile certificate:${NC} ${VOLATILE_CERT_NAME}"
+echo -e "${BYELLOW}-> Removing LXD trust for volatile certificate:${NC} ${VOLATILE_CERT}"
 echo ""
 # Fetch the certificate's fingerprint by matching its common name
-FINGERPRINT=\$(lxc config trust list --format json | jq -r '.[] | select(.name=="${VOLATILE_CERT_NAME}") | .fingerprint') 2>/dev/null
+FINGERPRINT=\$(lxc config trust list --format json | jq -r '.[] | select(.name=="${CERT_NAME}") | .fingerprint') 2>/dev/null
 
 if [ -n "\$FINGERPRINT" ] && [ "\$FINGERPRINT" != "null" ]; then
     lxc config trust remove "\$FINGERPRINT" 2>/dev/null || true
 else
-    echo "Certificate '${VOLATILE_CERT_NAME}' not found in trust store, skipping..."
+    echo "Certificate '${CERT_NAME}' not found in trust store, skipping..."
     echo ""
 fi
 
-rm -f "$CERT_DIR/${VOLATILE_CERT_NAME}.crt" "$CERT_DIR/${VOLATILE_CERT_NAME}.key"
-rmdir "$CERT_DIR" 2>/dev/null || true
+rm -f "${VOLATILE_CERT}.crt" "${VOLATILE_CERT}.key"
 EOF
 fi
 
@@ -1314,7 +1489,13 @@ echo ""
 
 echo -e "${BYELLOW}-------------- Cleanup Complete --------------${NC}"
 
-# rm -- "\$0" # Self-deletion removed for auditing purposes.
+# Remove the cleanup script itself to avoid clutter
+SCRIPT_DIR="\$(dirname "\$0")"
+rm -f "\$0"
+
+# Safely attempt to remove the project directory if it's empty
+rmdir "\$SCRIPT_DIR" 2>/dev/null || true
+
 EOF
 
 chmod +x "$CLEANUP_SCRIPT"
@@ -1567,8 +1748,8 @@ USER_TERM_HEIGHT=$(tput lines 2>/dev/null || echo 40)
                 # Juju watch
                 echo -e "${BYELLOW}--------------------- Juju Status ----------------------${NC}${CLR_EOL}"
                 
-                # Reserve lines for cloud-init logs + header (6) + a safety buffer (2)
-                MAX_JUJU_LINES=$(( USER_TERM_HEIGHT - ( 6 + CLOUD_INIT_LOG_LINES ) - 2 ))
+                # Reserve lines for cloud-init logs + header (4) + a safety buffer (2)
+                MAX_JUJU_LINES=$(( USER_TERM_HEIGHT - ( 4 + CLOUD_INIT_LOG_LINES ) - 2 ))
                 if [ "$MAX_JUJU_LINES" -lt 10 ]; then MAX_JUJU_LINES=10; fi # Fallback for tiny windows (10 lines)
                 
                 JUJU_LINE_COUNT=$(echo "$JUJU_OUTPUT" | wc -l)
