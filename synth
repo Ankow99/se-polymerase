@@ -1342,6 +1342,9 @@ trap '
     exit 0
 ' INT TERM HUP
 
+# Capture terminal height before forking so the headless worker knows how to size the UI
+USER_TERM_HEIGHT=$(tput lines 2>/dev/null || echo 40)
+
 # Fork remaining logic into a subshell so it can safely run headless
 (
     # Close inherited terminal file descriptors to guarantee true detachment
@@ -1564,12 +1567,9 @@ trap '
                 # Juju watch
                 echo -e "${BYELLOW}--------------------- Juju Status ----------------------${NC}${CLR_EOL}"
                 
-                # Get terminal height (default to 64 if it fails)
-                TERM_HEIGHT=$(tput lines 2>/dev/null || echo 64)
-                
-                # Reserve lines for cloud-init logs + header (6)
-                MAX_JUJU_LINES=$(( TERM_HEIGHT - ( 6 + CLOUD_INIT_LOG_LINES )))
-                if [ "$MAX_JUJU_LINES" -lt 5 ]; then MAX_JUJU_LINES=5; fi # Fallback for tiny windows
+                # Reserve lines for cloud-init logs + header (6) + a safety buffer (2)
+                MAX_JUJU_LINES=$(( USER_TERM_HEIGHT - ( 6 + CLOUD_INIT_LOG_LINES ) - 2 ))
+                if [ "$MAX_JUJU_LINES" -lt 10 ]; then MAX_JUJU_LINES=10; fi # Fallback for tiny windows (10 lines)
                 
                 JUJU_LINE_COUNT=$(echo "$JUJU_OUTPUT" | wc -l)
                 
@@ -1775,6 +1775,9 @@ except Exception:
         echo " Cluster Instances & IPs"
         echo "=========================================="
         echo ""
+        echo "To access any node, run:"
+        echo "  ssh ${SSH_OPTS[*]} ${SYS_USER}@<IP_ADDRESS>"
+        echo ""
         echo "$CLUSTER_LIST"
         echo ""
     } >> "$ACCESS_FILE"
@@ -1784,6 +1787,9 @@ except Exception:
     echo -e "${BYELLOW}==========================================${NC}"
     echo -e "${BYELLOW} Cluster Instances & IPs${NC}"
     echo -e "${BYELLOW}==========================================${NC}"
+    echo ""
+    echo "To access any node, run:"
+    echo "  ssh ${SSH_OPTS[*]} ${SYS_USER}@<IP_ADDRESS>"
     echo ""
     echo "$CLUSTER_LIST"
     
