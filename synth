@@ -1160,7 +1160,7 @@ echo -e "${BYELLOW}-> Logging all output to:${NC} $LOG_FILE"
 exec >> "$LOG_FILE" 2>&1
 
 # Start tailing the log file in the background, rendering straight back to the original terminal stdout
-tail -f -n 0 "$LOG_FILE" >&3 &
+tail -f --pid=$$ -n 0 "$LOG_FILE" >&3 &
 TAIL_PID=$!
 
 # Define SSH options dynamically for later use
@@ -1974,6 +1974,9 @@ except Exception:
     echo ""
     echo "$CLUSTER_LIST"
     
+    # Kill the tail process
+    [ -n "$TAIL_PID" ] && kill "$TAIL_PID" 2>/dev/null || true
+    
     # Write the connection string directly to the log out in case the terminal detached
     {
         echo ""
@@ -1987,7 +1990,7 @@ WORKER_PID=$!
 # Wait for the background worker to finish naturally
 wait $WORKER_PID
 
-# Kill the tail process
+# Kill the tail process (fails silently since the worker already did it)
 [ -n "$TAIL_PID" ] && kill "$TAIL_PID" 2>/dev/null
 
 # If we get here, the user DID NOT interrupt (Ctrl+C). Restore normal traps
