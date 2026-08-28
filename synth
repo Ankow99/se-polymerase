@@ -164,10 +164,20 @@ emergency_rollback() {
                 fi
             done
             
-            # Only remove the full config file if it wasn't the pre-existing input config file
+            # Ask to keep the generated config file if it wasn't a pre-existing input config file
             if [ -n "$CONFIG_FILE" ] && [ -f "$CONFIG_FILE" ] && [ "$CONFIG_FILE" != "$INPUT_CONFIG_FILE" ]; then
-                echo "-> Cleaning up generated $(basename "$CONFIG_FILE")..."
-                rm -f "$CONFIG_FILE" 2>/dev/null || true
+                echo -ne "${BYELLOW}-> Keep generated config file '$(basename "$CONFIG_FILE")' for your next run? [y/N]: ${NC}"
+                
+                # Catch the input directly from the terminal (tty) even during a trap
+                read -r keep_conf </dev/tty || keep_conf="n"
+                
+                if [[ "$keep_conf" =~ ^[Yy]$ ]]; then
+                    echo -e "-> Kept configuration file at: ${CONFIG_FILE}"
+                    echo -e "   (Load it next time by passing: ${BYELLOW}-c $CONFIG_FILE${NC})"
+                else
+                    echo "-> Cleaning up generated $(basename "$CONFIG_FILE")..."
+                    rm -f "$CONFIG_FILE" 2>/dev/null || true
+                fi
             fi
             
             # Safely remove project directory if it's completely empty
