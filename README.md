@@ -6,16 +6,22 @@ At the core of the project is `synth`, a standalone LXD orchestrator that acts a
 
 ### Key Features
 
-* Isolated Deployment Directories: All generated artifacts (logs, certificates, teardown scripts, configurations, and access credentials) are cleanly consolidated into a unique deployment ID folder created right next to your payload.
-* Declarative Replication: Saves the deployment state into a reusable `config-<project>.yaml` file inside the unique deployment folder, allowing 1:1 declarative environment replication without prompting.
-* Modular Execution: Deployments are executed via modular, sequential scripts (`00-generate-env`, `01-verify-deps`, etc.) staged in `/usr/local/bin/`. If any step fails, you can SSH in and manually re-run the specific script to resume the deployment without starting from scratch.
-* Seamless Background Detachment: Deployments are executed in the background. Press `Ctrl+C` at any time during the deployment phase to instantly drop back to your local terminal. You can easily reconnect to the live progress by tailing the saved log file.
-* Dynamic Parsing: Parses Jinja `cloud-config.yaml` payloads to dynamically calculate hardware requirements and generate interactive CLI prompts.
-* Host Optimization: Supports nested LXD architectures or bare-metal LXD daemons, leveraging the host's LXD image cache by default to massively speed up VM provisioning.
-* Network Provisioning: Provisions `ipv4.nat` bridges, calculates CIDR gateways, and validates DHCP settings to prevent collisions.
-* Credential Management: Auto-injects local or Launchpad SSH keys and establishes secure SSH tunnels for dashboard port-forwarding.
-* Manifest Generation: Generates an `access-<project_name>.txt` manifest containing all URLs, local-forwarding tunnels, passwords, and a final cluster IP inventory table.
-* Live Tracking: Automatically records all deployment stdout/stderr to a `log-<project_name>.log` file and seamlessly transitions to a live juju status watch-loop.
+Workflow & Execution
+* `Modular Execution` - Deployments are executed via modular, sequential scripts (`00-generate-env`, `01-verify-deps`, etc.) staged in `/usr/local/bin/`. If any step fails, you can SSH in and manually re-run the specific script to resume the deployment without starting from scratch.
+* `Background Detachment` - Deployments are executed in the background. Press `Ctrl+C` at any time during the deployment phase to instantly drop back to your local terminal. You can easily reconnect to the live progress by tailing the saved log file.
+* `Live Tracking` - Automatically records all deployment stdout/stderr to a `log-<project_name>.log` file and seamlessly transitions to a live juju status watch-loop.
+
+State & Artifacts
+* `Isolated Directories` - All generated artifacts (logs, certificates, teardown scripts, configurations, and access credentials) are cleanly consolidated into a unique deployment ID folder created right next to your payload.
+* `Declarative Replication` - Saves the deployment state into a reusable `config-<project>.yaml` file inside the unique deployment folder, allowing 1:1 declarative environment replication without prompting.
+* `Manifest Generation` - Generates an `access-<project_name>.txt` manifest containing all URLs, local-forwarding tunnels, passwords, and a final cluster IP inventory table.
+* `Intelligent Teardown` - Generates a bespoke teardown script that wipes the LXD project, networks, and certificates, and finally attempts to cleanly delete the unique deployment folder if left empty.
+
+Infrastructure & Provisioning
+* `Dynamic Parsing` - Parses Jinja `cloud-config.yaml` payloads to dynamically calculate hardware requirements and generate interactive CLI prompts.
+* `Host Optimization` - Supports nested LXD architectures or bare-metal LXD daemons, leveraging the host's LXD image cache by default to massively speed up VM provisioning.
+* `Network Provisioning` - Provisions `ipv4.nat` bridges, calculates CIDR gateways, and validates DHCP settings to prevent collisions.
+* `Credential Management` - Auto-injects local or Launchpad SSH keys and establishes secure SSH tunnels for dashboard port-forwarding.
 
 ---
 
