@@ -755,7 +755,11 @@ write_files:
     fi
     
     maas login {{ maas_user }} 'http://localhost:5240/MAAS/' $APIKEY
-    maas {{ maas_user }} maas set-config name=maas_name value={{ lxd_project }} name=completed_intro value=true
+    maas {{ maas_user }} maas set-config name=maas_name value={{ lxd_project }}
+    maas {{ maas_user }} maas set-config name=completed_intro value=true
+    
+    # Enable TTY serial console for all LXD VMs
+    maas {{ maas_user }} maas set-config name=kernel_opts value="console=tty1 console=ttyS0,115200"
     
     # Automatically create and add ssh keys to MAAS
     echo -e "\n\n${BYELLOW}-------- Generating SSH keys and adding them to MAAS... --------${NC}\n"
@@ -845,6 +849,7 @@ write_files:
       version: 2
       ethernets:
         $INTERFACE:
+          transmit-checksum-offload: false
           nameservers:
             addresses: [$IP_ADDRESS]
             search: [{{ tld if tld else 'maas' }}, maas]
@@ -971,6 +976,10 @@ write_files:
     echo -e "\n\n${BYELLOW}-------- Switching to LXD '{{ lxd_project }}' project... --------${NC}\n"
     
     lxc project switch {{ lxd_project }}
+    
+    echo -e "\n\n${BYELLOW}-------- Disabling multicast snooping on '{{ maas_bridge }}'... --------${NC}\n"
+    
+    ip link set dev {{ maas_bridge }} type bridge mcast_snooping 0
     
     {% endif %}
 
