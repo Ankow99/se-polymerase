@@ -104,21 +104,29 @@ If a specific phase of the deployment fails or times out, you do not need to des
 
 | Script | Description |
 | :--- | :--- |
-| 00-generate-env | Initializes the persistent state file `/etc/repro-env` and calculates dynamic IP allocations |
-| 01-verify-deps | Installs and verifies core dependencies like LXD, MAAS, and Sunbeam |
-| 02-maas-init | Configures the database, initializes MAAS, and creates the admin user |
-| 03-maas-networking | Configures subnets, DHCP ranges, VLANs, and DNS settings in MAAS |
-| 04-maas-images | Triggers and monitors the synchronization of required OS boot images |
-| 05-lxd-setup | Establishes certificate trust between MAAS and the LXD provider |
-| 06-vm-creation | Provisions the virtual machines and attaches custom storage/network devices |
-| 07-maas-enlist | Boots the machines and monitors their automatic enlistment into MAAS |
-| 08-maas-configure | Assigns availability zones, hostnames, and LXD power controls |
-| 09-maas-commission | Triggers the commissioning phase and waits for hardware discovery |
-| 10-maas-tagging | Applies hardware tags, configures storage layouts, and tags interfaces |
-| 11-sunbeam-prep | Prepares the nodes, adds the MAAS provider, and validates the space |
-| 12-sunbeam-bootstrap | Generates the deployment manifest and bootstraps the Juju controller |
-| 13-sunbeam-deploy | Executes the main Sunbeam cluster deployment for the OpenStack services |
-| 14-sunbeam-configure | Runs post-deployment cloud configuration and generates user credentials |
+| `00-generate-env` | Initializes the persistent state file `/etc/repro-env` and calculates dynamic IP allocations |
+| `01-verify-deps` | Installs and verifies core dependencies like LXD, MAAS, and Sunbeam |
+| `02-maas-init` | Configures the database, initializes MAAS, and creates the admin user |
+| `03-maas-networking` | Configures subnets, DHCP ranges, VLANs, and DNS settings in MAAS |
+| `04-maas-images` | Triggers and monitors the synchronization of required OS boot images |
+| `05-lxd-setup` | Establishes certificate trust between MAAS and the LXD provider |
+| `06-vm-creation` | Provisions the virtual machines and attaches custom storage/network devices |
+| `07-maas-enlist` | Boots the machines and monitors their automatic enlistment into MAAS |
+| `08-maas-configure` | Assigns availability zones, hostnames, and LXD power controls |
+| `09-maas-commission` | Triggers the commissioning phase and waits for hardware discovery |
+| `10-maas-tagging` | Applies hardware tags, configures storage layouts, and tags interfaces |
+| `11-sunbeam-prep` | Prepares the nodes, adds the MAAS provider, and validates the space |
+| `12-sunbeam-bootstrap` | Generates the deployment manifest and bootstraps the Juju controller |
+| `13-sunbeam-deploy` | Executes the main Sunbeam cluster deployment for the OpenStack services |
+| `14-sunbeam-configure` | Runs post-deployment cloud configuration and generates user credentials |
+
+### Why is this useful?
+
+If a deployment fails at step `12` due to a transient network error or misconfiguration, you **do not** need to destroy the lab and start over. You can simply SSH into the primary machine and re-run the specific script:
+
+```bash
+ubuntu@maas-1:~$ 12-sunbeam-bootstrap
+```
 
 ## Architecture Overview
 * Network Topology: Utilizes a dual-bridge network. The primary bridge handles MAAS provisioning and PXE traffic, while a secondary bridge provides an isolated Neutron provider network for OpenStack traffic.

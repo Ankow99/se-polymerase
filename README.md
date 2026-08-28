@@ -126,17 +126,17 @@ For most MAAS-based labs, steps `00` to `10` are highly standardized:
 
 | Script | Description |
 | :--- | :--- |
-| `00-generate-env` | Calculates networking math and dynamic IP allocations. |
-| `01-verify-deps` | Verifies and installs critical system packages. |
-| `02-maas-init` | Sets up PostgreSQL and initializes the MAAS admin user. |
-| `03-maas-networking` | Configures subnets, VLANs, gateway IPs, and DNS. |
-| `04-maas-images` | Imports and syncs required Ubuntu boot resources. |
-| `05-lxd-setup` | Configures LXD certificates, remotes, and project isolation. |
-| `06-vm-creation` | Provisions empty VMs with calculated hardware allocations. |
-| `07-maas-enlist` | Starts the newly created VMs to trigger PXE boot and enlistment. |
-| `08-maas-configure` | Assigns Availability Zones, hostnames, and explicit power settings. |
-| `09-maas-commission` | Commissions the discovered nodes. |
-| `10-maas-tagging` | Injects tags for disks, roles, and logical network interfaces. |
+| `00-generate-env` | Initializes the persistent state file `/etc/repro-env` and calculates dynamic IP allocations |
+| `01-verify-deps` | Installs and verifies core dependencies like LXD, MAAS, and Sunbeam |
+| `02-maas-init` | Configures the database, initializes MAAS, and creates the admin user |
+| `03-maas-networking` | Configures subnets, DHCP ranges, VLANs, and DNS settings in MAAS |
+| `04-maas-images` | Triggers and monitors the synchronization of required OS boot images |
+| `05-lxd-setup` | Establishes certificate trust between MAAS and the LXD provider |
+| `06-vm-creation` | Provisions the virtual machines and attaches custom storage/network devices |
+| `07-maas-enlist` | Boots the machines and monitors their automatic enlistment into MAAS |
+| `08-maas-configure` | Assigns availability zones, hostnames, and LXD power controls |
+| `09-maas-commission` | Triggers the commissioning phase and waits for hardware discovery |
+| `10-maas-tagging` | Applies hardware tags, configures storage layouts, and tags interfaces |
 
 ### Why is this useful?
 
