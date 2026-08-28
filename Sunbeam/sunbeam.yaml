@@ -3,7 +3,7 @@
 
 # ---
 # sunbeam transcript: Automated scalable cloud-init install of Sunbeam using MAAS
-# version: 6.0.0
+# version: 7.0.0
 #
 # Made by: Pablo Gonzalez De Greiff @ Canonical
 # ---
@@ -353,8 +353,8 @@ write_files:
   content: |
     if [ "$USER" = "{{ sys_user }}" ]; then
         ADMIN_USER="{{ maas_user }}"
-        if command -v maas >/dev/null 2>&1 && sudo maas apikey --username $ADMIN_USER >/dev/null 2>&1; then
-            maas login $ADMIN_USER 'http://localhost:5240/MAAS/' $(sudo maas apikey --username $ADMIN_USER) >/dev/null 2>&1
+        if command -v maas >/dev/null 2>&1 && sudo maas apikey --username {{ maas_user }} >/dev/null 2>&1; then
+            maas login {{ maas_user }} 'http://localhost:5240/MAAS/' $(sudo maas apikey --username {{ maas_user }}) >/dev/null 2>&1
         fi
         
         if command -v lxc >/dev/null 2>&1; then
@@ -369,6 +369,10 @@ write_files:
         
         if [ -f "/home/{{ sys_user }}/admin-openrc" ]; then
             source /home/{{ sys_user }}/admin-openrc
+        fi
+        
+        if [ -f "/etc/repro-env" ]; then
+            source /etc/repro-env
         fi
     fi
 
@@ -532,6 +536,884 @@ write_files:
   content: {{ lxd_key_b64 }}
 {% endif %}
 
+# ==========================================
+# START OF AUTOMATION SCRIPTS (00 to 14)
+# ==========================================
+
+- path: /usr/local/bin/00-generate-env
+  permissions: '0755'
+  content: |
+    #!/bin/bash
+    
+    # Auto-escalate to root if run as a normal user
+    if [ "$EUID" -ne 0 ]; then
+        exec sudo "$0" "$@"
+    fi
+    
+    echo -e "\n\n${BYELLOW}-------- Generating Runtime Environment... --------${NC}\n"
+    
+    # 1. Calculate Runtime Variables
+    IP_ADDRESS=$(hostname -I | awk '{print $1}')
+    INTERFACE=$(ip -j route show default | jq -r '.[].dev')
+    
+    # LXD Setup Logic
+    {% if nested_lxd %}
+    LXD_ADDR="${IP_ADDRESS}:8444"
+    LXD_CERT="/root/lxd-local.crt"
+    LXD_KEY="/root/lxd-local.key"
+    {% else %}
+    LXD_ADDR="{{ maas_gateway }}:8443"
+    LXD_CERT="/root/snap/lxd/common/config/client.crt"
+    LXD_KEY="/root/snap/lxd/common/config/client.key"
+    {% endif %}
+    
+    # 2. Write Base Variables to the Persistent State File
+    cat <<EOF > /etc/repro-env
+    # -- Colours --
+    export BRED='\033[1;31m'
+    export BYELLOW='\033[1;33m'
+    export BGREEN='\033[1;32m'
+    export NC='\033[0m'
+    # ----
+    export IP_ADDRESS="$IP_ADDRESS"
+    export INTERFACE="$INTERFACE"
+    export LXD_ADDR="$LXD_ADDR"
+    export LXD_CERT="$LXD_CERT"
+    export LXD_KEY="$LXD_KEY"
+    EOF
+    
+    # 3. Secure the state file (Only root and sys_user can read it)
+    chown {{ sys_user }}:{{ sys_user }} /etc/repro-env
+    chmod 600 /etc/repro-env
+    
+    # 4. Context-Aware Privilege Dropping
+    if [ "$(id -u)" -eq 0 ]; then
+        # Running as root (via cloud-init or sudo) -> Drop privileges
+        echo 'export RUN_AS="sudo -u {{ sys_user }}"' >> /etc/repro-env
+        echo 'export RUN_AS_LOGIN="sudo -i -u {{ sys_user }}"' >> /etc/repro-env
+    else
+        # Running as a normal user -> No prefix needed
+        echo 'export RUN_AS=""' >> /etc/repro-env
+        echo 'export RUN_AS_LOGIN=""' >> /etc/repro-env
+    fi
+    
+    # 5. Handle Python IP Math (Append output to state file)
+    echo -e "\n\n${BYELLOW}-------- Calculating Payload IP Allocations --------${NC}\n"
+
+    python3 -c "
+    import ipaddress, sys
+    try:
+        net = ipaddress.IPv4Network('{{ maas_cidr }}', strict=False)
+        hosts = list(net.hosts())
+        
+        dhcp_count = int('{{ maas_ip_count }}')
+        int_count  = int('{{ os_int_api_ip_count }}')
+        pub_count  = int('{{ os_pub_api_ip_count }}')
+        
+        # Ensure the subnet is large enough to hold the requested IPs + Gateway + Static
+        total_needed = dhcp_count + int_count + pub_count + 5 
+        if len(hosts) < total_needed:
+            sys.stderr.write(f'CRITICAL: Subnet {net} is too small to fit the requested IP ranges!\n')
+            sys.exit(1)
+        
+        maas_gw = hosts[0]
+        
+        # Top-Down Allocation Logic
+        maas_e = hosts[-1]
+        maas_s = hosts[-dhcp_count]
+        
+        int_e = hosts[-(dhcp_count + 1)]
+        int_s = hosts[-(dhcp_count + int_count)]
+        
+        pub_e = hosts[-(dhcp_count + int_count + 1)]
+        pub_s = hosts[-(dhcp_count + int_count + pub_count)]
+        
+        print(f'export MAAS_GATEWAY={maas_gw}')
+        print(f'export MAAS_RESERVED_IP_START={maas_s}')
+        print(f'export MAAS_RESERVED_IP_END={maas_e}')
+        print(f'export OS_INTERNAL_API_IP_START={int_s}')
+        print(f'export OS_INTERNAL_API_IP_END={int_e}')
+        print(f'export OS_PUBLIC_API_IP_START={pub_s}')
+        print(f'export OS_PUBLIC_API_IP_END={pub_e}')
+    except Exception as e:
+        sys.stderr.write(f'IP Math Error: {e}\n')
+        sys.exit(1)
+    " >> /etc/repro-env || exit 1
+    
+    source /etc/repro-env
+    
+    echo "MAAS Network CIDR      - {{ maas_cidr }}"
+    echo "MAAS Gateway IP        - $MAAS_GATEWAY"
+    echo "MAAS Reserved IP Count - {{ maas_ip_count }}"
+    echo "MAAS Reserved IP Start - $MAAS_RESERVED_IP_START"
+    echo "MAAS Reserved IP End   - $MAAS_RESERVED_IP_END"
+    echo ""
+    echo "Internal API IP Count  - {{ os_int_api_ip_count }}"
+    echo "Internal API IP Start  - $OS_INTERNAL_API_IP_START"
+    echo "Internal API IP End    - $OS_INTERNAL_API_IP_END"
+    echo ""
+    echo "Public API IP Count    - {{ os_pub_api_ip_count }}"
+    echo "Public API IP Start    - $OS_PUBLIC_API_IP_START"
+    echo "Public API IP End      - $OS_PUBLIC_API_IP_END"
+
+- path: /usr/local/bin/01-verify-deps
+  permissions: '0755'
+  content: |
+    #!/bin/bash
+    
+    # Auto-escalate to root if run as a normal user
+    if [ "$EUID" -ne 0 ]; then
+        exec sudo "$0" "$@"
+    fi
+    
+    source /etc/repro-env
+    
+    {% if not maas_snap %}
+    
+    # Install MAAS (not using apt module or else bind conflicts with LXD)
+    echo -e "\n\n${BYELLOW}-------- Installing deb MAAS... --------${NC}\n"
+    
+    apt-get update
+    apt-get install -y maas
+    
+    {% endif %}
+    
+    # Verify critical dependencies
+    echo -e "\n\n${BYELLOW}-------- Verifying dependencies... --------${NC}\n"
+    
+    for cmd in lxc jq maas sunbeam; do
+      if ! command -v $cmd >/dev/null 2>&1; then
+        echo "CRITICAL ERROR: Required command '$cmd' not found."
+        echo "Snap/apt package installation likely failed due to a network error."
+        exit 1
+      fi
+    done
+    echo "All dependencies verified successfully!"
+
+- path: /usr/local/bin/02-maas-init
+  permissions: '0755'
+  content: |
+    #!/bin/bash
+    
+    # Auto-escalate to root if run as a normal user
+    if [ "$EUID" -ne 0 ]; then
+        exec sudo "$0" "$@"
+    fi
+    
+    source /etc/repro-env
+    
+    {% if maas_snap %}
+    
+    # Install PostgreSQL
+    echo -e "\n\n${BYELLOW}-------- Install PostgreSQL... --------${NC}\n"
+    
+    systemctl disable --now systemd-timesyncd
+    apt-get update
+    apt-get install -y postgresql
+    
+    # Configure PostgreSQL
+    echo -e "\n\n${BYELLOW}-------- Configure PostgreSQL... --------${NC}\n"
+    
+    sudo -i -u postgres psql -c "CREATE USER \"{{ maas_user }}\" WITH ENCRYPTED PASSWORD '{{ maas_password }}'"
+    sudo -i -u postgres createdb -O "{{ maas_user }}" "{{ maas_db_name }}"
+    sed -i "1i host    {{ maas_db_name }}    {{ maas_user }}    0/0     md5" /etc/postgresql/*/main/pg_hba.conf
+    sed -i "s/^#listen_addresses.*/listen_addresses = '*'/g" /etc/postgresql/*/main/postgresql.conf
+    systemctl restart postgresql
+    
+    # Initialise snap MAAS
+    echo -e "\n\n${BYELLOW}-------- Initializing snap MAAS... --------${NC}\n"
+    
+    maas init region+rack --database-uri "postgres://{{ maas_user }}:{{ maas_password }}@$HOSTNAME/{{ maas_db_name }}" --maas-url http://${IP_ADDRESS}:5240/MAAS
+    maas createadmin --username {{ maas_user }} --password {{ maas_password }} --email {{ maas_email }} {% if ssh_import_id %}--ssh-import {{ ssh_import_id }}{% endif %}
+    
+    {% else %}
+    
+    # Initialise deb MAAS
+    echo -e "\n\n${BYELLOW}-------- Initializing deb MAAS... --------${NC}\n"
+    
+    maas createadmin --username {{ maas_user }} --password {{ maas_password }} --email {{ maas_email }} {% if ssh_import_id %}--ssh-import {{ ssh_import_id }}{% endif %}
+    
+    {% endif %}
+    
+    # Wait for MAAS services to be ready
+    echo -e "\n\n${BYELLOW}-------- Waiting for MAAS API to be ready... --------${NC}\n"
+    
+    sleep 30
+    until maas login {{ maas_user }} 'http://localhost:5240/MAAS/' $(maas apikey --username {{ maas_user }}) > /dev/null 2>&1; do
+      echo "MAAS is not ready yet (502). Retrying in 30 seconds..."
+      sleep 30
+    done
+    
+    # Grab API key and login as admin
+    echo -e "\n\n${BYELLOW}-------- Logging in as '{{ maas_user }}' user... --------${NC}\n"
+    
+    export APIKEY=$(maas apikey --username {{ maas_user }})
+    
+    # Export the APIKEY back to the environment state for later scripts
+    if ! grep -q "APIKEY" /etc/repro-env; then
+        echo "export APIKEY=\"$APIKEY\"" >> /etc/repro-env
+    fi
+    
+    maas login {{ maas_user }} 'http://localhost:5240/MAAS/' $APIKEY
+    maas {{ maas_user }} maas set-config name=maas_name value={{ lxd_project }} name=completed_intro value=true
+    
+    # Automatically create and add ssh keys to MAAS
+    echo -e "\n\n${BYELLOW}-------- Generating SSH keys and adding them to MAAS... --------${NC}\n"
+    
+    ssh-keygen -q -t rsa -N "" -f "/home/{{ sys_user }}/.ssh/id_rsa"
+    chown {{ sys_user }}:{{ sys_user }} /home/{{ sys_user }}/.ssh/id_rsa /home/{{ sys_user }}/.ssh/id_rsa.pub
+    chmod 600 /home/{{ sys_user }}/.ssh/id_rsa
+    chmod 644 /home/{{ sys_user }}/.ssh/id_rsa.pub
+    maas {{ maas_user }} sshkeys create key="$(cat /home/{{ sys_user }}/.ssh/id_rsa.pub)"
+
+- path: /usr/local/bin/03-maas-networking
+  permissions: '0755'
+  content: |
+    #!/bin/bash
+    
+    # Auto-escalate to root if run as a normal user
+    if [ "$EUID" -ne 0 ]; then
+        exec sudo "$0" "$@"
+    fi
+    
+    source /etc/repro-env
+    
+    # Wait for MAAS to finish background network discovery
+    
+    echo -e "\n\n${BYELLOW}-------- Waiting for MAAS to discover subnet {{ maas_cidr }}... --------${NC}\n"
+    
+    while true; do
+      missing_subnet=false
+      
+      # Check if the subnet exists in the MAAS database
+      if maas {{ maas_user }} subnets read | jq -e ".[] | select(.cidr == \"{{ maas_cidr }}\")" > /dev/null 2>&1; then
+        echo -e "  [${BGREEN}OK${NC}] Subnet '{{ maas_cidr }}' has been discovered!"
+      else
+        echo "  [..] Subnet '{{ maas_cidr }}' is currently syncing/discovering..."
+        missing_subnet=true
+      fi
+      
+      # Check for missing subnets
+      if [ "$missing_subnet" = "false" ]; then
+        echo "Target subnet '{{ maas_cidr }}' is fully populated!"
+        break
+      fi
+      
+      echo "Subnet '{{ maas_cidr }}' not yet discovered by rack controller. Retrying in 10 seconds..."
+      sleep 10
+    done
+    
+    # Configure MAAS networking (set gateways, vlans, DHCP on etc)
+    echo -e "\n\n${BYELLOW}-------- Configuring MAAS networking... --------${NC}\n"
+    
+    export FABRIC_ID=$(maas {{ maas_user }} subnet read "{{ maas_cidr }}" | jq -r ".vlan.fabric_id")
+    export VLAN_TAG=$(maas {{ maas_user }} subnet read "{{ maas_cidr }}" | jq -r ".vlan.vid")
+    export PRIMARY_RACK=$(maas {{ maas_user }} rack-controllers read | jq -r ".[] | .system_id")
+    
+    maast {{ maas_user }} subnet update {{ maas_cidr }} gateway_ip=$MAAS_GATEWAY
+    maast {{ maas_user }} ipranges create type=dynamic start_ip=$MAAS_RESERVED_IP_START end_ip=$MAAS_RESERVED_IP_END
+    maast {{ maas_user }} ipranges create type=reserved start_ip=$OS_INTERNAL_API_IP_START end_ip=$OS_INTERNAL_API_IP_END comment="{{ os_deployment }}-internal-api"
+    maast {{ maas_user }} ipranges create type=reserved start_ip=$OS_PUBLIC_API_IP_START end_ip=$OS_PUBLIC_API_IP_END comment="{{ os_deployment }}-public-api"
+    maast {{ maas_user }} vlan update $FABRIC_ID $VLAN_TAG dhcp_on=true primary_rack=$PRIMARY_RACK
+    maast {{ maas_user }} maas set-config name=upstream_dns value={{ maas_dns }}
+    
+    # Set the MAAS domain name
+    
+    echo -e "\n\n${BYELLOW}-------- Configuring MAAS domain '{{ tld if tld else 'maas' }}'... --------${NC}\n"
+    
+    # Check if MAAS auto-created the domain during initialization
+    EXISTING_DOMAIN_ID=$(maas {{ maas_user }} domains read | jq -r '.[] | select(.name=="'{{ tld if tld else 'maas' }}'") | .id')
+    
+    if [ -n "$EXISTING_DOMAIN_ID" ] && [ "$EXISTING_DOMAIN_ID" != "null" ]; then
+      echo "Domain '{{ tld if tld else 'maas' }}' already exists! Setting as default and authoritative..."
+      export MAAS_DOMAIN_NAME_ID=$EXISTING_DOMAIN_ID
+      maast {{ maas_user }} domain update $MAAS_DOMAIN_NAME_ID authoritative=true
+      maast {{ maas_user }} domain set-default $MAAS_DOMAIN_NAME_ID
+    else
+      echo "Domain not found. Renaming default domain to '{{ tld if tld else 'maas' }}'..."
+      export MAAS_DOMAIN_NAME_ID=$(maas {{ maas_user }} domains read | jq -r '.[] | select(.is_default==true) | .id')
+      maast {{ maas_user }} domain update $MAAS_DOMAIN_NAME_ID name={{ tld if tld else 'maas' }} authoritative=true
+    fi
+    
+    # Update the rack controller to use the correct domain
+    maast {{ maas_user }} rack-controller update $PRIMARY_RACK domain={{ tld if tld else 'maas' }}
+    
+    # Add MAAS DNS to host
+    
+    cat <<EOF > /etc/netplan/99-maas-dns.yaml
+    network:
+      version: 2
+      ethernets:
+        $INTERFACE:
+          nameservers:
+            addresses: [$IP_ADDRESS]
+            search: [{{ tld if tld else 'maas' }}, maas]
+    EOF
+    
+    chmod 600 /etc/netplan/99-maas-dns.yaml
+    netplan apply
+    
+    # Persist dynamic networking variables
+    cat <<EOF >> /etc/repro-env
+    export FABRIC_ID="$FABRIC_ID"
+    export VLAN_TAG="$VLAN_TAG"
+    export PRIMARY_RACK="$PRIMARY_RACK"
+    export MAAS_DOMAIN_NAME_ID="$MAAS_DOMAIN_NAME_ID"
+    EOF
+
+- path: /usr/local/bin/04-maas-images
+  permissions: '0755'
+  content: |
+    #!/bin/bash
+    
+    # Auto-escalate to root if run as a normal user
+    if [ "$EUID" -ne 0 ]; then
+        exec sudo "$0" "$@"
+    fi
+    
+    source /etc/repro-env
+    
+    # Configure boot images
+    echo -e "\n\n${BYELLOW}-------- Configuring MAAS boot images... --------${NC}\n"
+    
+    export BOOT_SOURCE_ID=$(maas {{ maas_user }} boot-sources read | jq -r '.[0].id')
+    
+    for RELEASE in {{ maas_images }}; do
+      maast {{ maas_user }} boot-source-selections create $BOOT_SOURCE_ID os="ubuntu" release="$RELEASE" arches="amd64" labels='*' subarches='*'
+    done
+    maas {{ maas_user }} boot-resources import
+    
+    # Wait for MAAS boot images to be ready
+    echo -e "\n\n${BYELLOW}-------- Waiting for all MAAS boot images to sync... --------${NC}\n"
+    
+    while true; do
+      missing_images=false
+      
+      importing_status=$(maas {{ maas_user }} boot-resources is-importing)
+      requested_releases=$(maas {{ maas_user }} boot-source-selections read $BOOT_SOURCE_ID | jq -r '.[].release')
+      downloaded_releases=$(maas {{ maas_user }} boot-resources read | jq -r '.[].name' | sort | uniq)
+      
+      # Check if the image has been downloaded
+      for release in $requested_releases; do
+        if echo "$downloaded_releases" | grep -q "$release"; then
+           # Image exists. Now check if import is finished
+           if [ "$importing_status" = "false" ]; then
+               echo -e "  [${BGREEN}OK${NC}] Image '$release' has downloaded!"
+           else
+               echo "  [..] Image '$release' is currently syncing..."
+               missing_images=true
+           fi
+        else
+           echo "  [??] Image '$release' was not found in boot resources..."
+           missing_images=true
+        fi
+      done
+      
+      # Check for missing images
+      if [ "$missing_images" = "false" ]; then
+        clean_list=$(echo "$requested_releases" | tr '\n' ' ')
+        echo "All selected boot images ( $clean_list) are fully synced!"
+        maast {{ maas_user }} boot-resources read
+        break
+      fi
+      
+      echo "Some images are missing. Waiting 30s..."
+      sleep 30
+    done
+
+- path: /usr/local/bin/05-lxd-setup
+  permissions: '0755'
+  content: |
+    #!/bin/bash
+    
+    # Auto-escalate to root if run as a normal user
+    if [ "$EUID" -ne 0 ]; then
+        exec sudo "$0" "$@"
+    fi
+    
+    source /etc/repro-env
+    
+    {% if nested_lxd %}
+    
+    # Generate local LXD trust certificate
+    echo -e "\n\n${BYELLOW}-------- Generating trust certificate for local LXD... --------${NC}\n"
+    
+    openssl req -x509 -newkey rsa:2048 -keyout $LXD_KEY -out $LXD_CERT -nodes -days 3650 -subj "/CN=lxd-local"
+    lxc config trust add $LXD_CERT --name lxd-local
+    
+    # Provide certs to user context
+    $RUN_AS mkdir -p /home/{{ sys_user }}/snap/lxd/common/config
+    cp $LXD_CERT /home/{{ sys_user }}/snap/lxd/common/config/client.crt
+    cp $LXD_KEY /home/{{ sys_user }}/snap/lxd/common/config/client.key
+    chown -R {{ sys_user }}:{{ sys_user }} /home/{{ sys_user }}/snap/lxd/common/config
+    
+    {% else %}
+    
+    # Setup external LXD client certificates and remote connection
+    echo -e "\n\n${BYELLOW}-------- Configuring remote LXD connection... --------${NC}\n"
+    
+    lxc remote add host-lxd https://$LXD_ADDR --accept-certificate
+    lxc remote switch host-lxd
+    
+    # Provide certs to user context
+    $RUN_AS mkdir -p /home/{{ sys_user }}/snap/lxd/common/config
+    cp $LXD_CERT /home/{{ sys_user }}/snap/lxd/common/config/client.crt
+    cp $LXD_KEY /home/{{ sys_user }}/snap/lxd/common/config/client.key
+    chown -R {{ sys_user }}:{{ sys_user }} /home/{{ sys_user }}/snap/lxd/common/config
+    
+    $RUN_AS lxc remote add host-lxd https://$LXD_ADDR --accept-certificate
+    
+    {% endif %}
+    
+    {% if lxd_project != "default" %}
+    
+    # Switch to LXD MAAS project
+    echo -e "\n\n${BYELLOW}-------- Switching to LXD '{{ lxd_project }}' project... --------${NC}\n"
+    
+    lxc project switch {{ lxd_project }}
+    
+    {% endif %}
+
+- path: /usr/local/bin/06-vm-creation
+  permissions: '0755'
+  content: |
+    #!/bin/bash
+    
+    # Auto-escalate to root if run as a normal user
+    if [ "$EUID" -ne 0 ]; then
+        exec sudo "$0" "$@"
+    fi
+    
+    source /etc/repro-env
+    
+    # Create VMs directly via LXD
+    echo -e "\n\n${BYELLOW}-------- Creating empty VMs in LXD... --------${NC}\n"
+    
+    i=1
+    for HOST in {{ nodes_hostnames }}; do
+      CPU=$(echo "{{ nodes_cpus }}" | cut -d' ' -f$i)
+      RAM=$(echo "{{ nodes_rams }}" | cut -d' ' -f$i)
+      DISK=$(echo "{{ nodes_disks }}" | cut -d' ' -f$i)
+      
+      lxc init "$HOST" --vm --empty -c limits.cpu="$CPU" -c limits.memory="$RAM" -d root,size="$DISK"
+      
+      i=$((i + 1))
+    done
+    
+    # Attach specific extra devices to the cloud nodes
+    for HOST in {{ nodes_hostnames }}; do
+      case "$HOST" in
+        cloud-*)
+          # Loop to create and attach multiple OSD disks
+          for i in $(seq 1 {{ cloud_osd_count }}); do
+            lxc storage volume create {{ lxd_pool }} ${HOST}-osd${i}-disk size={{ cloud_osd_disk }} --type=block
+            lxc config device add $HOST osd${i} disk pool={{ lxd_pool }} source=${HOST}-osd${i}-disk
+          done
+          
+          # Attach Neutron networking
+          lxc config device add $HOST eth1 nic nictype=bridged parent="{{ os_neutron_bridge }}"
+          ;;
+      esac
+    done
+
+- path: /usr/local/bin/07-maas-enlist
+  permissions: '0755'
+  content: |
+    #!/bin/bash
+    
+    # Auto-escalate to root if run as a normal user
+    if [ "$EUID" -ne 0 ]; then
+        exec sudo "$0" "$@"
+    fi
+    
+    source /etc/repro-env
+    
+    # Start VMs to trigger PXE Boot & Enlistment
+    echo -e "\n\n${BYELLOW}-------- Starting VMs for MAAS enlistment... --------${NC}\n"
+    for HOST in {{ nodes_hostnames }}; do
+      lxc start $HOST
+    done
+    
+    # Wait for VMs to enlist in MAAS via MAC
+    echo -e "\n\n${BYELLOW}-------- Waiting for all VMs to enlist in MAAS... --------${NC}\n"
+    
+    while true; do
+      all_enlisted=true
+      
+      for HOST in {{ nodes_hostnames }}; do
+        # Fetch the dynamic MAC to identify the machine in MAAS
+        MAC=$(lxc config get $HOST volatile.eth0.hwaddr)
+        SYSTEM_ID=$(maas {{ maas_user }} machines read mac_address=$MAC | jq -r '.[0].system_id')
+        status=$(maas {{ maas_user }} machines read mac_address=$MAC | jq -r '.[0].status_name')
+        
+        if [ "$SYSTEM_ID" != "null" ] && [ "$status" = "New" ]; then
+          echo -e "  [${BGREEN}OK${NC}] '$HOST' was enlisted with ID '$SYSTEM_ID'!"
+        else
+          if [ "$status" = "null" ]; then
+             status="Waiting for PXE"
+          fi
+          echo "  [..] '$HOST' ($MAC) is currently '$status'..."
+          all_enlisted=false
+        fi
+      done
+      
+      # If the flag is still true, everyone is enlisted -> break the loop
+      if [ "$all_enlisted" = true ]; then
+        echo "All VMs have successfully enlisted!\n"
+        lxc list
+        sleep 10
+        break
+      fi
+      
+      echo "Waiting 30s before next check..."
+      sleep 30
+    done
+
+- path: /usr/local/bin/08-maas-configure
+  permissions: '0755'
+  content: |
+    #!/bin/bash
+    
+    # Auto-escalate to root if run as a normal user
+    if [ "$EUID" -ne 0 ]; then
+        exec sudo "$0" "$@"
+    fi
+    
+    source /etc/repro-env
+    
+    # Create Availability Zones in MAAS
+    echo -e "\n\n${BYELLOW}-------- Creating Availability Zones... --------${NC}\n"
+    for i in $(seq 1 {{ max_ha }}); do
+      ZONE="AZ$i"
+      if ! maas {{ maas_user }} zones read | jq -e ".[] | select(.name==\"$ZONE\")" > /dev/null; then
+        echo "Creating zone: $ZONE"
+        maast {{ maas_user }} zones create name="$ZONE" description="Auto-generated AZ for HA Node $i"
+      else
+        echo "Zone $ZONE already exists."
+      fi
+    done
+    
+    echo "Assigning Primary MAAS Controller to AZ1..."
+    maast {{ maas_user }} rack-controller update "$PRIMARY_RACK" zone="AZ1"
+    
+    # Find machines by MAC and set hostnames, domain, and explicit LXD power controls
+    echo -e "\n\n${BYELLOW}-------- Configuring hostnames and power controls... --------${NC}\n"
+    
+    LXD_CERT_CONTENT=$(cat $LXD_CERT)
+    LXD_KEY_CONTENT=$(cat $LXD_KEY)
+    
+    for HOST in {{ nodes_hostnames }}; do
+      MAC=$(lxc config get $HOST volatile.eth0.hwaddr)
+      SYSTEM_ID=$(maas {{ maas_user }} machines read mac_address=$MAC | jq -r '.[0].system_id')
+      
+      NODE_NUM=$(echo "$HOST" | awk -F'-' '{print $NF}')
+      TARGET_ZONE="AZ${NODE_NUM}"
+      
+      # Force the MAAS hostname, domain, and explicit LXD power controls
+      maast {{ maas_user }} machine update $SYSTEM_ID \
+        hostname=$HOST \
+        domain=$MAAS_DOMAIN_NAME_ID \
+        zone=$TARGET_ZONE \
+        power_type="lxd" \
+        power_parameters_power_address="https://$LXD_ADDR" \
+        power_parameters_certificate="$LXD_CERT_CONTENT" \
+        power_parameters_key="$LXD_KEY_CONTENT" \
+        power_parameters_instance_name="$HOST" \
+        power_parameters_project="{{ lxd_project }}"
+    done
+
+- path: /usr/local/bin/09-maas-commission
+  permissions: '0755'
+  content: |
+    #!/bin/bash
+    
+    # Auto-escalate to root if run as a normal user
+    if [ "$EUID" -ne 0 ]; then
+        exec sudo "$0" "$@"
+    fi
+    
+    source /etc/repro-env
+    
+    # Commission machines
+    echo -e "\n\n${BYELLOW}-------- Commissioning machines... --------${NC}\n"
+    
+    for HOST in {{ nodes_hostnames }}; do
+      SYSTEM_ID=$(maas {{ maas_user }} machines read hostname=$HOST | jq -r '.[0].system_id')
+      maast {{ maas_user }} machine commission $SYSTEM_ID
+    done
+    
+    # Wait for VMs to be ready
+    echo -e "\n\n${BYELLOW}-------- Waiting for VMs to enter 'Ready' state... --------${NC}\n"
+    
+    while true; do
+      all_ready=true
+      
+      for HOST in {{ nodes_hostnames }}; do
+        # Query MAAS for the status
+        status=$(maas {{ maas_user }} machines read hostname=$HOST | jq -r '.[0].status_name')
+        
+        if [ "$status" = "Ready" ]; then
+          echo -e "  [${BGREEN}OK${NC}] '$HOST' is '$status'!"
+        else
+          echo "  [..] '$HOST' is currently '$status'..."
+          all_ready=false
+        fi
+      done
+      
+      # If the flag is still true, everyone is ready -> break the loop
+      if [ "$all_ready" = true ]; then
+        echo "All VMs are Ready!"
+        maast {{ maas_user }} machines read
+        netplan apply # Update MAAS DNS record
+        sleep 10
+        break
+      fi
+      
+      echo "Waiting 60s before checking again..."
+      sleep 60
+    done
+
+- path: /usr/local/bin/10-maas-tagging
+  permissions: '0755'
+  content: |
+    #!/bin/bash
+    
+    # Auto-escalate to root if run as a normal user
+    if [ "$EUID" -ne 0 ]; then
+        exec sudo "$0" "$@"
+    fi
+    
+    source /etc/repro-env
+    
+    # Create tags and add them to commissioned machines
+    echo -e "\n\n${BYELLOW}-------- Creating and adding tags... --------${NC}\n"
+    maast {{ maas_user }} tags create name=openstack-{{ os_deployment }}
+    maast {{ maas_user }} tags create name=control
+    maast {{ maas_user }} tags create name=compute
+    maast {{ maas_user }} tags create name=storage
+    maast {{ maas_user }} tags create name=network
+    maast {{ maas_user }} tags create name=sunbeam
+    maast {{ maas_user }} tags create name=juju-controller
+    
+    for HOST in {{ nodes_hostnames }}; do
+      SYSTEM_ID=$(maas {{ maas_user }} machines read hostname=$HOST | jq -r '.[0].system_id')
+      
+      # Tag main disks as SSDs
+      echo -e "\n\n${BYELLOW}-------- Tagging main disks as SSDs for '$HOST'... --------${NC}\n"
+      
+      MAIN_BLOCK_ID=$(maas {{ maas_user }} block-devices read $SYSTEM_ID | jq -r '.[] | select(.serial | tostring | contains("lxd_osd") | not) | .id' | head -n 1)
+      if [ -n "$MAIN_BLOCK_ID" ] && [ "$MAIN_BLOCK_ID" != "null" ]; then
+        maast {{ maas_user }} block-device add-tag $SYSTEM_ID $MAIN_BLOCK_ID tag=ssd
+        maast {{ maas_user }} block-device remove-tag $SYSTEM_ID $MAIN_BLOCK_ID tag=rotary
+        maast {{ maas_user }} block-device remove-tag $SYSTEM_ID $MAIN_BLOCK_ID tag=1rpm
+        maast {{ maas_user }} block-device set-boot-disk $SYSTEM_ID $MAIN_BLOCK_ID
+        maast {{ maas_user }} machine set-storage-layout $SYSTEM_ID storage_layout=flat
+      fi
+      
+      echo -e "\n\n${BYELLOW}-------- Tagging '$HOST'... --------${NC}\n"
+      
+      # Base tag for all nodes
+      maast {{ maas_user }} tag update-nodes openstack-{{ os_deployment }} add=$SYSTEM_ID
+      
+      case "$HOST" in
+        juju-controller-*)
+          maast {{ maas_user }} tag update-nodes juju-controller add=$SYSTEM_ID
+          ;;
+        
+        sunbeam-controller-*)
+          maast {{ maas_user }} tag update-nodes sunbeam add=$SYSTEM_ID
+          ;;
+        
+        cloud-*)
+          maast {{ maas_user }} tag update-nodes control add=$SYSTEM_ID
+          maast {{ maas_user }} tag update-nodes compute add=$SYSTEM_ID
+          maast {{ maas_user }} tag update-nodes storage add=$SYSTEM_ID
+          maast {{ maas_user }} tag update-nodes network add=$SYSTEM_ID
+          
+          # Tag the ceph osd devices
+          echo -e "\n\n${BYELLOW}-------- Tagging ceph storage for '$HOST'... --------${NC}\n"
+          
+          for i in $(seq 1 {{ cloud_osd_count }}); do
+            OSD_BLOCK_ID=$(maas {{ maas_user }} block-devices read $SYSTEM_ID | jq -r '.[] | select(.serial == "lxd_osd'${i}'") | .id')
+            
+            if [ -n "$OSD_BLOCK_ID" ] && [ "$OSD_BLOCK_ID" != "null" ]; then
+              maast {{ maas_user }} block-device add-tag $SYSTEM_ID $OSD_BLOCK_ID tag=ceph
+              maast {{ maas_user }} block-device add-tag $SYSTEM_ID $OSD_BLOCK_ID tag=ssd
+              maast {{ maas_user }} block-device remove-tag $SYSTEM_ID $OSD_BLOCK_ID tag=rotary
+              maast {{ maas_user }} block-device remove-tag $SYSTEM_ID $OSD_BLOCK_ID tag=1rpm
+            fi
+          done
+          
+          # Tag the additional neutron interface
+          echo -e "\n\n${BYELLOW}-------- Tagging neutron interface for '$HOST'... --------${NC}\n"
+          
+          CLOUD_NEUTRON_MAC=$(lxc config get $HOST volatile.eth1.hwaddr)
+          CLOUD_NEUTRON_INTERFACE_ID=$(maas {{ maas_user }} interfaces read $SYSTEM_ID | jq -r '.[] | select(.mac_address=="'$CLOUD_NEUTRON_MAC'") | .id')
+          if [ -n "$CLOUD_NEUTRON_INTERFACE_ID" ] && [ "$CLOUD_NEUTRON_INTERFACE_ID" != "null" ]; then
+            maast {{ maas_user }} interface update $SYSTEM_ID $CLOUD_NEUTRON_INTERFACE_ID tags=neutron:physnet1
+          fi
+          ;;
+      esac
+    done
+
+- path: /usr/local/bin/11-sunbeam-prep
+  permissions: '0755'
+  content: |
+    #!/bin/bash
+    
+    # Auto-escalate to root if run as a normal user
+    if [ "$EUID" -ne 0 ]; then
+        exec sudo "$0" "$@"
+    fi
+    
+    source /etc/repro-env
+    
+    # Prepare machine for Sunbeam usage
+    echo -e "\n\n${BYELLOW}-------- Preparing machine for Sunbeam usage... --------${NC}\n"
+    
+    $RUN_AS_LOGIN sunbeam prepare-node-script --client | $RUN_AS_LOGIN bash -x
+    
+    # Add the Canonical MAAS provider
+    echo -e "\n\n${BYELLOW}-------- Adding the Canonical MAAS provider... --------${NC}\n"
+    
+    $RUN_AS_LOGIN sunbeam deployment add maas {{ os_deployment }} $APIKEY http://${IP_ADDRESS}:5240/MAAS
+    
+    # Map network spaces to cloud networks
+    echo -e "\n\n${BYELLOW}-------- Mapping network spaces to cloud networks... --------${NC}\n"
+    
+    maast {{ maas_user }} spaces create name={{ maas_space }}
+    maast {{ maas_user }} vlan update $FABRIC_ID $VLAN_TAG space={{ maas_space }}
+    $RUN_AS_LOGIN sunbeam deployment space map {{ maas_space }}
+    
+    # Validate MAAS provider
+    echo -e "\n\n${BYELLOW}-------- Validating MAAS provider... --------${NC}\n"
+    
+    $RUN_AS_LOGIN sunbeam deployment validate
+    
+    # Grab the single newest report file
+    LATEST_REPORT=$(ls -t /home/{{ sys_user }}/snap/openstack/common/reports/ | head -n 1)
+    
+    cat "/home/{{ sys_user }}/snap/openstack/common/reports/$LATEST_REPORT"
+    echo -e "\n"
+    echo "Number of fails      - $(grep -c failed /home/{{ sys_user }}/snap/openstack/common/reports/$LATEST_REPORT)"
+    echo "Number of warnings   - $(grep -c warning /home/{{ sys_user }}/snap/openstack/common/reports/$LATEST_REPORT)"
+    echo "Number of successes  - $(grep -c success /home/{{ sys_user }}/snap/openstack/common/reports/$LATEST_REPORT)"
+    echo -e "\n"
+    
+    $RUN_AS_LOGIN sunbeam deployment show {{ os_deployment }}
+    sleep 10
+
+- path: /usr/local/bin/12-sunbeam-bootstrap
+  permissions: '0755'
+  content: |
+    #!/bin/bash
+    
+    # Auto-escalate to root if run as a normal user
+    if [ "$EUID" -ne 0 ]; then
+        exec sudo "$0" "$@"
+    fi
+    
+    source /etc/repro-env
+    
+    # Generate Sunbeam deployment manifest
+    echo -e "\n\n${BYELLOW}-------- Generating Sunbeam manifest... --------${NC}\n"
+    
+    cat <<EOF > /home/{{ sys_user }}/manifest.yaml
+    core:
+      config:
+        proxy:
+          proxy_required: false
+        database: single
+        region: RegionOne
+        user:
+          run_demo_setup: {{ 'true' if os_run_demo else 'false' }}
+          username: demo
+          password: password
+          cidr: 192.168.0.0/24
+          nameservers: {{ maas_dns }}
+          security_group_rules: true
+          remote_access_location: local
+          physnet: physnet1
+        external-networks:
+          physnet1:
+            cidr: {{ os_neutron_cidr }}
+            network_type: flat
+            nics:
+    EOF
+    
+    # Dynamically append all cloud nodes and their neutron interfaces
+    for HOST in {{ nodes_hostnames }}; do
+      case "$HOST" in
+        cloud-*)
+          echo "          $HOST: eth1" >> /home/{{ sys_user }}/manifest.yaml
+          ;;
+      esac
+    done
+    
+    chown {{ sys_user }}:{{ sys_user }} /home/{{ sys_user }}/manifest.yaml
+    cat /home/{{ sys_user }}/manifest.yaml
+    
+    # Bootstrap the orchestration layer
+    echo -e "\n\n${BYELLOW}-------- Bootstrapping the orchestration layer... --------${NC}\n"
+    
+    $RUN_AS_LOGIN  script -q -e -c "sunbeam cluster bootstrap --accept-defaults --manifest /home/{{ sys_user }}/manifest.yaml" /dev/null
+    
+    echo -e "\n\n${BYELLOW}-------- Controller Model Status... --------${NC}\n"
+    $RUN_AS_LOGIN juju status -m controller
+    
+    echo -e "\n\n${BYELLOW}-------- OpenStack-Infra Model Status... --------${NC}\n"
+    $RUN_AS_LOGIN juju status -m openstack-infra
+
+- path: /usr/local/bin/13-sunbeam-deploy
+  permissions: '0755'
+  content: |
+    #!/bin/bash
+    
+    # Auto-escalate to root if run as a normal user
+    if [ "$EUID" -ne 0 ]; then
+        exec sudo "$0" "$@"
+    fi
+    
+    source /etc/repro-env
+    
+    # Deploy the cloud
+    echo -e "\n\n${BYELLOW}-------- Deploying the cloud... --------${NC}\n"
+    
+    $RUN_AS_LOGIN  script -q -e -c "sunbeam cluster deploy --accept-defaults --manifest /home/{{ sys_user }}/manifest.yaml" /dev/null
+    
+    echo -e "\n\n${BYELLOW}-------- OpenStack-Machines Model Status... --------${NC}\n"
+    $RUN_AS_LOGIN juju status -m openstack-machines
+    
+    echo -e "\n\n${BYELLOW}-------- OpenStack Model Status... --------${NC}\n"
+    $RUN_AS_LOGIN juju status -m openstack
+
+- path: /usr/local/bin/14-sunbeam-configure
+  permissions: '0755'
+  content: |
+    #!/bin/bash
+    
+    # Auto-escalate to root if run as a normal user
+    if [ "$EUID" -ne 0 ]; then
+        exec sudo "$0" "$@"
+    fi
+    
+    source /etc/repro-env
+    
+    # Configure the cloud
+    echo -e "\n\n${BYELLOW}-------- Configuring the cloud... --------${NC}\n"
+    
+    $RUN_AS_LOGIN  script -q -e -c "sunbeam configure --accept-defaults --openrc /home/{{ sys_user }}/demo-openrc --manifest /home/{{ sys_user }}/manifest.yaml" /dev/null
+    
+    # Generate the admin novarc credentials
+    echo -e "\n\n${BYELLOW}-------- Generating Admin Credentials... --------${NC}\n"
+    
+    $RUN_AS_LOGIN sunbeam openrc > /home/{{ sys_user }}/admin-openrc
+    chown {{ sys_user }}:{{ sys_user }} /home/{{ sys_user }}/admin-openrc
+
+# ==========================================
+# END OF AUTOMATION SCRIPTS (00 to 14)
+# ==========================================
+
 packages:
   - git
   - neovim
@@ -565,697 +1447,21 @@ random_seed:
   file: /dev/urandom
 
 runcmd:
-
-{% if not maas_snap %}
-
-# Install MAAS (not using apt module or else bind conflicts with LXD)
-- echo "\n\n-------- Installing deb MAAS... --------\n"
-
-- apt-get update
-- apt-get install -y maas
-
-{% endif %}
-
-# Verify critical dependencies
-- echo "\n\n-------- Verifying dependencies... --------\n"
-- |
-  for cmd in lxc jq maas sunbeam; do
-    if ! command -v $cmd >/dev/null 2>&1; then
-      echo "CRITICAL ERROR: Required command '$cmd' not found."
-      echo "Snap/apt package installation likely failed due to a network error."
-      exit 1
-    fi
-  done
-  echo "All dependencies verified successfully!"
-
-# Export variables
-- echo "\n\n-------- Exporting variables... --------\n"
-
-# --- Networking ---
-- export IP_ADDRESS=$(hostname -I | awk '{print $1}')
-- export INTERFACE=$(ip -j route show default | jq -r '.[].dev')
-
-# --- Auth & System ---
-- export SSH_KEY="{{ ssh_import_id }}"
-- export ADMIN_USER="{{ maas_user }}"
-- export ADMIN_PASS="{{ maas_password }}"
-- export ADMIN_EMAIL="{{ maas_email }}"
-- export RUN_AS="sudo -u {{ sys_user }}"
-- export RUN_AS_LOGIN="sudo -i -u {{ sys_user }}"
-
-# --- LXD Settings ---
-- export LXD_PROJECT="{{ lxd_project }}"
-- export LXD_POOL="{{ lxd_pool }}"
-{% if nested_lxd %}
-- export LXD_ADDR="${IP_ADDRESS}:8444"
-- export LXD_CERT="/root/lxd-local.crt"
-- export LXD_KEY="/root/lxd-local.key"
-{% else %}
-- export LXD_ADDR="{{ maas_gateway }}:8443"
-- export LXD_CERT="/root/snap/lxd/common/config/client.crt"
-- export LXD_KEY="/root/snap/lxd/common/config/client.key"
-{% endif %}
-
-# --- MAAS Settings ---
-- export MAAS_DB_NAME="{{ maas_db_name }}"
-- export MAAS_DOMAIN_NAME="{{ tld if tld else 'maas' }}"
-- export MAAS_DNS="{{ maas_dns }}"
-- export MAAS_IMAGES="{{ maas_images }}"
-- export MAAS_SPACE="{{ maas_space }}"
-- export MAAS_CIDR="{{ maas_cidr }}"
-- export MAAS_RESERVED_IP_COUNT="{{ maas_ip_count }}"
-
-# --- OpenStack Settings ---
-- export OS_DEPLOYMENT_NAME="{{ os_deployment }}"
-- export OS_NEUTRON_BRIDGE="{{ os_neutron_bridge }}"
-- export OS_NEUTRON_CIDR="{{ os_neutron_cidr }}"
-- export OS_PUBLIC_API_IP_COUNT="{{ os_pub_api_ip_count }}"
-- export OS_INTERNAL_API_IP_COUNT="{{ os_int_api_ip_count }}"
-
-# --- Hardware Allocation ---
-- export JUJU_HA="{{ juju_ha }}"
-- export SUNBEAM_HA="{{ sunbeam_ha }}"
-- export CLOUD_HA="{{ cloud_ha }}"
-- export MAX_HA="{{ max_ha }}"
-
-- export NODES_HOSTNAMES="{{ nodes_hostnames }}"
-- export NODES_CPUS="{{ nodes_cpus }}"
-- export NODES_RAMS="{{ nodes_rams }}"
-- export NODES_DISKS="{{ nodes_disks }}"
-
-- export CLOUD_OSD_DISK="{{ cloud_osd_disk }}"
-- export OSDS_PER_NODE="{{ cloud_osd_count }}"
-
-# --- Dynamic IP Subnet Slicing ---
-- echo "\n\n-------- Calculating Payload IP Allocations --------\n"
-- |
-  eval $(python3 -c "
-  import ipaddress, sys
-  try:
-      net = ipaddress.IPv4Network('{{ maas_cidr }}', strict=False)
-      hosts = list(net.hosts())
-      
-      dhcp_count = int('{{ maas_ip_count }}')
-      int_count  = int('{{ os_int_api_ip_count }}')
-      pub_count  = int('{{ os_pub_api_ip_count }}')
-      
-      # Ensure the subnet is large enough to hold the requested IPs + Gateway + Static
-      total_needed = dhcp_count + int_count + pub_count + 5 
-      if len(hosts) < total_needed:
-          print(f'echo \"CRITICAL: Subnet {net} is too small to fit the requested IP ranges!\"; exit 1')
-          sys.exit()
-      
-      maas_gw = hosts[0]
-      
-      # Top-Down Allocation Logic
-      maas_e = hosts[-1]
-      maas_s = hosts[-dhcp_count]
-      
-      int_e = hosts[-(dhcp_count + 1)]
-      int_s = hosts[-(dhcp_count + int_count)]
-      
-      pub_e = hosts[-(dhcp_count + int_count + 1)]
-      pub_s = hosts[-(dhcp_count + int_count + pub_count)]
-      
-      print(f'export MAAS_GATEWAY={maas_gw}')
-      print(f'export MAAS_RESERVED_IP_START={maas_s}')
-      print(f'export MAAS_RESERVED_IP_END={maas_e}')
-      print(f'export OS_INTERNAL_API_IP_START={int_s}')
-      print(f'export OS_INTERNAL_API_IP_END={int_e}')
-      print(f'export OS_PUBLIC_API_IP_START={pub_s}')
-      print(f'export OS_PUBLIC_API_IP_END={pub_e}')
-  except Exception as e:
-      print(f'echo \"IP Math Error: {e}\"; exit 1')
-  ")
-
-- echo "MAAS Network CIDR      - $MAAS_CIDR"
-- echo "MAAS Gateway IP        - $MAAS_GATEWAY"
-- echo "MAAS Reserved IP Count - $MAAS_RESERVED_IP_COUNT"
-- echo "MAAS Reserved IP Start - $MAAS_RESERVED_IP_START"
-- echo "MAAS Reserved IP End   - $MAAS_RESERVED_IP_END"
-- echo ""
-- echo "Internal API IP Count  - $OS_INTERNAL_API_IP_COUNT"
-- echo "Internal API IP Start  - $OS_INTERNAL_API_IP_START"
-- echo "Internal API IP End    - $OS_INTERNAL_API_IP_END"
-- echo ""
-- echo "Public API IP Count    - $OS_PUBLIC_API_IP_COUNT"
-- echo "Public API IP Start    - $OS_PUBLIC_API_IP_START"
-- echo "Public API IP End      - $OS_PUBLIC_API_IP_END"
-
-{% if maas_snap %}
-
-# Install PostgreSQL
-- echo "\n\n-------- Install PostgreSQL... --------\n"
-
-- systemctl disable --now systemd-timesyncd
-- apt-get update
-- apt-get install -y postgresql
-
-# Configure PostgreSQL
-- echo "\n\n-------- Configure PostgreSQL... --------\n"
-
-- sudo -i -u postgres psql -c "CREATE USER \"$ADMIN_USER\" WITH ENCRYPTED PASSWORD '$ADMIN_PASS'"
-- sudo -i -u postgres createdb -O "$ADMIN_USER" "$MAAS_DB_NAME"
-- sed -i "1i host    $MAAS_DB_NAME    $ADMIN_USER    0/0     md5" /etc/postgresql/*/main/pg_hba.conf
-
-# Initialise snap MAAS
-- echo "\n\n-------- Initializing snap MAAS... --------\n"
-
-- maas init region+rack --database-uri "postgres://$ADMIN_USER:$ADMIN_PASS@$HOSTNAME/$MAAS_DB_NAME" --maas-url http://${IP_ADDRESS}:5240/MAAS
-- maas createadmin --username $ADMIN_USER --password $ADMIN_PASS --email $ADMIN_EMAIL {% if ssh_import_id %}--ssh-import $SSH_KEY{% endif %}
-
-{% else %}
-
-# Initialise deb MAAS
-- echo "\n\n-------- Initializing deb MAAS... --------\n"
-
-- maas init --admin-username $ADMIN_USER --admin-password $ADMIN_PASS --admin-email $ADMIN_EMAIL {% if ssh_import_id %}--admin-ssh-import $SSH_KEY{% endif %} --rbac-url "" --candid-agent-file ""
-
-{% endif %}
-
-# Wait for MAAS services to be ready
-- |
-  echo "\n\n-------- Waiting for MAAS API to be ready... --------\n"
-  
-  sleep 30
-  until maas login $ADMIN_USER 'http://localhost:5240/MAAS/' $(maas apikey --username $ADMIN_USER) > /dev/null 2>&1; do
-    echo "MAAS is not ready yet (502). Retrying in 30 seconds..."
-    sleep 30
-  done
-
-# Grab API key and login as admin
-- echo "\n\n-------- Logging in as '$ADMIN_USER' user... --------\n"
-
-- export APIKEY=$(maas apikey --username $ADMIN_USER)
-- maas login $ADMIN_USER 'http://localhost:5240/MAAS/' $APIKEY
-
-- maas $ADMIN_USER maas set-config name=maas_name value=$LXD_PROJECT name=completed_intro value=true
-
-# Automatically create and add ssh keys to MAAS
-- echo "\n\n-------- Generating SSH keys and adding them to MAAS... --------\n"
-
-- ssh-keygen -q -t rsa -N "" -f "/home/{{ sys_user }}/.ssh/id_rsa"
-- chown {{ sys_user }}:{{ sys_user }} /home/{{ sys_user }}/.ssh/id_rsa /home/{{ sys_user }}/.ssh/id_rsa.pub
-- chmod 600 /home/{{ sys_user }}/.ssh/id_rsa
-- chmod 644 /home/{{ sys_user }}/.ssh/id_rsa.pub
-- maas $ADMIN_USER sshkeys create key="$(cat /home/{{ sys_user }}/.ssh/id_rsa.pub)"
-
-# Wait for MAAS to finish background network discovery
-- |
-  echo "\n\n-------- Waiting for MAAS to discover subnet $MAAS_CIDR... --------\n"
-  
-  while true; do
-    missing_subnet=false
-    
-    # Check if the subnet exists in the MAAS database
-    if maas $ADMIN_USER subnets read | jq -e ".[] | select(.cidr == \"$MAAS_CIDR\")" > /dev/null 2>&1; then
-      echo "  [OK] Subnet '$MAAS_CIDR' has been discovered!"
-    else
-      echo "  [..] Subnet '$MAAS_CIDR' is currently syncing/discovering..."
-      missing_subnet=true
-    fi
-    
-    # Check for missing subnets
-    if [ "$missing_subnet" = "false" ]; then
-      echo "Target subnet '$MAAS_CIDR' is fully populated!"
-      break
-    fi
-    
-    echo "Subnet '$MAAS_CIDR' not yet discovered by rack controller. Retrying in 10 seconds..."
-    sleep 10
-  done
-
-# Configure MAAS networking (set gateways, vlans, DHCP on etc)
-- echo "\n\n-------- Configuring MAAS networking... --------\n"
-
-- export FABRIC_ID=$(maas $ADMIN_USER subnet read "$MAAS_CIDR" | jq -r ".vlan.fabric_id")
-- export VLAN_TAG=$(maas $ADMIN_USER subnet read "$MAAS_CIDR" | jq -r ".vlan.vid")
-- export PRIMARY_RACK=$(maas $ADMIN_USER rack-controllers read | jq -r ".[] | .system_id")
-
-- maast $ADMIN_USER subnet update $MAAS_CIDR gateway_ip=$MAAS_GATEWAY
-- maast $ADMIN_USER ipranges create type=dynamic start_ip=$MAAS_RESERVED_IP_START end_ip=$MAAS_RESERVED_IP_END
-- maast $ADMIN_USER ipranges create type=reserved start_ip=$OS_INTERNAL_API_IP_START end_ip=$OS_INTERNAL_API_IP_END comment="${OS_DEPLOYMENT_NAME}-internal-api"
-- maast $ADMIN_USER ipranges create type=reserved start_ip=$OS_PUBLIC_API_IP_START end_ip=$OS_PUBLIC_API_IP_END comment="${OS_DEPLOYMENT_NAME}-public-api"
-- maast $ADMIN_USER vlan update $FABRIC_ID $VLAN_TAG dhcp_on=true primary_rack=$PRIMARY_RACK
-- maast $ADMIN_USER maas set-config name=upstream_dns value=$MAAS_DNS
-
-# Set the MAAS domain name
-- |
-  echo "\n\n-------- Configuring MAAS domain '$MAAS_DOMAIN_NAME'... --------\n"
-  
-  # Check if MAAS auto-created the domain during initialization
-  EXISTING_DOMAIN_ID=$(maas $ADMIN_USER domains read | jq -r '.[] | select(.name=="'$MAAS_DOMAIN_NAME'") | .id')
-  
-  if [ -n "$EXISTING_DOMAIN_ID" ] && [ "$EXISTING_DOMAIN_ID" != "null" ]; then
-    echo "Domain '$MAAS_DOMAIN_NAME' already exists! Setting as default and authoritative..."
-    export MAAS_DOMAIN_NAME_ID=$EXISTING_DOMAIN_ID
-    maast $ADMIN_USER domain update $MAAS_DOMAIN_NAME_ID authoritative=true
-    maast $ADMIN_USER domain set-default $MAAS_DOMAIN_NAME_ID
-  else
-    echo "Domain not found. Renaming default domain to '$MAAS_DOMAIN_NAME'..."
-    export MAAS_DOMAIN_NAME_ID=$(maas $ADMIN_USER domains read | jq -r '.[] | select(.is_default==true) | .id')
-    maast $ADMIN_USER domain update $MAAS_DOMAIN_NAME_ID name=$MAAS_DOMAIN_NAME authoritative=true
-  fi
-  
-  # Update the rack controller to use the correct domain
-  maast $ADMIN_USER rack-controller update $PRIMARY_RACK domain=$MAAS_DOMAIN_NAME
-
-# Add MAAS DNS to host
-- |
-  cat <<EOF > /etc/netplan/99-maas-dns.yaml
-  network:
-    version: 2
-    ethernets:
-      $INTERFACE:
-        nameservers:
-          addresses: [$IP_ADDRESS]
-          search: [$MAAS_DOMAIN_NAME, maas]
-  EOF
-
-- chmod 600 /etc/netplan/99-maas-dns.yaml
-- netplan apply
-
-# Configure boot images
-- echo "\n\n-------- Configuring MAAS boot images... --------\n"
-
-- export BOOT_SOURCE_ID=$(maas $ADMIN_USER boot-sources read | jq -r '.[0].id')
-- |
-  for RELEASE in $MAAS_IMAGES; do
-    maast $ADMIN_USER boot-source-selections create $BOOT_SOURCE_ID os="ubuntu" release="$RELEASE" arches="amd64" labels='*' subarches='*'
-  done
-- maas $ADMIN_USER boot-resources import
-
-# Wait for MAAS boot images to be ready
-- |
-  echo "\n\n-------- Waiting for all MAAS boot images to sync... --------\n"
-  
-  while true; do
-    missing_images=false
-    
-    importing_status=$(maas $ADMIN_USER boot-resources is-importing)
-    requested_releases=$(maas $ADMIN_USER boot-source-selections read $BOOT_SOURCE_ID | jq -r '.[].release')
-    downloaded_releases=$(maas $ADMIN_USER boot-resources read | jq -r '.[].name' | sort | uniq)
-    
-    # Check if the image has been downloaded
-    for release in $requested_releases; do
-      if echo "$downloaded_releases" | grep -q "$release"; then
-         # Image exists. Now check if import is finished
-         if [ "$importing_status" = "false" ]; then
-             echo "  [OK] Image '$release' has downloaded!"
-         else
-             echo "  [..] Image '$release' is currently syncing..."
-             missing_images=true
-         fi
-      else
-         echo "  [??] Image '$release' was not found in boot resources..."
-         missing_images=true
-      fi
-    done
-    
-    # Check for missing images
-    if [ "$missing_images" = "false" ]; then
-      clean_list=$(echo "$requested_releases" | tr '\n' ' ')
-      echo "All selected boot images ( $clean_list) are fully synced!"
-      maast $ADMIN_USER boot-resources read
-      break
-    fi
-    
-    echo "Some images are missing. Waiting 30s..."
-    sleep 30
-  done
-
-{% if nested_lxd %}
-
-# Generate local LXD trust certificate
-- echo "\n\n-------- Generating trust certificate for local LXD... --------\n"
-
-- openssl req -x509 -newkey rsa:2048 -keyout $LXD_KEY -out $LXD_CERT -nodes -days 3650 -subj "/CN=lxd-local"
-- lxc config trust add $LXD_CERT --name lxd-local
-
-# Provide certs to user context
-- $RUN_AS mkdir -p /home/{{ sys_user }}/snap/lxd/common/config
-- cp $LXD_CERT /home/{{ sys_user }}/snap/lxd/common/config/client.crt
-- cp $LXD_KEY /home/{{ sys_user }}/snap/lxd/common/config/client.key
-- chown -R {{ sys_user }}:{{ sys_user }} /home/{{ sys_user }}/snap/lxd/common/config
-
-{% else %}
-
-# Setup external LXD client certificates and remote connection
-- echo "\n\n-------- Configuring remote LXD connection... --------\n"
-
-- lxc remote add host-lxd https://$LXD_ADDR --accept-certificate
-- lxc remote switch host-lxd
-
-# Provide certs to user context
-- $RUN_AS mkdir -p /home/{{ sys_user }}/snap/lxd/common/config
-- cp $LXD_CERT /home/{{ sys_user }}/snap/lxd/common/config/client.crt
-- cp $LXD_KEY /home/{{ sys_user }}/snap/lxd/common/config/client.key
-- chown -R {{ sys_user }}:{{ sys_user }} /home/{{ sys_user }}/snap/lxd/common/config
-- $RUN_AS lxc remote add host-lxd https://$LXD_ADDR --accept-certificate
-
-{% endif %}
-
-
-{% if lxd_project != "default" %}
-
-# Switch to LXD MAAS project
-- echo "\n\n-------- Switching to LXD '$LXD_PROJECT' project... --------\n"
-
-- lxc project switch $LXD_PROJECT
-
-{% endif %}
-
-# Create VMs directly via LXD
-- echo "\n\n-------- Creating empty VMs in LXD... --------\n"
-- |
-  i=1
-  for HOST in $NODES_HOSTNAMES; do
-    CPU=$(echo "$NODES_CPUS" | cut -d' ' -f$i)
-    RAM=$(echo "$NODES_RAMS" | cut -d' ' -f$i)
-    DISK=$(echo "$NODES_DISKS" | cut -d' ' -f$i)
-    
-    lxc init "$HOST" --vm --empty -c limits.cpu="$CPU" -c limits.memory="$RAM" -d root,size="$DISK"
-    
-    i=$((i + 1))
-  done
-
-# Attach specific extra devices to the cloud nodes
-- |
-  for HOST in $NODES_HOSTNAMES; do
-    case "$HOST" in
-      cloud-*)
-        # Loop to create and attach multiple OSD disks
-        for i in $(seq 1 $OSDS_PER_NODE); do
-          lxc storage volume create $LXD_POOL ${HOST}-osd${i}-disk size=$CLOUD_OSD_DISK --type=block
-          lxc config device add $HOST osd${i} disk pool=$LXD_POOL source=${HOST}-osd${i}-disk
-        done
-        
-        # Attach Neutron networking
-        lxc config device add $HOST eth1 nic nictype=bridged parent="$OS_NEUTRON_BRIDGE"
-        ;;
-    esac
-  done
-
-# Start VMs to trigger PXE Boot & Enlistment
-- echo "\n\n-------- Starting VMs for MAAS enlistment... --------\n"
-- |
-  for HOST in $NODES_HOSTNAMES; do
-    lxc start $HOST
-  done
-
-# Wait for VMs to enlist in MAAS via MAC
-- |
-  echo "\n\n-------- Waiting for all VMs to enlist in MAAS... --------\n"
-  
-  while true; do
-    all_enlisted=true
-    
-    for HOST in $NODES_HOSTNAMES; do
-      # Fetch the dynamic MAC to identify the machine in MAAS
-      MAC=$(lxc config get $HOST volatile.eth0.hwaddr)
-      SYSTEM_ID=$(maas $ADMIN_USER machines read mac_address=$MAC | jq -r '.[0].system_id')
-      status=$(maas $ADMIN_USER machines read mac_address=$MAC | jq -r '.[0].status_name')
-      
-      if [ "$SYSTEM_ID" != "null" ] && [ "$status" = "New" ]; then
-        echo "  [OK] '$HOST' was enlisted with ID '$SYSTEM_ID'!"
-      else
-        if [ "$status" = "null" ]; then
-           status="Waiting for PXE"
-        fi
-        echo "  [..] '$HOST' ($MAC) is currently '$status'..."
-        all_enlisted=false
-      fi
-    done
-    
-    # If the flag is still true, everyone is enlisted -> break the loop
-    if [ "$all_enlisted" = true ]; then
-      echo "All VMs have successfully enlisted!\n"
-      lxc list
-      sleep 10
-      break
-    fi
-    
-    echo "Waiting 30s before next check..."
-    sleep 30
-  done
-
-# Create Availability Zones in MAAS
-- |
-  echo "\n\n-------- Creating Availability Zones... --------\n"
-  for i in $(seq 1 $MAX_HA); do
-    ZONE="AZ$i"
-    if ! maas $ADMIN_USER zones read | jq -e ".[] | select(.name==\"$ZONE\")" > /dev/null; then
-      echo "Creating zone: $ZONE"
-      maast $ADMIN_USER zones create name="$ZONE" description="Auto-generated AZ for HA Node $i"
-    else
-      echo "Zone $ZONE already exists."
-    fi
-  done
-  
-  echo "Assigning Primary MAAS Controller to AZ1..."
-  maast $ADMIN_USER rack-controller update "$PRIMARY_RACK" zone="AZ1"
-
-# Find machines by MAC and set hostnames, domain, and explicit LXD power controls
-- |
-  echo "\n\n-------- Configuring hostnames and power controls... --------\n"
-  
-  LXD_CERT_CONTENT=$(cat $LXD_CERT)
-  LXD_KEY_CONTENT=$(cat $LXD_KEY)
-  
-  for HOST in $NODES_HOSTNAMES; do
-    MAC=$(lxc config get $HOST volatile.eth0.hwaddr)
-    SYSTEM_ID=$(maas $ADMIN_USER machines read mac_address=$MAC | jq -r '.[0].system_id')
-    
-    NODE_NUM=$(echo "$HOST" | awk -F'-' '{print $NF}')
-    TARGET_ZONE="AZ${NODE_NUM}"
-    
-    # Force the MAAS hostname, domain, and explicit LXD power controls
-    maast $ADMIN_USER machine update $SYSTEM_ID \
-      hostname=$HOST \
-      domain=$MAAS_DOMAIN_NAME_ID \
-      zone=$TARGET_ZONE \
-      power_type="lxd" \
-      power_parameters_power_address="https://$LXD_ADDR" \
-      power_parameters_certificate="$LXD_CERT_CONTENT" \
-      power_parameters_key="$LXD_KEY_CONTENT" \
-      power_parameters_instance_name="$HOST" \
-      power_parameters_project="$LXD_PROJECT"
-  done
-
-# Commission machines
-- echo "\n\n-------- Commissioning machines... --------\n"
-- |
-  for HOST in $NODES_HOSTNAMES; do
-    SYSTEM_ID=$(maas $ADMIN_USER machines read hostname=$HOST | jq -r '.[0].system_id')
-    maast $ADMIN_USER machine commission $SYSTEM_ID
-  done
-
-# Wait for VMs to be ready
-- |
-  echo "\n\n-------- Waiting for VMs to enter 'Ready' state... --------\n"
-  
-  while true; do
-    all_ready=true
-    
-    for HOST in $NODES_HOSTNAMES; do
-      # Query MAAS for the status
-      status=$(maas $ADMIN_USER machines read hostname=$HOST | jq -r '.[0].status_name')
-      
-      if [ "$status" = "Ready" ]; then
-        echo "  [OK] '$HOST' is '$status'!"
-      else
-        echo "  [..] '$HOST' is currently '$status'..."
-        all_ready=false
-      fi
-    done
-    
-    # If the flag is still true, everyone is ready -> break the loop
-    if [ "$all_ready" = true ]; then
-      echo "All VMs are Ready!"
-      maast $ADMIN_USER machines read
-      netplan apply # Update MAAS DNS record
-      sleep 10
-      break
-    fi
-    
-    echo "Waiting 60s before checking again..."
-    sleep 60
-  done
-
-# Create tags and add them to commissioned machines
-- echo "\n\n-------- Creating and adding tags... --------\n"
-- |
-  maast $ADMIN_USER tags create name=openstack-${OS_DEPLOYMENT_NAME}
-  maast $ADMIN_USER tags create name=control
-  maast $ADMIN_USER tags create name=compute
-  maast $ADMIN_USER tags create name=storage
-  maast $ADMIN_USER tags create name=network
-  maast $ADMIN_USER tags create name=sunbeam
-  maast $ADMIN_USER tags create name=juju-controller
-
-  for HOST in $NODES_HOSTNAMES; do
-    SYSTEM_ID=$(maas $ADMIN_USER machines read hostname=$HOST | jq -r '.[0].system_id')
-
-    # Tag main disks as SSDs
-    echo "\n\n-------- Tagging main disks as SSDs for '$HOST'... --------\n"
-    
-    MAIN_BLOCK_ID=$(maas $ADMIN_USER block-devices read $SYSTEM_ID | jq -r '.[] | select(.serial | tostring | contains("lxd_osd") | not) | .id' | head -n 1)
-    if [ -n "$MAIN_BLOCK_ID" ] && [ "$MAIN_BLOCK_ID" != "null" ]; then
-      maast $ADMIN_USER block-device add-tag $SYSTEM_ID $MAIN_BLOCK_ID tag=ssd
-      maast $ADMIN_USER block-device remove-tag $SYSTEM_ID $MAIN_BLOCK_ID tag=rotary
-      maast $ADMIN_USER block-device remove-tag $SYSTEM_ID $MAIN_BLOCK_ID tag=1rpm
-      maast $ADMIN_USER block-device set-boot-disk $SYSTEM_ID $MAIN_BLOCK_ID
-      maast $ADMIN_USER machine set-storage-layout $SYSTEM_ID storage_layout=flat
-    fi
-    
-    echo "\n\n-------- Tagging '$HOST'... --------\n"
-    
-    # Base tag for all nodes
-    maast $ADMIN_USER tag update-nodes openstack-${OS_DEPLOYMENT_NAME} add=$SYSTEM_ID
-    
-    case "$HOST" in
-      juju-controller-*)
-        maast $ADMIN_USER tag update-nodes juju-controller add=$SYSTEM_ID
-        ;;
-        
-      sunbeam-controller-*)
-        maast $ADMIN_USER tag update-nodes sunbeam add=$SYSTEM_ID
-        ;;
-        
-      cloud-*)
-        maast $ADMIN_USER tag update-nodes control add=$SYSTEM_ID
-        maast $ADMIN_USER tag update-nodes compute add=$SYSTEM_ID
-        maast $ADMIN_USER tag update-nodes storage add=$SYSTEM_ID
-        maast $ADMIN_USER tag update-nodes network add=$SYSTEM_ID
-        
-        # Tag the ceph osd devices
-        echo "\n\n-------- Tagging ceph storage for '$HOST'... --------\n"
-        
-        for i in $(seq 1 $OSDS_PER_NODE); do
-          OSD_BLOCK_ID=$(maas $ADMIN_USER block-devices read $SYSTEM_ID | jq -r '.[] | select(.serial == "lxd_osd'${i}'") | .id')
-          
-          if [ -n "$OSD_BLOCK_ID" ] && [ "$OSD_BLOCK_ID" != "null" ]; then
-            maast $ADMIN_USER block-device add-tag $SYSTEM_ID $OSD_BLOCK_ID tag=ceph
-            maast $ADMIN_USER block-device add-tag $SYSTEM_ID $OSD_BLOCK_ID tag=ssd
-            maast $ADMIN_USER block-device remove-tag $SYSTEM_ID $OSD_BLOCK_ID tag=rotary
-            maast $ADMIN_USER block-device remove-tag $SYSTEM_ID $OSD_BLOCK_ID tag=1rpm
-          fi
-        done
-        
-        # Tag the additional neutron interface
-        echo "\n\n-------- Tagging neutron interface for '$HOST'... --------\n"
-        
-        CLOUD_NEUTRON_MAC=$(lxc config get $HOST volatile.eth1.hwaddr)
-        CLOUD_NEUTRON_INTERFACE_ID=$(maas $ADMIN_USER interfaces read $SYSTEM_ID | jq -r '.[] | select(.mac_address=="'$CLOUD_NEUTRON_MAC'") | .id')
-        if [ -n "$CLOUD_NEUTRON_INTERFACE_ID" ] && [ "$CLOUD_NEUTRON_INTERFACE_ID" != "null" ]; then
-          maast $ADMIN_USER interface update $SYSTEM_ID $CLOUD_NEUTRON_INTERFACE_ID tags=neutron:physnet1
-        fi
-        ;;
-    esac
-  done
-
-# Prepare machine for Sunbeam usage
-- echo "\n\n-------- Preparing machine for Sunbeam usage... --------\n"
-
-- $RUN_AS_LOGIN sunbeam prepare-node-script --client | $RUN_AS_LOGIN bash -x
-
-# Add the Canonical MAAS provider
-- echo "\n\n-------- Adding the Canonical MAAS provider... --------\n"
-
-- $RUN_AS_LOGIN sunbeam deployment add maas $OS_DEPLOYMENT_NAME $APIKEY http://${IP_ADDRESS}:5240/MAAS
-
-# Map network spaces to cloud networks
-- echo "\n\n-------- Mapping network spaces to cloud networks... --------\n"
-
-- maast $ADMIN_USER spaces create name=$MAAS_SPACE
-- maast $ADMIN_USER vlan update $FABRIC_ID $VLAN_TAG space=$MAAS_SPACE
-- $RUN_AS_LOGIN sunbeam deployment space map $MAAS_SPACE
-
-# Validate MAAS provider
-- echo "\n\n-------- Validating MAAS provider... --------\n"
-
-- $RUN_AS_LOGIN sunbeam deployment validate
-
-- cat /home/{{ sys_user }}/snap/openstack/common/reports/*
-- echo "\n"
-- echo "Number of fails      - $(grep -c failed /home/{{ sys_user }}/snap/openstack/common/reports/*)"
-- echo "Number of warnings   - $(grep -c warning /home/{{ sys_user }}/snap/openstack/common/reports/*)"
-- echo "Number of successes  - $(grep -c success /home/{{ sys_user }}/snap/openstack/common/reports/*)"
-- echo "\n"
-
-- $RUN_AS_LOGIN sunbeam deployment show $OS_DEPLOYMENT_NAME
-- sleep 10
-
-# Generate Sunbeam deployment manifest
-- echo "\n\n-------- Generating Sunbeam manifest... --------\n"
-- | 
-  cat <<EOF > /home/{{ sys_user }}/manifest.yaml
-  core:
-    config:
-      proxy:
-        proxy_required: false
-      database: single
-      region: RegionOne
-      user:
-        run_demo_setup: {{ 'true' if os_run_demo else 'false' }}
-        username: demo
-        password: password
-        cidr: 192.168.0.0/24
-        nameservers: $MAAS_DNS
-        security_group_rules: true
-        remote_access_location: local
-        physnet: physnet1
-      external-networks:
-        physnet1:
-          cidr: $OS_NEUTRON_CIDR
-          network_type: flat
-          nics:
-  EOF
-  
-  # Dynamically append all cloud nodes and their neutron interfaces
-  for HOST in $NODES_HOSTNAMES; do
-    case "$HOST" in
-      cloud-*)
-        echo "          $HOST: eth1" >> /home/{{ sys_user }}/manifest.yaml
-        ;;
-    esac
-  done
-
-- chown {{ sys_user }}:{{ sys_user }} /home/{{ sys_user }}/manifest.yaml
-- cat /home/{{ sys_user }}/manifest.yaml
-
-# Bootstrap the orchestration layer
-- echo "\n\n-------- Bootstrapping the orchestration layer... --------\n"
-
-- $RUN_AS_LOGIN  script -q -e -c "sunbeam cluster bootstrap --accept-defaults --manifest /home/{{ sys_user }}/manifest.yaml" /dev/null
-
-- echo "\n\n-------- Controller Model Status... --------\n"
-- $RUN_AS_LOGIN juju status -m controller
-
-- echo "\n\n-------- OpenStack-Infra Model Status... --------\n"
-- $RUN_AS_LOGIN juju status -m openstack-infra
-
-# Deploy the cloud
-- echo "\n\n-------- Deploying the cloud... --------\n"
-
-- $RUN_AS_LOGIN  script -q -e -c "sunbeam cluster deploy --accept-defaults --manifest /home/{{ sys_user }}/manifest.yaml" /dev/null
-
-- echo "\n\n-------- OpenStack-Machines Model Status... --------\n"
-- $RUN_AS_LOGIN juju status -m openstack-machines
-
-- echo "\n\n-------- OpenStack Model Status... --------\n"
-- $RUN_AS_LOGIN juju status -m openstack
-
-# Configure the cloud
-- echo "\n\n-------- Configuring the cloud... --------\n"
-
-- $RUN_AS_LOGIN  script -q -e -c "sunbeam configure --accept-defaults --openrc /home/{{ sys_user }}/demo-openrc --manifest /home/{{ sys_user }}/manifest.yaml" /dev/null
-
-# Generate the admin novarc credentials
-- echo "\n\n-------- Generating Admin Credentials... --------\n"
-
-- $RUN_AS_LOGIN sunbeam openrc > /home/{{ sys_user }}/admin-openrc
-- chown {{ sys_user }}:{{ sys_user }} /home/{{ sys_user }}/admin-openrc
-
-- echo "\n\n-------- Finished deploying Sunbeam, have fun!... --------\n"
+- 00-generate-env
+- 01-verify-deps
+- 02-maas-init
+- 03-maas-networking
+- 04-maas-images
+- 05-lxd-setup
+- 06-vm-creation
+- 07-maas-enlist
+- 08-maas-configure
+- 09-maas-commission
+- 10-maas-tagging
+- 11-sunbeam-prep
+- 12-sunbeam-bootstrap
+- 13-sunbeam-deploy
+- 14-sunbeam-configure
+
+- echo -e "\n\n${BYELLOW}-------- Finished deploying Sunbeam, have fun!... --------${NC}\n"
 

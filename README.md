@@ -5,18 +5,36 @@ Polymerase is a zero-state, Terraform-free reproducer repository designed exclus
 At the core of the project is `synth`, a standalone LXD orchestrator that acts as the active enzyme. Instead of relying on Terraform, `synth` reads the reproducer's payload, prompts for required variables on the fly, provisions isolated LXD projects and networks, tracks the deployment in real time by tailing the logs, and generates a bespoke teardown script.
 
 ### Key Features
-* Parses Jinja `cloud-config.yaml` payloads to dynamically calculate hardware requirements and generate interactive CLI prompts.
-* Saves the deployment state into a reusable `config-<project>.yaml` file, allowing 1:1 declarative environment replication.
-* Consolidates all generated artifacts (logs, certificates, teardown scripts, credentials) cleanly into an isolated project directory.
-* Supports nested LXD architectures or bare-metal LXD daemons.
-* Leverages the host's LXD image cache by default to massively speed up VM provisioning, with an option to isolate images per project.
-* Provisions `ipv4.nat` bridges, calculates CIDR gateways, and validates DHCP settings to prevent collisions.
-* Auto-injects local or Launchpad SSH keys and establishes secure SSH tunnels for dashboard port-forwarding.
-* Generates an `access-<project_name>.txt` manifest containing all URLs, local-forwarding tunnels, passwords, and a final cluster IP inventory table.
-* Tails `cloud-init` logs and seamlessly transitions to a live juju status watch-loop.
-* Automatically records all deployment stdout/stderr to a `log-<project_name>.log` file.
-* Seamless Background Detachment: Press `Ctrl+C` at any time during the deployment phase to instantly drop back to your local terminal while `synth` finishes provisioning and logging in the background.
-* Generates a project-specific teardown script to safely destroy the LXD project, un-trust certificates, and remove dynamic networks.
+
+* Isolated Deployment Directories: All generated artifacts (logs, certificates, teardown scripts, configurations, and access credentials) are cleanly consolidated into a unique deployment ID folder created right next to your payload.
+* Declarative Replication: Saves the deployment state into a reusable `config-<project>.yaml` file inside the unique deployment folder, allowing 1:1 declarative environment replication without prompting.
+* Modular Execution: Deployments are executed via modular, sequential scripts (`00-generate-env`, `01-verify-deps`, etc.) staged in `/usr/local/bin/`. If any step fails, you can SSH in and manually re-run the specific script to resume the deployment without starting from scratch.
+* Seamless Background Detachment: Deployments are executed in the background. Press `Ctrl+C` at any time during the deployment phase to instantly drop back to your local terminal. You can easily reconnect to the live progress by tailing the saved log file.
+* Dynamic Parsing: Parses Jinja `cloud-config.yaml` payloads to dynamically calculate hardware requirements and generate interactive CLI prompts.
+* Host Optimization: Supports nested LXD architectures or bare-metal LXD daemons, leveraging the host's LXD image cache by default to massively speed up VM provisioning.
+* Network Provisioning: Provisions `ipv4.nat` bridges, calculates CIDR gateways, and validates DHCP settings to prevent collisions.
+* Credential Management: Auto-injects local or Launchpad SSH keys and establishes secure SSH tunnels for dashboard port-forwarding.
+* Manifest Generation: Generates an `access-<project_name>.txt` manifest containing all URLs, local-forwarding tunnels, passwords, and a final cluster IP inventory table.
+* Live Tracking: Automatically records all deployment stdout/stderr to a `log-<project_name>.log` file and seamlessly transitions to a live juju status watch-loop.
+
+---
+
+## Available Labs
+
+The repository is structured around various environments and reproducer templates. While the exact steps adapt to the payload, most MAAS-based labs share a standardized provisioning baseline. 
+
+Current available labs include:
+
+| Lab Template | Description | Core Technologies |
+| :--- | :--- | :--- |
+| `sunbeam` | Automated, scalable installation of Canonical Sunbeam (OpenStack) | MAAS, Juju, OpenStack |
+| `openstack` | Highly available Charmed OpenStack deployment | MAAS, Juju, OpenStack |
+| `kubeadm` | Scalable Kubernetes cluster deployed via `kubeadm` | MAAS, Kubernetes, containerd |
+| `landscape` | High Availability Canonical Landscape deployment | MAAS, Juju, PostgreSQL, RabbitMQ |
+| `juju` | Base environment for generalized Juju controller and node provisioning | MAAS, Juju |
+| `maas` | Standalone, scalable MAAS provisioning environment | MAAS, PostgreSQL |
+| `lxd` | Automated scalable cloud-init install of an LXD environment | LXD |
+| `snapcraft` | Dedicated, isolated VM specifically tailored for Snap building | LXD, Snapcraft |
 
 ---
 
@@ -79,17 +97,47 @@ Deploy interactively with a custom ID:
 
 Deploy an automated cluster using deb MAAS and Launchpad keys:
 ```bash
-./synth -y -d -i pgdg99 Openstack/focal-ussuri.yaml
+./synth Openstack/focal-ussuri.yaml -y -d -i pgdg99
 ```
 
 Redeploy a previous exact environment using a saved configuration file:
 ```bash
-./synth -y -c Juju/b737170d/config-juju-b737170d.yaml Juju/juju.yaml
+./synth Juju/juju.yaml -y -c Juju/b737170d/config-juju-b737170d.yaml
 ```
 
 Run a fully automated background deployment (Start it, and press `Ctrl+C` to detach once the logs begin):
 ```bash
-./synth -y Sunbeam/sunbeam.yaml
+./synth Sunbeam/sunbeam.yaml -y
+```
+
+---
+
+## Modular Deployments & Troubleshooting
+
+A major feature of `se-polymerase` is its **modular execution**. Rather than deploying a massive, monolithic cloud-init runcmd, deployments are broken down into logical, sequentially numbered scripts executed inside the primary VM (found in `/usr/local/bin/`).
+
+For most MAAS-based labs, steps `00` to `10` are highly standardized:
+
+| Script | Description |
+| :--- | :--- |
+| `00-generate-env` | Calculates networking math and dynamic IP allocations. |
+| `01-verify-deps` | Verifies and installs critical system packages. |
+| `02-maas-init` | Sets up PostgreSQL and initializes the MAAS admin user. |
+| `03-maas-networking` | Configures subnets, VLANs, gateway IPs, and DNS. |
+| `04-maas-images` | Imports and syncs required Ubuntu boot resources. |
+| `05-lxd-setup` | Configures LXD certificates, remotes, and project isolation. |
+| `06-vm-creation` | Provisions empty VMs with calculated hardware allocations. |
+| `07-maas-enlist` | Starts the newly created VMs to trigger PXE boot and enlistment. |
+| `08-maas-configure` | Assigns Availability Zones, hostnames, and explicit power settings. |
+| `09-maas-commission` | Commissions the discovered nodes. |
+| `10-maas-tagging` | Injects tags for disks, roles, and logical network interfaces. |
+
+### Why is this useful?
+
+If a deployment fails at step `12` due to a transient network error or misconfiguration, you **do not** need to destroy the lab and start over. You can simply SSH into the primary machine and re-run the specific script:
+
+```bash
+ubuntu@maas-1:~$ 12-sunbeam-bootstrap
 ```
 
 ---
@@ -121,7 +169,7 @@ Execute this script to wipe the LXD project, stop and delete instances, un-trust
 
 ---
 
-## Building Payloads
+## Building Payloads to use with Synth
 
 `synth` parses standard Jinja comments to generate the CLI wizard. Format your `cloud-init.yaml` variables using the following standards:
 

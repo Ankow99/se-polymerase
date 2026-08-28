@@ -4,7 +4,7 @@
 A fully automated, scalable OpenStack environment deployed via Canonical Sunbeam on top of MAAS. This Transcript synthesizes a primary MAAS controller, provisions a fleet of LXD virtual machines, enlists them as bare-metal nodes, and executes the Sunbeam cluster bootstrap and deployment processes. It serves as a comprehensive reproducer for Canonical OpenStack architectures deployed using Sunbeam.
 
 ## Requirements
-To successfully synthesize this environment, your host machine must meet the following minimum specifications using the default topology.
+To successfully synthesize this environment, your host machine must meet the following minimum specifications using the *default* topology.
 * CPU: 22 cores
 * RAM: 60 GiB
 * Disk: 310 GiB
@@ -25,6 +25,7 @@ When launching this Transcript, `synth` will parse the payload and optionally pr
 | lxd_channel | 5.21/stable | Snap channel for the LXD installation |
 | maas_channel | 3.7/stable | Snap channel for the MAAS installation |
 | sunbeam_channel | 2024.1/stable | Snap channel for the Sunbeam installation |
+| lxd_project | default | Target LXD project for the deployment |
 | lxd_pool | default | Target LXD storage pool for the deployment |
 | maas_user | admin | Web UI and API admin username for MAAS |
 | maas_password | admin | Web UI and API admin password for MAAS |
@@ -60,32 +61,64 @@ When launching this Transcript, `synth` will parse the payload and optionally pr
 | cloud_osd_count | 4 | Number of Ceph OSD volumes to attach per cloud compute node |
 
 ## Usage
-Deploy this Transcript using the `se-polymerase` orchestrator.
+Deploy this Transcript using the `se-polymerase` orchestrator. The orchestrator isolates all generated files into a dedicated `[DEPLOY_ID]` directory and automatically handles headless background execution.
 
 Accept all default variables and let `synth` auto-generate a deployment ID:
 ```bash
-./synth Sunbeam/sunbeam.yaml -a
+./synth.sh Sunbeam/sunbeam.yaml -y
 ```
 
-Deploy with a nested LXD architecture, prompt for all variables interactively, and assign a specific case number as the deployment ID:
+Deploy with using deb MAAS, prompt for all variables interactively, and assign a specific case number as the deployment ID:
 ```bash
-./synth Sunbeam/sunbeam.yaml -n 00426900
+./synth.sh Sunbeam/sunbeam.yaml -d 00426900
+```
+
+Deploy bypassing prompts by passing a pre-generated configuration file from a previous run:
+```bash
+./synth.sh Sunbeam/sunbeam.yaml -c Sunbeam/00426900/config-sunbeam-00426900.yaml
 ```
 
 ## Access and Cleanup
-Once the payload finishes executing, `synth` will automatically drop you into a secure multiplexed SSH shell connected to the primary MAAS controller.
+Because the deployment is executed in the background, you can detach your terminal at any time. Monitor the live progress by tailing the log file stored in the deployment directory:
+```bash
+tail -f Sunbeam/00426900/log-sunbeam-00426900.log
+```
 
-Both an `admin-openrc` and a `demo-openrc` (if `os_run_demo` is true) file are automatically generated in your user directory. The `admin-openrc` file is automatically sourced at login. You can interact with the OpenStack CLI and manage the newly deployed cloud:
+Once the payload finishes executing, `synth` will automatically drop you into a secure multiplexed SSH shell connected to the primary MAAS controller. You can also view all SSH tunneling commands and dashboard URLs in the generated `access-[PROJECT].txt` file.
+
+OpenStack credentials are automatically generated in your user directory. The `admin-openrc` file is automatically sourced at login. You can interact with the OpenStack CLI and manage the newly deployed cloud:
 ```bash
 openstack server list
 ```
+Note: If `os_run_demo` is enabled, a `demo-openrc` file will also be available for testing isolated tenant workflows.
 
-The MAAS web UI access URL will be printed to your terminal at the end of the deployment phase, along with the exact SSH tunneling commands required to securely reach it from your local browser.
-
-To completely wipe this environment and release its resources, execute the auto-generated teardown script located in your working directory:
+To completely wipe this environment and release its resources, execute the auto-generated teardown script located in the deployment directory:
 ```bash
-./destroy-[PROJECT_NAME].sh
+./Sunbeam/00426900/destroy-sunbeam-00426900.sh
 ```
+
+## Modular Execution and Recovery
+To make debugging and recovery effortless, the entire cloud-init deployment pipeline is broken down into discrete, numbered executable scripts located in `/usr/local/bin/` on the primary MAAS controller. 
+
+If a specific phase of the deployment fails or times out, you do not need to destroy the environment and start over. Simply SSH into the primary controller and execute the failed step manually to retry it. Every script automatically escalates privileges and sources the `/etc/repro-env` state file, ensuring it has all the correct environment variables and dynamically calculated IPs needed to resume the deployment exactly where it left off.
+
+| Script | Description |
+| :--- | :--- |
+| 00-generate-env | Initializes the persistent state file `/etc/repro-env` and calculates dynamic IP allocations |
+| 01-verify-deps | Installs and verifies core dependencies like LXD, MAAS, and Sunbeam |
+| 02-maas-init | Configures the database, initializes MAAS, and creates the admin user |
+| 03-maas-networking | Configures subnets, DHCP ranges, VLANs, and DNS settings in MAAS |
+| 04-maas-images | Triggers and monitors the synchronization of required OS boot images |
+| 05-lxd-setup | Establishes certificate trust between MAAS and the LXD provider |
+| 06-vm-creation | Provisions the virtual machines and attaches custom storage/network devices |
+| 07-maas-enlist | Boots the machines and monitors their automatic enlistment into MAAS |
+| 08-maas-configure | Assigns availability zones, hostnames, and LXD power controls |
+| 09-maas-commission | Triggers the commissioning phase and waits for hardware discovery |
+| 10-maas-tagging | Applies hardware tags, configures storage layouts, and tags interfaces |
+| 11-sunbeam-prep | Prepares the nodes, adds the MAAS provider, and validates the space |
+| 12-sunbeam-bootstrap | Generates the deployment manifest and bootstraps the Juju controller |
+| 13-sunbeam-deploy | Executes the main Sunbeam cluster deployment for the OpenStack services |
+| 14-sunbeam-configure | Runs post-deployment cloud configuration and generates user credentials |
 
 ## Architecture Overview
 * Network Topology: Utilizes a dual-bridge network. The primary bridge handles MAAS provisioning and PXE traffic, while a secondary bridge provides an isolated Neutron provider network for OpenStack traffic.

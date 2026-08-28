@@ -235,7 +235,7 @@ ask_var() {
     # Check if value was provided in config file
     provided_key_var="CONFIG_PROVIDED_${config_key}"
     
-    if [ -n "${!provided_key_var}" ]; then
+    if [ -v "${provided_key_var}" ]; then
         user_input="${!provided_key_var}"
         echo -e "  ${BYELLOW}${prompt_text} [${NC}from config${BYELLOW}]: ${NC}${user_input}"
     elif [ "$ACCEPT_DEFAULTS" = true ]; then
@@ -284,6 +284,8 @@ create_dynamic_bridge() {
     local user_cidr=""
     local current_dhcp=""
     local current_nat=""
+    local br_checked=false
+    local cidr_checked=false
     
     # Setup our loop control variable
     local valid_bridge=false
@@ -294,10 +296,10 @@ create_dynamic_bridge() {
     local provided_key_var="CONFIG_PROVIDED_${var_key}"
     local provided_cidr_var="CONFIG_PROVIDED_${cidr_var}"
     
-    if [ -n "${!provided_key_var}" ]; then
+    if [ -v "${provided_key_var}" ]; then
         provided_br="${!provided_key_var}"
     fi
-    if [ -n "${!provided_cidr_var}" ]; then
+    if [ -v "${provided_cidr_var}" ]; then
         provided_cidr="${!provided_cidr_var}"
     fi
     
@@ -305,10 +307,10 @@ create_dynamic_bridge() {
     while [ "$valid_bridge" = false ]; do
         
         # Prompt for value if accept defaults is false
-        if [ -n "$provided_br" ]; then
+        if [ -v "${provided_key_var}" ] && [ "$br_checked" = false ]; then
             bridge_name="$provided_br"
-            echo -e "  ${BYELLOW}${prompt_text} [${NC}from config${BYELLOW}]: ${NC}${bridge_name}"
-            provided_br="" # Clear so it drops to default prompt if validation fails
+            echo -e "  ${BYELLOW}${prompt_text} [${NC}from config${BYELLOW}]: ${NC}${bridge_name:-<empty>}"
+            br_checked=true # Mark as checked so it drops to default prompt if validation fails
         elif [ "$ACCEPT_DEFAULTS" = true ]; then
             bridge_name="$default_br"
         else
@@ -407,10 +409,10 @@ create_dynamic_bridge() {
             default_cidr=$(get_default "$cidr_var")
             [ -z "$default_cidr" ] && default_cidr="10.0.0.0/22"
             
-            if [ -n "$provided_cidr" ]; then
+            if [ -v "${provided_cidr_var}" ] && [ "$cidr_checked" = false ]; then
                 bridge_cidr="$provided_cidr"
-                echo -e "  ${BYELLOW}${prompt_text% Name} CIDR [${NC}from config${BYELLOW}]: ${NC}${bridge_cidr}"
-                provided_cidr=""
+                echo -e "  ${BYELLOW}${prompt_text% Name} CIDR [${NC}from config${BYELLOW}]: ${NC}${bridge_cidr:-<empty>}"
+                cidr_checked=true # Mark as checked so it drops to default prompt if validation fails
             else
                 echo -ne "  ${BYELLOW}${prompt_text% Name} CIDR [${NC}${default_cidr}${BYELLOW}]: ${NC}"
                 read -r user_cidr </dev/tty
@@ -1348,6 +1350,10 @@ if [ "$NESTED" = true ]; then
     VM_NAME=$REPRO_NAME
 fi
 
+if [ -n "$VM_IMAGE" ]; then
+    IMAGE="$VM_IMAGE"
+fi
+
 # 1. Launch VM
 echo ""
 echo -e "${BYELLOW}-> 1. Launching LXD VM '${NC}$VM_NAME${BYELLOW}' (${NC}$IMAGE${BYELLOW}) with CPU: ${NC}$CPU_LIMIT cores${BYELLOW} ; RAM: ${NC}${RAM_LIMIT/GiB/ GiB}${BYELLOW} ; DISK: ${NC}${DISK_LIMIT/GiB/ GiB}"
@@ -1373,7 +1379,7 @@ lxc config set "$VM_NAME" --project "$LXD_PROJECT"
 cat << EOF > "$CLEANUP_SCRIPT"
 #!/bin/bash
 echo ""
-echo -e "${BYELLOW}----- Starting Cleanup for LXD Project '$LXD_PROJECT' -----${NC}"
+echo -e "${BYELLOW}----- Starting Cleanup for LXD Project '${NC}${LXD_PROJECT}${BYELLOW}' -----${NC}"
 echo ""
 EOF
 
