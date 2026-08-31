@@ -977,18 +977,6 @@ write_files:
     
     lxc project switch {{ lxd_project }}
     
-    echo -e "\n\n${BYELLOW}-------- Disabling multicast snooping on '{{ maas_bridge }}'... --------${NC}\n"
-    
-    cat <<EOF > /etc/udev/rules.d/99-bridge-no-snooping.rules
-    ACTION=="add", SUBSYSTEM=="net", KERNEL=="{{ maas_bridge }}", ATTR{bridge/multicast_snooping}="0"
-    EOF
-    
-    # Reload udev rules to make it active for future reboots
-    udevadm control --reload-rules
-    
-    # Apply it manually for the current session
-    ip link set dev {{ maas_bridge }} type bridge mcast_snooping 0
-    
     {% endif %}
 
 - path: /usr/local/bin/06-vm-creation
