@@ -344,7 +344,7 @@ create_dynamic_bridge() {
                 echo -e "${BRED}Error: Existing bridge '${NC}${bridge_name}${BRED}' has 'ipv4.dhcp=${NC}${current_dhcp}${BRED}', but this network requires 'ipv4.dhcp=${NC}${dhcp_flag}${BRED}'!${NC}"
                 echo "Please specify a different bridge name or delete the conflicting bridge."
                 echo ""
-                if [ "$ACCEPT_DEFAULTS" = true ] || [ -n "$INPUT_CONFIG_FILE" ]; then
+                if [ "$ACCEPT_DEFAULTS" = true ]; then
                     exit 1
                 else
                     continue
@@ -360,7 +360,7 @@ create_dynamic_bridge() {
                 echo -e "${BRED}Error: Existing bridge '${NC}${bridge_name}${BRED}' has 'ipv4.nat=${NC}${current_nat}${BRED}', but this network requires 'ipv4.nat=${NC}true${BRED}' for outbound internet!${NC}"
                 echo "Please specify a different bridge name or enable NAT on this bridge."
                 echo ""
-                if [ "$ACCEPT_DEFAULTS" = true ] || [ -n "$INPUT_CONFIG_FILE" ]; then
+                if [ "$ACCEPT_DEFAULTS" = true ]; then
                     exit 1
                 else
                     continue
@@ -395,7 +395,7 @@ create_dynamic_bridge() {
                 
                 lxc network delete "$bridge_name" >/dev/null 2>&1 || true
                 
-                if [ "$ACCEPT_DEFAULTS" = true ] || [ -n "$INPUT_CONFIG_FILE" ]; then
+                if [ "$ACCEPT_DEFAULTS" = true ]; then
                     exit 1
                 else
                     continue
@@ -453,7 +453,7 @@ except Exception:
                 echo ""
                 echo -e "${BRED}Error: CIDR '${NC}${bridge_cidr}${BRED}' is too small for a bridge subnet. Must be /30 or larger. Please try again...${NC}"
                 echo ""
-                if [ "$ACCEPT_DEFAULTS" = true ] || [ -n "$INPUT_CONFIG_FILE" ]; then
+                if [ "$ACCEPT_DEFAULTS" = true ]; then
                     exit 1
                 else
                     continue
@@ -462,7 +462,7 @@ except Exception:
                 echo ""
                 echo -e "${BRED}Error: Invalid CIDR format '${NC}${bridge_cidr}${BRED}' provided for bridge '${NC}$bridge_name${BRED}'. Please try again...${NC}"
                 echo ""
-                if [ "$ACCEPT_DEFAULTS" = true ] || [ -n "$INPUT_CONFIG_FILE" ]; then
+                if [ "$ACCEPT_DEFAULTS" = true ]; then
                     exit 1
                 else
                     continue
@@ -481,7 +481,7 @@ except Exception:
                 lxc network delete "$bridge_name" >/dev/null 2>&1 || true
                 default_br="$bridge_name" # Save custom name for next prompt
                 
-                if [ "$ACCEPT_DEFAULTS" = true ] || [ -n "$INPUT_CONFIG_FILE" ]; then
+                if [ "$ACCEPT_DEFAULTS" = true ]; then
                     exit 1
                 else
                     continue
