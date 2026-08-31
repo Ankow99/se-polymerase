@@ -758,8 +758,8 @@ write_files:
     maas {{ maas_user }} maas set-config name=maas_name value={{ lxd_project }}
     maas {{ maas_user }} maas set-config name=completed_intro value=true
     
-    # Enable TTY serial console for all LXD VMs
-    maas {{ maas_user }} maas set-config name=kernel_opts value="console=tty1 console=ttyS0,115200"
+    # Apply global kernel boot parameters
+    maas {{ maas_user }} maas set-config name=kernel_opts value="console=tty1 console=ttyS0,115200 loglevel=4 fsck.mode=auto fsck.repair=yes systemd.show_status=false mitigations=auto nosplash"
     
     # Automatically create and add ssh keys to MAAS
     echo -e "\n\n${BYELLOW}-------- Generating SSH keys and adding them to MAAS... --------${NC}\n"
@@ -979,6 +979,14 @@ write_files:
     
     echo -e "\n\n${BYELLOW}-------- Disabling multicast snooping on '{{ maas_bridge }}'... --------${NC}\n"
     
+    cat <<EOF > /etc/udev/rules.d/99-bridge-no-snooping.rules
+    ACTION=="add", SUBSYSTEM=="net", KERNEL=="{{ maas_bridge }}", ATTR{bridge/multicast_snooping}="0"
+    EOF
+    
+    # Reload udev rules to make it active for future reboots
+    udevadm control --reload-rules
+    
+    # Apply it manually for the current session
     ip link set dev {{ maas_bridge }} type bridge mcast_snooping 0
     
     {% endif %}
@@ -1258,8 +1266,10 @@ write_files:
           
           CLOUD_NEUTRON_MAC=$(lxc config get $HOST volatile.eth1.hwaddr)
           CLOUD_NEUTRON_INTERFACE_ID=$(maas {{ maas_user }} interfaces read $SYSTEM_ID | jq -r '.[] | select(.mac_address=="'$CLOUD_NEUTRON_MAC'") | .id')
+          
           if [ -n "$CLOUD_NEUTRON_INTERFACE_ID" ] && [ "$CLOUD_NEUTRON_INTERFACE_ID" != "null" ]; then
             maast {{ maas_user }} interface update $SYSTEM_ID $CLOUD_NEUTRON_INTERFACE_ID tags=neutron:physnet1
+            maast {{ maas_user }} interface link-subnet $SYSTEM_ID $CLOUD_NEUTRON_INTERFACE_ID mode=link_up
           fi
           ;;
       esac
@@ -1365,7 +1375,16 @@ write_files:
     # Bootstrap the orchestration layer
     echo -e "\n\n${BYELLOW}-------- Bootstrapping the orchestration layer... --------${NC}\n"
     
-    $RUN_AS_LOGIN  script -q -e -c "sunbeam cluster bootstrap --accept-defaults --manifest /home/{{ sys_user }}/manifest.yaml" /dev/null
+    LOGFILE="/tmp/sunbeam-bootstrap.log"
+    if ! $RUN_AS_LOGIN script -q -e -c "sunbeam cluster bootstrap --accept-defaults --manifest /home/{{ sys_user }}/manifest.yaml" "$LOGFILE"; then
+        if grep -q "wait timed out after" "$LOGFILE"; then
+            echo -e "\n\n${BRED}Timeout detected. Waiting 60s and retrying bootstrap once...${NC}\n"
+            sleep 60
+            $RUN_AS_LOGIN script -q -e -c "sunbeam cluster bootstrap --accept-defaults --manifest /home/{{ sys_user }}/manifest.yaml" /dev/null
+        else
+            echo -e "\n\n${BRED}Bootstrap failed with a non-timeout error. Proceeding without retry.${NC}\n"
+        fi
+    fi
     
     echo -e "\n\n${BYELLOW}-------- Controller Model Status... --------${NC}\n"
     $RUN_AS_LOGIN juju status -m controller
@@ -1388,7 +1407,16 @@ write_files:
     # Deploy the cloud
     echo -e "\n\n${BYELLOW}-------- Deploying the cloud... --------${NC}\n"
     
-    $RUN_AS_LOGIN  script -q -e -c "sunbeam cluster deploy --accept-defaults --manifest /home/{{ sys_user }}/manifest.yaml" /dev/null
+    LOGFILE="/tmp/sunbeam-deploy.log"
+    if ! $RUN_AS_LOGIN script -q -e -c "sunbeam cluster deploy --accept-defaults --manifest /home/{{ sys_user }}/manifest.yaml" "$LOGFILE"; then
+        if grep -q "wait timed out after" "$LOGFILE"; then
+            echo -e "\n\n${BRED}Timeout detected. Waiting 60s and retrying deploy once...${NC}\n"
+            sleep 60
+            $RUN_AS_LOGIN script -q -e -c "sunbeam cluster deploy --accept-defaults --manifest /home/{{ sys_user }}/manifest.yaml" /dev/null
+        else
+            echo -e "\n\n${BRED}Deploy failed with a non-timeout error. Proceeding without retry.${NC}\n"
+        fi
+    fi
     
     echo -e "\n\n${BYELLOW}-------- OpenStack-Machines Model Status... --------${NC}\n"
     $RUN_AS_LOGIN juju status -m openstack-machines
@@ -1411,7 +1439,16 @@ write_files:
     # Configure the cloud
     echo -e "\n\n${BYELLOW}-------- Configuring the cloud... --------${NC}\n"
     
-    $RUN_AS_LOGIN  script -q -e -c "sunbeam configure --accept-defaults --openrc /home/{{ sys_user }}/demo-openrc --manifest /home/{{ sys_user }}/manifest.yaml" /dev/null
+    LOGFILE="/tmp/sunbeam-configure.log"
+    if ! $RUN_AS_LOGIN script -q -e -c "sunbeam configure --accept-defaults --openrc /home/{{ sys_user }}/demo-openrc --manifest /home/{{ sys_user }}/manifest.yaml" "$LOGFILE"; then
+        if grep -q "wait timed out after" "$LOGFILE"; then
+            echo -e "\n\n${BRED}Timeout detected. Waiting 60s and retrying configure once...${NC}\n"
+            sleep 60
+            $RUN_AS_LOGIN script -q -e -c "sunbeam configure --accept-defaults --openrc /home/{{ sys_user }}/demo-openrc --manifest /home/{{ sys_user }}/manifest.yaml" /dev/null
+        else
+            echo -e "\n\n${BRED}Configure failed with a non-timeout error. Proceeding without retry.${NC}\n"
+        fi
+    fi
     
     # Generate the admin novarc credentials
     echo -e "\n\n${BYELLOW}-------- Generating Admin Credentials... --------${NC}\n"
