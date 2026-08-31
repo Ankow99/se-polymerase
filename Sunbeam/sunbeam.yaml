@@ -1064,7 +1064,7 @@ write_files:
       
       # If the flag is still true, everyone is enlisted -> break the loop
       if [ "$all_enlisted" = true ]; then
-        echo "All VMs have successfully enlisted!\n"
+        echo -e "All VMs have successfully enlisted!\n"
         lxc list
         sleep 10
         break
@@ -1167,7 +1167,7 @@ write_files:
       
       # If the flag is still true, everyone is ready -> break the loop
       if [ "$all_ready" = true ]; then
-        echo "All VMs are Ready!"
+        echo -e "All VMs are Ready!\n"
         maast {{ maas_user }} machines read
         netplan apply # Update MAAS DNS record
         sleep 10
@@ -1450,7 +1450,6 @@ write_files:
 packages:
   - git
   - neovim
-  - pollinate
   - jq
 
 {% if not maas_snap %}
@@ -1473,11 +1472,6 @@ package_upgrade: true
 package_reboot_if_required: true
 
 timezone: {{ timezone }}
-
-random_seed:
-  command: [pollinate]
-  command_required: true
-  file: /dev/urandom
 
 runcmd:
 - 00-generate-env
