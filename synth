@@ -3,7 +3,7 @@
 # se-polymerase (synth)
 # Acts as the polymerase to synthesize an isolated, terraform-free LXD 
 # reproducer environment using the host's LXD for MAAS + Juju deployments.
-# version: 7.1.0
+# version: 7.4.0
 #
 # Synthesized by: Pablo Gonzalez De Greiff @ Canonical
 # ---
@@ -392,6 +392,9 @@ create_dynamic_bridge() {
                 echo ""
                 echo -e "${BRED}Error: Failed to create random ${prompt_text% Name} '${NC}$bridge_name${BRED}'. Please try again...${NC}"
                 echo ""
+                
+                lxc network delete "$bridge_name" >/dev/null 2>&1 || true
+                
                 if [ "$ACCEPT_DEFAULTS" = true ] || [ -n "$INPUT_CONFIG_FILE" ]; then
                     exit 1
                 else
@@ -450,12 +453,20 @@ except Exception:
                 echo ""
                 echo -e "${BRED}Error: CIDR '${NC}${bridge_cidr}${BRED}' is too small for a bridge subnet. Must be /30 or larger. Please try again...${NC}"
                 echo ""
-                continue
+                if [ "$ACCEPT_DEFAULTS" = true ] || [ -n "$INPUT_CONFIG_FILE" ]; then
+                    exit 1
+                else
+                    continue
+                fi
             elif [ "$gw_ip" = "ERROR" ] || [ -z "$gw_ip" ]; then
                 echo ""
                 echo -e "${BRED}Error: Invalid CIDR format '${NC}${bridge_cidr}${BRED}' provided for bridge '${NC}$bridge_name${BRED}'. Please try again...${NC}"
                 echo ""
-                continue
+                if [ "$ACCEPT_DEFAULTS" = true ] || [ -n "$INPUT_CONFIG_FILE" ]; then
+                    exit 1
+                else
+                    continue
+                fi
             fi
             
             if ! lxc network create "$bridge_name" \
@@ -466,7 +477,15 @@ except Exception:
                 echo ""
                 echo -e "${BRED}Error: Failed to create custom ${prompt_text% Name} '${NC}$bridge_name${BRED}'. Please try again...${NC}"
                 echo ""
-                continue
+                
+                lxc network delete "$bridge_name" >/dev/null 2>&1 || true
+                default_br="$bridge_name" # Save custom name for next prompt
+                
+                if [ "$ACCEPT_DEFAULTS" = true ] || [ -n "$INPUT_CONFIG_FILE" ]; then
+                    exit 1
+                else
+                    continue
+                fi
             fi
             lxc network set "$bridge_name" --property description="${PRETTY_REPRO} ${prompt_text% Name} ($DEPLOY_ID)"
             CREATED_BRIDGES+=("$bridge_name")
