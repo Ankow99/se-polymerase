@@ -1494,7 +1494,7 @@ random_seed:
 
 runcmd:
 - 00-generate-env
-- 01-verify-deps
+- 01-verify-deps || exit 1
 - 02-maas-init
 - 03-maas-networking
 - 04-maas-images
