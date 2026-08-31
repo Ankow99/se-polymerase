@@ -1257,7 +1257,6 @@ write_files:
           
           if [ -n "$CLOUD_NEUTRON_INTERFACE_ID" ] && [ "$CLOUD_NEUTRON_INTERFACE_ID" != "null" ]; then
             maast {{ maas_user }} interface update $SYSTEM_ID $CLOUD_NEUTRON_INTERFACE_ID tags=neutron:physnet1
-            maast {{ maas_user }} interface link-subnet $SYSTEM_ID $CLOUD_NEUTRON_INTERFACE_ID mode=link_up
           fi
           ;;
       esac
