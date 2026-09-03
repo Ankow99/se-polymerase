@@ -3,14 +3,17 @@
 
 # ---
 # devstack transcript: Automated cloud-init install of DevStack OpenStack
-# version: 2.0.0
+# version: 3.0.0
 #
-# Made by: Pablo Gonzalez De Greiff @ Canonical
+# Synthesized by: Pablo Gonzalez De Greiff @ Canonical
 # ---
 
 # ==========================================
 # DEFAULT JINJA CONFIGURATIONS
 # ==========================================
+
+# --- Architecture Toggle ---
+{% set custom_update_n_upgrade = True %}            # PROMPT:Auto Update & Upgrade
 
 # --- Auth & System ---
 {% set custom_repro_name = "devstack" %}
@@ -86,6 +89,12 @@
 
 {% set devstack_release = meta.get("devstack_release") or custom_devstack_release %}
 {% set devstack_password = meta.get("devstack_password") or custom_devstack_password %}
+
+{% if meta.get("update_n_upgrade") is not none %}
+  {% set update_n_upgrade = (meta.get("update_n_upgrade") | string | lower == "true") %}
+{% else %}
+  {% set update_n_upgrade = (custom_update_n_upgrade | string | lower == "true") %}
+{% endif %}
 
 {% if meta.get("enable_swift") is not none %}
   {% set enable_swift = (meta.get("enable_swift") | string | lower == "true") %}
@@ -180,6 +189,17 @@ ubuntu_pro:
   token: {{ pro_token }}
 {% endif %}
 
+timezone: {{ timezone }}
+
+packages:
+  - git
+  - neovim
+  - jq
+
+package_update: {{ 'true' if update_n_upgrade else 'false' }}
+package_upgrade: {{ 'true' if update_n_upgrade else 'false' }}
+package_reboot_if_required: {{ 'true' if update_n_upgrade else 'false' }}
+
 write_files:
 # Auto login script helper function (DevStack)
 - path: /etc/profile.d/devstack-login.sh
@@ -189,12 +209,11 @@ write_files:
         if [ -f "/opt/stack/devstack/openrc" ]; then
             source /opt/stack/devstack/openrc admin admin
         fi
+        
+        if [ -f "/etc/repro-env" ]; then
+            source /etc/repro-env
+        fi
     fi
-
-- path: /etc/udev/rules.d/99-kvm.rules
-  permissions: '0644'
-  content: |
-    KERNEL=="kvm", GROUP="kvm", MODE="0666"
 
 - path: /etc/profile.d/default-editor.sh
   permissions: '0644'
@@ -206,134 +225,196 @@ write_files:
   content: |
     Defaults env_keep += "EDITOR"
 
-packages:
-  - git
-  - neovim
-  - pollinate
-  - jq
+- path: /etc/udev/rules.d/99-kvm.rules
+  permissions: '0644'
+  content: |
+    KERNEL=="kvm", GROUP="kvm", MODE="0666"
 
-package_update: true
-package_upgrade: true
-package_reboot_if_required: true
+# ==========================================
+# START OF AUTOMATION SCRIPTS (00 to 03)
+# ==========================================
 
-timezone: {{ timezone }}
+- path: /usr/local/bin/00-generate-env
+  permissions: '0755'
+  content: |
+    #!/bin/bash
+    
+    # Auto-escalate to root if run as a normal user
+    if [ "$EUID" -ne 0 ]; then
+        exec sudo "$0" "$@"
+    fi
+    
+    # Define colors first
+    BRED='\033[1;31m'
+    BYELLOW='\033[1;33m'
+    BGREEN='\033[1;32m'
+    NC='\033[0m'
+    
+    echo -e "\n\n${BYELLOW}-------- Generating Runtime Environment... --------${NC}\n"
+    
+    # 1. Calculate Runtime Variables
+    IP_ADDRESS=$(hostname -I | awk '{print $1}')
+    INTERFACE=$(ip -j route show default | jq -r '.[].dev')
+    
+    # 2. Write Base Variables to the Persistent State File
+    cat <<EOF > /etc/repro-env
+    # -- Colours --
+    export BRED='${BRED}'
+    export BYELLOW='${BYELLOW}'
+    export BGREEN='${BGREEN}'
+    export NC='${NC}'
+    # ----
+    export IP_ADDRESS="$IP_ADDRESS"
+    export INTERFACE="$INTERFACE"
+    export RUN_AS="sudo -u {{ sys_user }}"
+    export RUN_AS_LOGIN="sudo -i -u {{ sys_user }}"
+    EOF
+    
+    # 3. Secure the state file (Only root and sys_user can read it)
+    chown {{ sys_user }}:{{ sys_user }} /etc/repro-env
+    chmod 600 /etc/repro-env
 
-random_seed:
-  command: [pollinate]
-  command_required: true
-  file: /dev/urandom
+- path: /usr/local/bin/01-verify-deps
+  permissions: '0755'
+  content: |
+    #!/bin/bash
+    
+    # Auto-escalate to root if run as a normal user
+    if [ "$EUID" -ne 0 ]; then
+        exec sudo "$0" "$@"
+    fi
+    
+    source /etc/repro-env
+    
+    # Verify critical dependencies
+    echo -e "\n\n${BYELLOW}-------- Verifying dependencies... --------${NC}\n"
+    
+    for cmd in jq; do
+      if ! command -v $cmd >/dev/null 2>&1; then
+        echo "CRITICAL ERROR: Required command '$cmd' not found."
+        echo "Snap/apt package installation likely failed due to a network error."
+        exit 1
+      fi
+    done
+    echo "All dependencies verified successfully!"
+
+- path: /usr/local/bin/02-devstack-configure
+  permissions: '0755'
+  content: |
+    #!/bin/bash
+    
+    # Auto-escalate to root if run as a normal user
+    if [ "$EUID" -ne 0 ]; then
+        exec sudo "$0" "$@"
+    fi
+    
+    source /etc/repro-env
+    
+    # Clone devstack repo
+    echo -e "\n\n${BYELLOW}-------- Cloning DevStack Repository... --------${NC}\n"
+    
+    chmod +x /opt/stack
+    
+    su stack -c 'git clone -b {{ devstack_release }} https://opendev.org/openstack/devstack /opt/stack/devstack'
+    
+    cat <<EOF > /opt/stack/devstack/local.conf
+    [[local|localrc]]
+    # Basic Credentials
+    ADMIN_PASSWORD={{ devstack_password }}
+    DATABASE_PASSWORD={{ devstack_password }}
+    RABBIT_PASSWORD={{ devstack_password }}
+    SERVICE_PASSWORD={{ devstack_password }}
+    # Base Git Repository
+    GIT_BASE=https://opendev.org
+    # Logging Configuration
+    DEST=/opt/stack
+    LOGFILE=\$DEST/logs/stack.sh.log
+    VERBOSE=True
+    LOG_COLOR=False
+    # Force the libvirt driver to use KVM hardware acceleration
+    LIBVIRT_TYPE=kvm
+    # Expose the full physical CPU features to the guest VMs
+    LIBVIRT_CPU_MODE=host-passthrough
+    # Tempest
+    INSTALL_TEMPEST=True
+    enable_service tempest
+    # Network (Neutron & OVN)
+    enable_plugin neutron \$GIT_BASE/openstack/neutron {{ devstack_release }}
+    enable_service rabbit
+    enable_service q-qos
+    # Placement
+    enable_service placement-api placement-client
+    {% if enable_swift %}
+    # Swift
+    enable_service s-proxy s-object s-container s-account
+    SWIFT_HASH=66a3d6b56c1f479c8b4e70ab5c2000f5
+    {% endif %}
+    {% if enable_skyline %}
+    # Skyline Dashboard
+    enable_plugin skyline-apiserver \$GIT_BASE/openstack/skyline-apiserver {{ devstack_release }}
+    enable_plugin skyline-console \$GIT_BASE/openstack/skyline-console {{ devstack_release }}
+    {% endif %}
+    {% if enable_masakari %}
+    # Masakari
+    enable_plugin masakari \$GIT_BASE/openstack/masakari {{ devstack_release }}
+    enable_plugin masakaridashboard \$GIT_BASE/openstack/masakari-dashboard {{ devstack_release }}
+    {% endif %}
+    {% if enable_heat %}
+    # Heat
+    enable_plugin heat \$GIT_BASE/openstack/heat {{ devstack_release }}
+    enable_service h-eng h-api h-api-cfn h-api-cw
+    {% endif %}
+    {% if enable_designate %}
+    # Designate
+    enable_plugin designate \$GIT_BASE/openstack/designate {{ devstack_release }}
+    enable_service designate,designate-central,designate-api,designate-worker,designate-producer,designate-mdns
+    {% endif %}
+    {% if enable_octavia %}
+    # Octavia
+    enable_plugin octavia \$GIT_BASE/openstack/octavia {{ devstack_release }}
+    enable_plugin octavia-dashboard \$GIT_BASE/openstack/octavia-dashboard {{ devstack_release }}
+    enable_plugin ovn-octavia-provider \$GIT_BASE/openstack/ovn-octavia-provider {{ devstack_release }}
+    enable_plugin octavia-tempest-plugin \$GIT_BASE/openstack/octavia-tempest-plugin master
+    enable_service octavia o-api o-cw o-hm o-hk o-da
+    {% endif %}
+    {% if enable_barbican %}
+    # Barbican
+    enable_plugin barbican \$GIT_BASE/openstack/barbican {{ devstack_release }}
+    enable_service barbican
+    {% endif %}
+    EOF
+    
+    chown stack:stack /opt/stack/devstack/local.conf
+
+- path: /usr/local/bin/03-devstack-install
+  permissions: '0755'
+  content: |
+    #!/bin/bash
+    
+    # Auto-escalate to root if run as a normal user
+    if [ "$EUID" -ne 0 ]; then
+        exec sudo "$0" "$@"
+    fi
+    
+    source /etc/repro-env
+    
+    # Install devstack
+    echo -e "\n\n${BYELLOW}-------- Installing DevStack... --------${NC}\n"
+    
+    su -l stack -c '~/devstack/stack.sh'
+    
+    cp /opt/stack/devstack/openrc /home/{{ sys_user }}/openrc
+    chown {{ sys_user }}:{{ sys_user }} /home/{{ sys_user }}/openrc
+    
+    echo -e "\n\n${BYELLOW}-------- Finished deploying DevStack, have fun!... --------${NC}\n"
+
+# ==========================================
+# END OF AUTOMATION SCRIPTS (00 to 03)
+# ==========================================
 
 runcmd:
-
-# Verify critical dependencies
-- echo "\n\n-------- Verifying dependencies... --------\n"
-- |
-  for cmd in jq; do
-    if ! command -v $cmd >/dev/null 2>&1; then
-      echo "CRITICAL ERROR: Required command '$cmd' not found."
-      echo "Snap/apt package installation likely failed due to a network error."
-      exit 1
-    fi
-  done
-  echo "All dependencies verified successfully!"
-
-# Export variables
-- echo "\n\n-------- Exporting variables... --------\n"
-
-# --- Networking ---
-- export IP_ADDRESS=$(hostname -I | awk '{print $1}')
-- export INTERFACE=$(ip -j route show default | jq -r '.[].dev')
-
-# --- Auth & System ---
-- export SSH_KEY="{{ ssh_import_id }}"
-- export RUN_AS="sudo -u {{ sys_user }}"
-- export RUN_AS_LOGIN="sudo -i -u {{ sys_user }}"
-- export ADMIN_PASS="{{ devstack_password }}"
-
-# Clone devstack repo
-- echo "\n\n-------- Cloning DevStack Repository... --------\n"
-
-- chmod +x /opt/stack
-
-- su stack -c 'git clone -b {{ devstack_release }} https://opendev.org/openstack/devstack /opt/stack/devstack'
-
-- |
-  cat <<EOF > /opt/stack/devstack/local.conf
-  [[local|localrc]]
-  # Basic Credentials
-  ADMIN_PASSWORD=$ADMIN_PASS
-  DATABASE_PASSWORD=$ADMIN_PASS
-  RABBIT_PASSWORD=$ADMIN_PASS
-  SERVICE_PASSWORD=$ADMIN_PASS
-  # Base Git Repository
-  GIT_BASE=https://opendev.org
-  # Logging Configuration
-  DEST=/opt/stack
-  LOGFILE=\$DEST/logs/stack.sh.log
-  VERBOSE=True
-  LOG_COLOR=False
-  # Force the libvirt driver to use KVM hardware acceleration
-  LIBVIRT_TYPE=kvm
-  # Expose the full physical CPU features to the guest VMs
-  LIBVIRT_CPU_MODE=host-passthrough
-  # Tempest
-  INSTALL_TEMPEST=True
-  enable_service tempest
-  # Network (Neutron & OVN)
-  enable_plugin neutron \$GIT_BASE/openstack/neutron {{ devstack_release }}
-  enable_service rabbit
-  enable_service q-qos
-  # Placement
-  enable_service placement-api placement-client
-{% if enable_swift %}
-  # Swift
-  enable_service s-proxy s-object s-container s-account
-  SWIFT_HASH=66a3d6b56c1f479c8b4e70ab5c2000f5
-{% endif %}
-{% if enable_skyline %}
-  # Skyline Dashboard
-  enable_plugin skyline-apiserver \$GIT_BASE/openstack/skyline-apiserver {{ devstack_release }}
-  enable_plugin skyline-console \$GIT_BASE/openstack/skyline-console {{ devstack_release }}
-{% endif %}
-{% if enable_masakari %}
-  # Masakari
-  enable_plugin masakari \$GIT_BASE/openstack/masakari {{ devstack_release }}
-  enable_plugin masakaridashboard \$GIT_BASE/openstack/masakari-dashboard {{ devstack_release }}
-{% endif %}
-{% if enable_heat %}
-  # Heat
-  enable_plugin heat \$GIT_BASE/openstack/heat {{ devstack_release }}
-  enable_service h-eng h-api h-api-cfn h-api-cw
-{% endif %}
-{% if enable_heat %}
-  # Designate
-  enable_plugin designate \$GIT_BASE/openstack/designate {{ devstack_release }}
-  enable_service designate,designate-central,designate-api,designate-worker,designate-producer,designate-mdns
-{% endif %}
-{% if enable_octavia %}
-  # Octavia
-  enable_plugin octavia \$GIT_BASE/openstack/octavia {{ devstack_release }}
-  enable_plugin octavia-dashboard \$GIT_BASE/openstack/octavia-dashboard {{ devstack_release }}
-  enable_plugin ovn-octavia-provider \$GIT_BASE/openstack/ovn-octavia-provider {{ devstack_release }}
-  enable_plugin octavia-tempest-plugin \$GIT_BASE/openstack/octavia-tempest-plugin master
-  enable_service octavia o-api o-cw o-hm o-hk o-da
-{% endif %}
-{% if enable_barbican %}
-  # Barbican
-  enable_plugin barbican \$GIT_BASE/openstack/barbican {{ devstack_release }}
-  enable_service barbican
-{% endif %}
-  EOF
-
-- chown stack:stack /opt/stack/devstack/local.conf
-
-# Install devstack
-- echo "\n\n-------- Installing DevStack... --------\n"
-
-- su -l stack -c '~/devstack/stack.sh'
-
-- cp /opt/stack/devstack/openrc /home/{{ sys_user }}/openrc
-- chown {{ sys_user }}:{{ sys_user }} /home/{{ sys_user }}/openrc
-
-- echo "\n\n-------- Finished deploying DevStack, have fun!... --------\n"
+- 00-generate-env
+- 01-verify-deps || exit 1
+- 02-devstack-configure
+- 03-devstack-install
 

@@ -3,9 +3,9 @@
 
 # ---
 # lxd transcript: Automated scalable cloud-init install of LXD
-# version: 1.0.1
+# version: 2.0.0
 #
-# Made by: Pablo Gonzalez De Greiff @ Canonical
+# Synthesized by: Pablo Gonzalez De Greiff @ Canonical
 # ---
 
 # ==========================================
@@ -14,6 +14,7 @@
 
 # --- Architecture Toggle ---
 {% set custom_nested_lxd = True %}
+{% set custom_update_n_upgrade = True %}            # PROMPT:Auto Update & Upgrade
 
 # --- Auth & System ---
 {% set custom_repro_name = "lxd" %}
@@ -98,6 +99,12 @@
   {% set nested_lxd = (meta.get("nested_lxd") | string | lower == "true") %}
 {% else %}
   {% set nested_lxd = (custom_nested_lxd | string | lower == "true") %}
+{% endif %}
+
+{% if meta.get("update_n_upgrade") is not none %}
+  {% set update_n_upgrade = (meta.get("update_n_upgrade") | string | lower == "true") %}
+{% else %}
+  {% set update_n_upgrade = (custom_update_n_upgrade | string | lower == "true") %}
 {% endif %}
 
 # ==========================================
@@ -194,6 +201,21 @@ ubuntu_pro:
   token: {{ pro_token }}
 {% endif %}
 
+timezone: {{ timezone }}
+
+packages:
+  - git
+  - neovim
+  - jq
+
+snap:
+  commands:
+  - snap install lxd --channel={{ lxd_channel }}
+
+package_update: {{ 'true' if update_n_upgrade else 'false' }}
+package_upgrade: {{ 'true' if update_n_upgrade else 'false' }}
+package_reboot_if_required: {{ 'true' if update_n_upgrade else 'false' }}
+
 {% if nested_lxd %}
 # If Nested: Seed the LXD database natively via cloud-init
 lxd:
@@ -241,7 +263,6 @@ write_files:
   permissions: '0644'
   content: |
     if [ "$USER" = "{{ sys_user }}" ]; then
-        
         if command -v lxc >/dev/null 2>&1; then
             : # Prevent bash syntax error if Jinja strips the lines below
             {% if not nested_lxd %}
@@ -250,6 +271,10 @@ write_files:
             {% if lxd_project != "default" %}
             lxc project switch {{ lxd_project }} >/dev/null 2>&1 || true
             {% endif %}
+        fi
+        
+        if [ -f "/etc/repro-env" ]; then
+            source /etc/repro-env
         fi
     fi
 
@@ -278,141 +303,194 @@ write_files:
   content: {{ lxd_key_b64 }}
 {% endif %}
 
-packages:
-  - git
-  - neovim
-  - pollinate
-  - jq
+# ==========================================
+# START OF AUTOMATION SCRIPTS (00 to 04)
+# ==========================================
 
-snap:
-  commands:
-  - snap install lxd --channel={{ lxd_channel }}
+- path: /usr/local/bin/00-generate-env
+  permissions: '0755'
+  content: |
+    #!/bin/bash
+    
+    # Auto-escalate to root if run as a normal user
+    if [ "$EUID" -ne 0 ]; then
+        exec sudo "$0" "$@"
+    fi
+    
+    # Define colors first
+    BRED='\033[1;31m'
+    BYELLOW='\033[1;33m'
+    BGREEN='\033[1;32m'
+    NC='\033[0m'
+    
+    echo -e "\n\n${BYELLOW}-------- Generating Runtime Environment... --------${NC}\n"
+    
+    # 1. Calculate Runtime Variables
+    IP_ADDRESS=$(hostname -I | awk '{print $1}')
+    INTERFACE=$(ip -j route show default | jq -r '.[].dev')
+    
+    # LXD Setup Logic
+    {% if nested_lxd %}
+    LXD_ADDR="${IP_ADDRESS}:8444"
+    LXD_CERT="/root/lxd-local.crt"
+    LXD_KEY="/root/lxd-local.key"
+    {% else %}
+    LXD_ADDR="{{ lxd_gateway }}:8443"
+    LXD_CERT="/root/snap/lxd/common/config/client.crt"
+    LXD_KEY="/root/snap/lxd/common/config/client.key"
+    {% endif %}
+    
+    # 2. Write Base Variables to the Persistent State File
+    cat <<EOF > /etc/repro-env
+    # -- Colours --
+    export BRED='${BRED}'
+    export BYELLOW='${BYELLOW}'
+    export BGREEN='${BGREEN}'
+    export NC='${NC}'
+    # ----
+    export IP_ADDRESS="$IP_ADDRESS"
+    export INTERFACE="$INTERFACE"
+    export RUN_AS="sudo -u {{ sys_user }}"
+    export RUN_AS_LOGIN="sudo -i -u {{ sys_user }}"
+    export LXD_ADDR="$LXD_ADDR"
+    export LXD_CERT="$LXD_CERT"
+    export LXD_KEY="$LXD_KEY"
+    EOF
+    
+    # 3. Secure the state file (Only root and sys_user can read it)
+    chown {{ sys_user }}:{{ sys_user }} /etc/repro-env
+    chmod 600 /etc/repro-env
 
-package_update: true
-package_upgrade: true
-package_reboot_if_required: true
+- path: /usr/local/bin/01-verify-deps
+  permissions: '0755'
+  content: |
+    #!/bin/bash
+    
+    # Auto-escalate to root if run as a normal user
+    if [ "$EUID" -ne 0 ]; then
+        exec sudo "$0" "$@"
+    fi
+    
+    source /etc/repro-env
+    
+    # Verify critical dependencies
+    echo -e "\n\n${BYELLOW}-------- Verifying dependencies... --------${NC}\n"
+    
+    for cmd in lxc jq; do
+      if ! command -v $cmd >/dev/null 2>&1; then
+        echo "CRITICAL ERROR: Required command '$cmd' not found."
+        echo "Snap/apt package installation likely failed due to a network error."
+        exit 1
+      fi
+    done
+    echo "All dependencies verified successfully!"
 
-timezone: {{ timezone }}
+- path: /usr/local/bin/02-lxd-setup
+  permissions: '0755'
+  content: |
+    #!/bin/bash
+    
+    # Auto-escalate to root if run as a normal user
+    if [ "$EUID" -ne 0 ]; then
+        exec sudo "$0" "$@"
+    fi
+    
+    source /etc/repro-env
+    
+    {% if nested_lxd %}
+    
+    # Generate local LXD trust certificate
+    echo -e "\n\n${BYELLOW}-------- Generating trust certificate for local LXD... --------${NC}\n"
+    
+    openssl req -x509 -newkey rsa:2048 -keyout $LXD_KEY -out $LXD_CERT -nodes -days 3650 -subj "/CN=lxd-local"
+    lxc config trust add $LXD_CERT --name lxd-local
+    
+    # Provide certs to user context
+    $RUN_AS mkdir -p /home/{{ sys_user }}/snap/lxd/common/config
+    cp $LXD_CERT /home/{{ sys_user }}/snap/lxd/common/config/client.crt
+    cp $LXD_KEY /home/{{ sys_user }}/snap/lxd/common/config/client.key
+    chown -R {{ sys_user }}:{{ sys_user }} /home/{{ sys_user }}/snap/lxd/common/config
+    
+    {% else %}
+    
+    # Setup external LXD client certificates and remote connection
+    echo -e "\n\n${BYELLOW}-------- Configuring remote LXD connection... --------${NC}\n"
+    
+    lxc remote add host-lxd https://$LXD_ADDR --accept-certificate
+    lxc remote switch host-lxd
+    
+    # Provide certs to user context
+    $RUN_AS mkdir -p /home/{{ sys_user }}/snap/lxd/common/config
+    cp $LXD_CERT /home/{{ sys_user }}/snap/lxd/common/config/client.crt
+    cp $LXD_KEY /home/{{ sys_user }}/snap/lxd/common/config/client.key
+    chown -R {{ sys_user }}:{{ sys_user }} /home/{{ sys_user }}/snap/lxd/common/config
+    
+    $RUN_AS lxc remote add host-lxd https://$LXD_ADDR --accept-certificate
+    
+    {% endif %}
+    
+    {% if lxd_project != "default" %}
+    
+    # Switch to LXD project
+    echo -e "\n\n${BYELLOW}-------- Switching to LXD '{{ lxd_project }}' project... --------${NC}\n"
+    
+    lxc project switch {{ lxd_project }}
+    
+    {% endif %}
 
-random_seed:
-  command: [pollinate]
-  command_required: true
-  file: /dev/urandom
+- path: /usr/local/bin/03-vm-creation
+  permissions: '0755'
+  content: |
+    #!/bin/bash
+    
+    # Auto-escalate to root if run as a normal user
+    if [ "$EUID" -ne 0 ]; then
+        exec sudo "$0" "$@"
+    fi
+    
+    source /etc/repro-env
+    
+    # Create VMs directly via LXD
+    echo -e "\n\n${BYELLOW}-------- Creating VMs in LXD... --------${NC}\n"
+    
+    i=1
+    for HOST in {{ nodes_hostnames }}; do
+      CPU=$(echo "{{ nodes_cpus }}" | cut -d' ' -f$i)
+      RAM=$(echo "{{ nodes_rams }}" | cut -d' ' -f$i)
+      DISK=$(echo "{{ nodes_disks }}" | cut -d' ' -f$i)
+      
+      lxc init "$HOST" --vm -c limits.cpu="$CPU" -c limits.memory="$RAM" -d root,size="$DISK"
+      
+      i=$((i + 1))
+    done
+
+- path: /usr/local/bin/04-vm-start
+  permissions: '0755'
+  content: |
+    #!/bin/bash
+    
+    # Auto-escalate to root if run as a normal user
+    if [ "$EUID" -ne 0 ]; then
+        exec sudo "$0" "$@"
+    fi
+    
+    source /etc/repro-env
+    
+    # Start VMs
+    echo -e "\n\n${BYELLOW}-------- Starting VMs... --------${NC}\n"
+    for HOST in {{ nodes_hostnames }}; do
+      lxc start $HOST
+    done
+    
+    echo -e "\n\n${BYELLOW}-------- Finished deploying LXD, have fun!... --------${NC}\n"
+
+# ==========================================
+# END OF AUTOMATION SCRIPTS (00 to 04)
+# ==========================================
 
 runcmd:
-
-# Verify critical dependencies
-- echo "\n\n-------- Verifying dependencies... --------\n"
-- |
-  for cmd in lxc jq; do
-    if ! command -v $cmd >/dev/null 2>&1; then
-      echo "CRITICAL ERROR: Required command '$cmd' not found."
-      echo "Snap/apt package installation likely failed due to a network error."
-      exit 1
-    fi
-  done
-  echo "All dependencies verified successfully!"
-
-# Export variables
-- echo "\n\n-------- Exporting variables... --------\n"
-
-# --- Networking ---
-- export IP_ADDRESS=$(hostname -I | awk '{print $1}')
-- export INTERFACE=$(ip -j route show default | jq -r '.[].dev')
-
-# --- Auth & System ---
-- export SSH_KEY="{{ ssh_import_id }}"
-- export RUN_AS="sudo -u {{ sys_user }}"
-- export RUN_AS_LOGIN="sudo -i -u {{ sys_user }}"
-- export VM_IMAGE="{{ vm_image }}"
-
-# --- LXD Settings ---
-- export LXD_PROJECT="{{ lxd_project }}"
-- export LXD_POOL="{{ lxd_pool }}"
-{% if nested_lxd %}
-- export LXD_ADDR="${IP_ADDRESS}:8444"
-- export LXD_CERT="/root/lxd-local.crt"
-- export LXD_KEY="/root/lxd-local.key"
-{% else %}
-- export LXD_ADDR="{{ lxd_gateway }}:8443"
-- export LXD_CERT="/root/snap/lxd/common/config/client.crt"
-- export LXD_KEY="/root/snap/lxd/common/config/client.key"
-{% endif %}
-- export LXD_CIDR="{{ lxd_cidr }}"
-
-# --- Hardware Allocation ---
-- export NODE_HA="{{ node_ha }}"
-- export MAX_HA="{{ max_ha }}"
-
-- export NODES_HOSTNAMES="{{ nodes_hostnames }}"
-- export NODES_CPUS="{{ nodes_cpus }}"
-- export NODES_RAMS="{{ nodes_rams }}"
-- export NODES_DISKS="{{ nodes_disks }}"
-
-{% if nested_lxd %}
-
-# Generate local LXD trust certificate
-- echo "\n\n-------- Generating trust certificate for local LXD... --------\n"
-
-- openssl req -x509 -newkey rsa:2048 -keyout $LXD_KEY -out $LXD_CERT -nodes -days 3650 -subj "/CN=lxd-local"
-- lxc config trust add $LXD_CERT --name lxd-local
-
-# Provide certs to user context
-- $RUN_AS mkdir -p /home/{{ sys_user }}/snap/lxd/common/config
-- cp $LXD_CERT /home/{{ sys_user }}/snap/lxd/common/config/client.crt
-- cp $LXD_KEY /home/{{ sys_user }}/snap/lxd/common/config/client.key
-- chown -R {{ sys_user }}:{{ sys_user }} /home/{{ sys_user }}/snap/lxd/common/config
-
-{% else %}
-
-# Setup external LXD client certificates and remote connection
-- echo "\n\n-------- Configuring remote LXD connection... --------\n"
-
-- lxc remote add host-lxd https://$LXD_ADDR --accept-certificate
-- lxc remote switch host-lxd
-
-# Provide certs to user context
-- $RUN_AS mkdir -p /home/{{ sys_user }}/snap/lxd/common/config
-- cp $LXD_CERT /home/{{ sys_user }}/snap/lxd/common/config/client.crt
-- cp $LXD_KEY /home/{{ sys_user }}/snap/lxd/common/config/client.key
-- chown -R {{ sys_user }}:{{ sys_user }} /home/{{ sys_user }}/snap/lxd/common/config
-- $RUN_AS lxc remote add host-lxd https://$LXD_ADDR --accept-certificate
-
-{% endif %}
-
-
-{% if lxd_project != "default" %}
-
-# Switch to LXD project
-- echo "\n\n-------- Switching to LXD '$LXD_PROJECT' project... --------\n"
-
-- lxc project switch $LXD_PROJECT
-
-{% endif %}
-
-# Create VMs directly via LXD
-- echo "\n\n-------- Creating VMs in LXD... --------\n"
-- |
-  i=1
-  for HOST in $NODES_HOSTNAMES; do
-    CPU=$(echo "$NODES_CPUS" | cut -d' ' -f$i)
-    RAM=$(echo "$NODES_RAMS" | cut -d' ' -f$i)
-    DISK=$(echo "$NODES_DISKS" | cut -d' ' -f$i)
-    
-    lxc init "$VM_IMAGE" "$HOST" --vm -c limits.cpu="$CPU" -c limits.memory="$RAM" -d root,size="$DISK"
-    
-    i=$((i + 1))
-  done
-
-# Start VMs
-- echo "\n\n-------- Starting VMs... --------\n"
-- |
-  for HOST in $NODES_HOSTNAMES; do
-    lxc start $HOST
-  done
-
-- sleep 10
-- lxc list
-
-- echo "\n\n-------- Finished deploying LXD, have fun!... --------\n"
-
+- 00-generate-env
+- 01-verify-deps || exit 1
+- 02-lxd-setup
+- 03-vm-creation
+- 04-vm-start
