@@ -723,7 +723,7 @@ PORT_OFFSET=$(echo -n "$DEPLOY_ID" | cksum | awk '{print $1 % 5000}')
 
 # Allocate VM-specific ports in high, uncommonly used ranges
 MAAS_LOCAL_PORT=$(( 50000 + PORT_OFFSET ))
-HORIZON_LOCA_PORT=$(( 55000 + PORT_OFFSET ))
+HORIZON_LOCAL_PORT=$(( 55000 + PORT_OFFSET ))
 
 # ==========================================
 # EARLY ARCHITECTURE & SSH RESOLUTION
