@@ -1686,9 +1686,9 @@ USER_TERM_HEIGHT=$(tput lines 2>/dev/null || echo 40)
             
             # Build the sed (unbuffered -u) command dynamically based on whether a Juju trigger exists, quit 'q' if we see the Trigger Message OR "finished at"
             if [ -n "$JUJU_TRIGGER_MSG" ]; then
-                lxc exec "$VM_NAME" --project "$LXD_PROJECT" -- sh -c "tail -f /var/log/cloud-init-output.log 2>/dev/null | sed -u '/$JUJU_TRIGGER_MSG/ q; /finished at/ q'"
+                lxc exec "$VM_NAME" --project "$LXD_PROJECT" -- sh -c "tail -n +1 -f /var/log/cloud-init-output.log 2>/dev/null | sed -u '/$JUJU_TRIGGER_MSG/ q; /finished at/ q'"
             else
-                lxc exec "$VM_NAME" --project "$LXD_PROJECT" -- sh -c "tail -f /var/log/cloud-init-output.log 2>/dev/null | sed -u '/finished at/ q'"
+                lxc exec "$VM_NAME" --project "$LXD_PROJECT" -- sh -c "tail -n +1 -f /var/log/cloud-init-output.log 2>/dev/null | sed -u '/finished at/ q'"
             fi
             
             EXIT_CODE=$?

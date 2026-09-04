@@ -1329,7 +1329,7 @@ write_files:
       until [ -f /var/log/cloud-init-output.log ]; do sleep 2; done
       
       # 1. Start tailing the log in the background
-      tail -f /var/log/cloud-init-output.log &
+      tail -n +1 -f /var/log/cloud-init-output.log &
       TAIL_PID=\$!
       
       # 2. Block until cloud-init is completely finished
@@ -1476,7 +1476,7 @@ write_files:
         until [ -f /var/log/cloud-init-output.log ]; do sleep 2; done
         
         # 1. Start tailing the log in the background
-        tail -f /var/log/cloud-init-output.log &
+        tail -n +1 -f /var/log/cloud-init-output.log &
         TAIL_PID=\$!
         
         # 2. Block until cloud-init is completely finished
