@@ -718,6 +718,13 @@ if [[ ! "$DEPLOY_ID" =~ ^[a-z0-9]{1,8}$ ]]; then
     exit 1
 fi
 
+# Generate a predictable port offset (0-4999) based on the unique deployment ID
+PORT_OFFSET=$(echo -n "$DEPLOY_ID" | cksum | awk '{print $1 % 5000}')
+
+# Allocate VM-specific ports in high, uncommonly used ranges
+MAAS_LOCAL_PORT=$(( 50000 + PORT_OFFSET ))
+HORIZON_LOCA_PORT=$(( 55000 + PORT_OFFSET ))
+
 # ==========================================
 # EARLY ARCHITECTURE & SSH RESOLUTION
 # ==========================================
@@ -1625,14 +1632,14 @@ USER_TERM_HEIGHT=$(tput lines 2>/dev/null || echo 40)
             echo -e "${BYELLOW}  Remote SSH Session Detected!${NC}"
             echo "  To access the MAAS dashboard (once ready) locally, open a new terminal tab on your host and run:"
             echo ""
-            echo -e "${BYELLOW}  Run:${NC} ssh -N -L 5241:$IP:5240 ${REMOTE_USER}@${SERVER_IP_STR}"
-            echo -e "${BYELLOW}  URL:${NC} http://localhost:5241/MAAS/"
+            echo -e "${BYELLOW}  Run:${NC} ssh -N -L ${MAAS_LOCAL_PORT}:${IP}:5240 ${REMOTE_USER}@${SERVER_IP_STR}"
+            echo -e "${BYELLOW}  URL:${NC} http://localhost:${MAAS_LOCAL_PORT}/MAAS/"
             echo ""
             
             # Append to access file
             {
-                echo "  Tunnel:   ssh -N -L 5241:$IP:5240 ${REMOTE_USER}@${SERVER_IP_STR}"
-                echo "  URL:      http://localhost:5241/MAAS/"
+                echo "  Tunnel:   ssh -N -L ${MAAS_LOCAL_PORT}:${IP}:5240 ${REMOTE_USER}@${SERVER_IP_STR}"
+                echo "  URL:      http://localhost:${MAAS_LOCAL_PORT}/MAAS/"
                 echo ""
             } >> "$ACCESS_FILE"
             
@@ -1940,14 +1947,14 @@ except Exception:
                 echo -e "${BYELLOW}  Remote SSH Session Detected!${NC}"
                 echo "  To access the Horizon dashboard locally, open a new terminal tab on your host and run:"
                 echo ""
-                echo -e "${BYELLOW}  Run:${NC} ssh -N -L 8088:${HORIZON_IP}:${HORIZON_PORT} ${REMOTE_USER}@${SERVER_IP_STR}"
-                echo -e "${BYELLOW}  URL:${NC} http://localhost:8088${HORIZON_PATH}"
+                echo -e "${BYELLOW}  Run:${NC} ssh -N -L ${HORIZON_LOCAL_PORT}:${HORIZON_IP}:${HORIZON_PORT} ${REMOTE_USER}@${SERVER_IP_STR}"
+                echo -e "${BYELLOW}  URL:${NC} http://localhost:${HORIZON_LOCAL_PORT}${HORIZON_PATH}"
                 echo ""
                 
                 # Append to access file
                 {
-                    echo "  Tunnel:   ssh -N -L 8088:${HORIZON_IP}:${HORIZON_PORT} ${REMOTE_USER}@${SERVER_IP_STR}"
-                    echo "  URL:      http://localhost:8088${HORIZON_PATH}"
+                    echo "  Tunnel:   ssh -N -L ${HORIZON_LOCAL_PORT}:${HORIZON_IP}:${HORIZON_PORT} ${REMOTE_USER}@${SERVER_IP_STR}"
+                    echo "  URL:      http://localhost:${HORIZON_LOCAL_PORT}${HORIZON_PATH}"
                     echo ""
                 } >> "$ACCESS_FILE"
                 
