@@ -367,19 +367,22 @@ write_files:
   permissions: '0644'
   content: |
     if [ "$USER" = "{{ sys_user }}" ]; then
+        IS_NESTED_LXD="{{ 'true' if nested_lxd else 'false' }}"
+        LXD_PROJECT="{{ lxd_project }}"
         ADMIN_USER="{{ maas_user }}"
+        
         if command -v maas >/dev/null 2>&1 && sudo maas apikey --username {{ maas_user }} >/dev/null 2>&1; then
             maas login {{ maas_user }} 'http://localhost:5240/MAAS/' $(sudo maas apikey --username {{ maas_user }}) >/dev/null 2>&1
         fi
         
         if command -v lxc >/dev/null 2>&1; then
-            : # Prevent bash syntax error if Jinja strips the lines below
-            {% if not nested_lxd %}
-            lxc remote switch host-lxd >/dev/null 2>&1 || true
-            {% endif %}
-            {% if lxd_project != "default" %}
-            lxc project switch {{ lxd_project }} >/dev/null 2>&1 || true
-            {% endif %}
+            if [ "$IS_NESTED_LXD" = "false" ]; then
+                lxc remote switch host-lxd >/dev/null 2>&1 || true
+            fi
+            
+            if [ "$LXD_PROJECT" != "default" ]; then
+                lxc project switch "$LXD_PROJECT" >/dev/null 2>&1 || true
+            fi
         fi
         
         if [ -f "/etc/repro-env" ]; then

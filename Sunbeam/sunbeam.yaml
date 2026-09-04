@@ -385,19 +385,22 @@ write_files:
   permissions: '0644'
   content: |
     if [ "$USER" = "{{ sys_user }}" ]; then
+        IS_NESTED_LXD="{{ 'true' if nested_lxd else 'false' }}"
+        LXD_PROJECT="{{ lxd_project }}"
         ADMIN_USER="{{ maas_user }}"
+        
         if command -v maas >/dev/null 2>&1 && sudo maas apikey --username {{ maas_user }} >/dev/null 2>&1; then
             maas login {{ maas_user }} 'http://localhost:5240/MAAS/' $(sudo maas apikey --username {{ maas_user }}) >/dev/null 2>&1
         fi
         
         if command -v lxc >/dev/null 2>&1; then
-            : # Prevent bash syntax error if Jinja strips the lines below
-            {% if not nested_lxd %}
-            lxc remote switch host-lxd >/dev/null 2>&1 || true
-            {% endif %}
-            {% if lxd_project != "default" %}
-            lxc project switch {{ lxd_project }} >/dev/null 2>&1 || true
-            {% endif %}
+            if [ "$IS_NESTED_LXD" = "false" ]; then
+                lxc remote switch host-lxd >/dev/null 2>&1 || true
+            fi
+            
+            if [ "$LXD_PROJECT" != "default" ]; then
+                lxc project switch "$LXD_PROJECT" >/dev/null 2>&1 || true
+            fi
         fi
         
         if [ -f "/home/{{ sys_user }}/admin-openrc" ]; then
@@ -1395,11 +1398,11 @@ write_files:
     echo -e "\n\n${BYELLOW}-------- Bootstrapping the orchestration layer... --------${NC}\n"
     
     LOGFILE="/tmp/sunbeam-bootstrap.log"
-    if ! $RUN_AS_LOGIN script -q -e -c "sunbeam cluster bootstrap --accept-defaults --manifest /home/{{ sys_user }}/manifest.yaml" "$LOGFILE"; then
+    if ! $RUN_AS_LOGIN script -q -e -f -c "sunbeam cluster bootstrap --accept-defaults --manifest /home/{{ sys_user }}/manifest.yaml" "$LOGFILE"; then
         if grep -q "wait timed out after" "$LOGFILE"; then
             echo -e "\n\n${BRED}Timeout detected. Waiting 60s and retrying bootstrap once...${NC}\n"
             sleep 60
-            $RUN_AS_LOGIN script -q -e -c "sunbeam cluster bootstrap --accept-defaults --manifest /home/{{ sys_user }}/manifest.yaml" /dev/null
+            $RUN_AS_LOGIN script -q -e -f -c "sunbeam cluster bootstrap --accept-defaults --manifest /home/{{ sys_user }}/manifest.yaml" /dev/null
         else
             echo -e "\n\n${BRED}Bootstrap failed with a non-timeout error. Proceeding without retry.${NC}\n"
         fi
@@ -1427,11 +1430,11 @@ write_files:
     echo -e "\n\n${BYELLOW}-------- Deploying the cloud... --------${NC}\n"
     
     LOGFILE="/tmp/sunbeam-deploy.log"
-    if ! $RUN_AS_LOGIN script -q -e -c "sunbeam cluster deploy --accept-defaults --manifest /home/{{ sys_user }}/manifest.yaml" "$LOGFILE"; then
+    if ! $RUN_AS_LOGIN script -q -e -f -c "sunbeam cluster deploy --accept-defaults --manifest /home/{{ sys_user }}/manifest.yaml" "$LOGFILE"; then
         if grep -q "wait timed out after" "$LOGFILE"; then
             echo -e "\n\n${BRED}Timeout detected. Waiting 60s and retrying deploy once...${NC}\n"
             sleep 60
-            $RUN_AS_LOGIN script -q -e -c "sunbeam cluster deploy --accept-defaults --manifest /home/{{ sys_user }}/manifest.yaml" /dev/null
+            $RUN_AS_LOGIN script -q -e -f -c "sunbeam cluster deploy --accept-defaults --manifest /home/{{ sys_user }}/manifest.yaml" /dev/null
         else
             echo -e "\n\n${BRED}Deploy failed with a non-timeout error. Proceeding without retry.${NC}\n"
         fi
@@ -1459,11 +1462,11 @@ write_files:
     echo -e "\n\n${BYELLOW}-------- Configuring the cloud... --------${NC}\n"
     
     LOGFILE="/tmp/sunbeam-configure.log"
-    if ! $RUN_AS_LOGIN script -q -e -c "sunbeam configure --accept-defaults --openrc /home/{{ sys_user }}/demo-openrc --manifest /home/{{ sys_user }}/manifest.yaml" "$LOGFILE"; then
+    if ! $RUN_AS_LOGIN script -q -e -f -c "sunbeam configure --accept-defaults --openrc /home/{{ sys_user }}/demo-openrc --manifest /home/{{ sys_user }}/manifest.yaml" "$LOGFILE"; then
         if grep -q "wait timed out after" "$LOGFILE"; then
             echo -e "\n\n${BRED}Timeout detected. Waiting 60s and retrying configure once...${NC}\n"
             sleep 60
-            $RUN_AS_LOGIN script -q -e -c "sunbeam configure --accept-defaults --openrc /home/{{ sys_user }}/demo-openrc --manifest /home/{{ sys_user }}/manifest.yaml" /dev/null
+            $RUN_AS_LOGIN script -q -e -f -c "sunbeam configure --accept-defaults --openrc /home/{{ sys_user }}/demo-openrc --manifest /home/{{ sys_user }}/manifest.yaml" /dev/null
         else
             echo -e "\n\n${BRED}Configure failed with a non-timeout error. Proceeding without retry.${NC}\n"
         fi

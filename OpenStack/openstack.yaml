@@ -3,9 +3,9 @@
 
 # ---
 # openstack transcript: Automated scalable cloud-init install of Charmed OpenStack using Juju + MAAS
-# version: 2.0.0
+# version: 3.0.0
 #
-# Made by: Pablo Gonzalez De Greiff @ Canonical
+# Synthesized by: Pablo Gonzalez De Greiff @ Canonical
 # ---
 
 # ==========================================
@@ -15,6 +15,7 @@
 # --- Architecture Toggle ---
 {% set custom_nested_lxd = True %}
 {% set custom_maas_snap = True %}
+{% set custom_update_n_upgrade = True %}            # PROMPT:Auto Update & Upgrade
 
 # --- Auth & System ---
 {% set custom_repro_name = "openstack" %}
@@ -165,16 +166,22 @@
 {% set node_osd_disk = meta.get("node_osd_disk") or custom_node_osd_disk %}
 {% set node_osd_count = meta.get("node_osd_count") | default(custom_node_osd_count, true) | int %}
 
+{% if meta.get("nested_lxd") is not none %}
+  {% set nested_lxd = (meta.get("nested_lxd") | string | lower == "true") %}
+{% else %}
+  {% set nested_lxd = (custom_nested_lxd | string | lower == "true") %}
+{% endif %}
+
 {% if meta.get("maas_snap") is not none %}
   {% set maas_snap = (meta.get("maas_snap") | string | lower == "true") %}
 {% else %}
   {% set maas_snap = (custom_maas_snap | string | lower == "true") %}
 {% endif %}
 
-{% if meta.get("nested_lxd") is not none %}
-  {% set nested_lxd = (meta.get("nested_lxd") | string | lower == "true") %}
+{% if meta.get("update_n_upgrade") is not none %}
+  {% set update_n_upgrade = (meta.get("update_n_upgrade") | string | lower == "true") %}
 {% else %}
-  {% set nested_lxd = (custom_nested_lxd | string | lower == "true") %}
+  {% set update_n_upgrade = (custom_update_n_upgrade | string | lower == "true") %}
 {% endif %}
 
 # ==========================================
@@ -286,6 +293,34 @@ ubuntu_pro:
   token: {{ pro_token }}
 {% endif %}
 
+timezone: {{ timezone }}
+
+packages:
+  - git
+  - neovim
+  - jq
+
+{% if not maas_snap %}
+apt:
+  sources:
+    maas:
+      source: 'ppa:maas/{{ maas_channel.split('/')[0] }}'
+{% endif %}
+
+snap:
+  commands:
+  - snap install lxd --channel={{ lxd_channel }}
+{% if maas_snap %}
+  - snap install maas --channel={{ maas_channel }}
+{% endif %}
+  - snap install juju --channel={{ juju_channel }}
+  - snap install vault --channel={{ vault_channel }}
+  - snap install openstackclients
+
+package_update: {{ 'true' if update_n_upgrade else 'false' }}
+package_upgrade: {{ 'true' if update_n_upgrade else 'false' }}
+package_reboot_if_required: {{ 'true' if update_n_upgrade else 'false' }}
+
 {% if nested_lxd %}
 # If Nested: Seed the LXD database natively via cloud-init
 lxd:
@@ -335,6 +370,7 @@ lxd:
     projects: []
     cluster: null
 {% endif %}
+
 write_files:
 # Auto login script helper function (MAAS - LXD - OpenStack)
 - path: /etc/profile.d/maas-login.sh
@@ -520,40 +556,6 @@ write_files:
   encoding: b64
   content: {{ lxd_key_b64 }}
 {% endif %}
-
-packages:
-  - git
-  - neovim
-  - pollinate
-  - jq
-
-{% if not maas_snap %}
-apt:
-  sources:
-    maas:
-      source: 'ppa:maas/{{ maas_channel.split('/')[0] }}'
-{% endif %}
-
-snap:
-  commands:
-  - snap install lxd --channel={{ lxd_channel }}
-{% if maas_snap %}
-  - snap install maas --channel={{ maas_channel }}
-{% endif %}
-  - snap install juju --channel={{ juju_channel }}
-  - snap install vault --channel={{ vault_channel }}
-  - snap install openstackclients
-
-package_update: true
-package_upgrade: true
-package_reboot_if_required: true
-
-timezone: {{ timezone }}
-
-random_seed:
-  command: [pollinate]
-  command_required: true
-  file: /dev/urandom
 
 runcmd:
 
