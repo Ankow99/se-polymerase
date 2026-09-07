@@ -599,15 +599,15 @@ write_files:
     INTERFACE=$(ip -j route show default | jq -r '.[].dev')
     
     # LXD Setup Logic
-    {% if nested_lxd %}
+{% if nested_lxd %}
     LXD_ADDR="${IP_ADDRESS}:8444"
     LXD_CERT="/root/lxd-local.crt"
     LXD_KEY="/root/lxd-local.key"
-    {% else %}
+{% else %}
     LXD_ADDR="{{ maas_gateway }}:8443"
     LXD_CERT="/root/snap/lxd/common/config/client.crt"
     LXD_KEY="/root/snap/lxd/common/config/client.key"
-    {% endif %}
+{% endif %}
     
     # 2. Write Base Variables to the Persistent State File
     cat <<EOF > /etc/repro-env
@@ -701,7 +701,7 @@ write_files:
     
     source /etc/repro-env
     
-    {% if not maas_snap %}
+{% if not maas_snap %}
     
     # Install MAAS (not using apt module or else bind conflicts with LXD)
     echo -e "\n\n${BYELLOW}-------- Installing deb MAAS... --------${NC}\n"
@@ -709,7 +709,7 @@ write_files:
     apt-get update
     apt-get install -y maas
     
-    {% endif %}
+{% endif %}
     
     # Verify critical dependencies
     echo -e "\n\n${BYELLOW}-------- Verifying dependencies... --------${NC}\n"
@@ -735,7 +735,7 @@ write_files:
     
     source /etc/repro-env
     
-    {% if maas_snap %}
+{% if maas_snap %}
     
     # Install PostgreSQL
     echo -e "\n\n${BYELLOW}-------- Install PostgreSQL... --------${NC}\n"
@@ -759,14 +759,14 @@ write_files:
     maas init region+rack --database-uri "postgres://{{ maas_user }}:{{ maas_password }}@$HOSTNAME/{{ maas_db_name }}" --maas-url http://${IP_ADDRESS}:5240/MAAS
     maas createadmin --username {{ maas_user }} --password {{ maas_password }} --email {{ maas_email }} {% if ssh_import_id %}--ssh-import {{ ssh_import_id }}{% endif %}
     
-    {% else %}
+{% else %}
     
     # Initialise deb MAAS
     echo -e "\n\n${BYELLOW}-------- Initializing deb MAAS... --------${NC}\n"
     
     maas createadmin --username {{ maas_user }} --password {{ maas_password }} --email {{ maas_email }} {% if ssh_import_id %}--ssh-import {{ ssh_import_id }}{% endif %}
     
-    {% endif %}
+{% endif %}
     
     # Wait for MAAS services to be ready
     echo -e "\n\n${BYELLOW}-------- Waiting for MAAS API to be ready... --------${NC}\n"
@@ -971,7 +971,7 @@ write_files:
     
     source /etc/repro-env
     
-    {% if nested_lxd %}
+{% if nested_lxd %}
     
     # Generate local LXD trust certificate
     echo -e "\n\n${BYELLOW}-------- Generating trust certificate for local LXD... --------${NC}\n"
@@ -985,7 +985,7 @@ write_files:
     cp $LXD_KEY /home/{{ sys_user }}/snap/lxd/common/config/client.key
     chown -R {{ sys_user }}:{{ sys_user }} /home/{{ sys_user }}/snap/lxd/common/config
     
-    {% else %}
+{% else %}
     
     # Setup external LXD client certificates and remote connection
     echo -e "\n\n${BYELLOW}-------- Configuring remote LXD connection... --------${NC}\n"
@@ -1001,16 +1001,16 @@ write_files:
     
     $RUN_AS lxc remote add host-lxd https://$LXD_ADDR --accept-certificate
     
-    {% endif %}
+{% endif %}
     
-    {% if lxd_project != "default" %}
+{% if lxd_project != "default" %}
     
     # Switch to LXD MAAS project
     echo -e "\n\n${BYELLOW}-------- Switching to LXD '{{ lxd_project }}' project... --------${NC}\n"
     
     lxc project switch {{ lxd_project }}
     
-    {% endif %}
+{% endif %}
 
 - path: /usr/local/bin/06-vm-creation
   permissions: '0755'

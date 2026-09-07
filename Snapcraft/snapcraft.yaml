@@ -259,11 +259,11 @@ write_files:
     # Create Snapcraft credentials file
     echo -e "\n\n${BYELLOW}-------- Creating Snapcraft Credentials File... --------${NC}\n"
     
-    {% if snapcraft_creds_b64 %}
+{% if snapcraft_creds_b64 %}
     echo "{{ snapcraft_creds_b64 }}" > /home/{{ sys_user }}/.snapcraft-credentials
-    {% else %}
+{% else %}
     touch /home/{{ sys_user }}/.snapcraft-credentials
-    {% endif %}
+{% endif %}
     
     chown {{ sys_user }}:{{ sys_user }} /home/{{ sys_user }}/.snapcraft-credentials
     chmod 0600 /home/{{ sys_user }}/.snapcraft-credentials

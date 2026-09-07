@@ -333,15 +333,15 @@ write_files:
     INTERFACE=$(ip -j route show default | jq -r '.[].dev')
     
     # LXD Setup Logic
-    {% if nested_lxd %}
+{% if nested_lxd %}
     LXD_ADDR="${IP_ADDRESS}:8444"
     LXD_CERT="/root/lxd-local.crt"
     LXD_KEY="/root/lxd-local.key"
-    {% else %}
+{% else %}
     LXD_ADDR="{{ lxd_gateway }}:8443"
     LXD_CERT="/root/snap/lxd/common/config/client.crt"
     LXD_KEY="/root/snap/lxd/common/config/client.key"
-    {% endif %}
+{% endif %}
     
     # 2. Write Base Variables to the Persistent State File
     cat <<EOF > /etc/repro-env
@@ -400,7 +400,7 @@ write_files:
     
     source /etc/repro-env
     
-    {% if nested_lxd %}
+{% if nested_lxd %}
     
     # Generate local LXD trust certificate
     echo -e "\n\n${BYELLOW}-------- Generating trust certificate for local LXD... --------${NC}\n"
@@ -414,7 +414,7 @@ write_files:
     cp $LXD_KEY /home/{{ sys_user }}/snap/lxd/common/config/client.key
     chown -R {{ sys_user }}:{{ sys_user }} /home/{{ sys_user }}/snap/lxd/common/config
     
-    {% else %}
+{% else %}
     
     # Setup external LXD client certificates and remote connection
     echo -e "\n\n${BYELLOW}-------- Configuring remote LXD connection... --------${NC}\n"
@@ -430,16 +430,16 @@ write_files:
     
     $RUN_AS lxc remote add host-lxd https://$LXD_ADDR --accept-certificate
     
-    {% endif %}
+{% endif %}
     
-    {% if lxd_project != "default" %}
+{% if lxd_project != "default" %}
     
     # Switch to LXD project
     echo -e "\n\n${BYELLOW}-------- Switching to LXD '{{ lxd_project }}' project... --------${NC}\n"
     
     lxc project switch {{ lxd_project }}
     
-    {% endif %}
+{% endif %}
 
 - path: /usr/local/bin/03-vm-creation
   permissions: '0755'
