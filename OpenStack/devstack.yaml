@@ -344,44 +344,44 @@ write_files:
     enable_service q-qos
     # Placement
     enable_service placement-api placement-client
-    {% if enable_swift %}
+{% if enable_swift %}
     # Swift
     enable_service s-proxy s-object s-container s-account
     SWIFT_HASH=66a3d6b56c1f479c8b4e70ab5c2000f5
-    {% endif %}
-    {% if enable_skyline %}
+{% endif %}
+{% if enable_skyline %}
     # Skyline Dashboard
     enable_plugin skyline-apiserver \$GIT_BASE/openstack/skyline-apiserver {{ devstack_release }}
     enable_plugin skyline-console \$GIT_BASE/openstack/skyline-console {{ devstack_release }}
-    {% endif %}
-    {% if enable_masakari %}
+{% endif %}
+{% if enable_masakari %}
     # Masakari
     enable_plugin masakari \$GIT_BASE/openstack/masakari {{ devstack_release }}
     enable_plugin masakaridashboard \$GIT_BASE/openstack/masakari-dashboard {{ devstack_release }}
-    {% endif %}
-    {% if enable_heat %}
+{% endif %}
+{% if enable_heat %}
     # Heat
     enable_plugin heat \$GIT_BASE/openstack/heat {{ devstack_release }}
     enable_service h-eng h-api h-api-cfn h-api-cw
-    {% endif %}
-    {% if enable_designate %}
+{% endif %}
+{% if enable_designate %}
     # Designate
     enable_plugin designate \$GIT_BASE/openstack/designate {{ devstack_release }}
     enable_service designate,designate-central,designate-api,designate-worker,designate-producer,designate-mdns
-    {% endif %}
-    {% if enable_octavia %}
+{% endif %}
+{% if enable_octavia %}
     # Octavia
     enable_plugin octavia \$GIT_BASE/openstack/octavia {{ devstack_release }}
     enable_plugin octavia-dashboard \$GIT_BASE/openstack/octavia-dashboard {{ devstack_release }}
     enable_plugin ovn-octavia-provider \$GIT_BASE/openstack/ovn-octavia-provider {{ devstack_release }}
     enable_plugin octavia-tempest-plugin \$GIT_BASE/openstack/octavia-tempest-plugin master
     enable_service octavia o-api o-cw o-hm o-hk o-da
-    {% endif %}
-    {% if enable_barbican %}
+{% endif %}
+{% if enable_barbican %}
     # Barbican
     enable_plugin barbican \$GIT_BASE/openstack/barbican {{ devstack_release }}
     enable_service barbican
-    {% endif %}
+{% endif %}
     EOF
     
     chown stack:stack /opt/stack/devstack/local.conf
