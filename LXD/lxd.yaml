@@ -3,7 +3,7 @@
 
 # ---
 # lxd transcript: Automated scalable cloud-init install of LXD
-# version: 2.1.0
+# version: 3.0.0
 #
 # Synthesized by: Pablo Gonzalez De Greiff @ Canonical
 # ---
@@ -51,6 +51,7 @@
 {% set custom_node_cpu = "3" %}                     # PROMPT:Machine CPU cores
 {% set custom_node_ram = "8GiB" %}                  # PROMPT:Machine RAM
 {% set custom_node_disk = "30GiB" %}                # PROMPT:Machine Root Disk
+{% set custom_node_image = "ubuntu:22.04" %}        # PROMPT:Machine Image
 
 # ==========================================
 # DATASOURCE PARSER (LXD vs Cloud)
@@ -94,6 +95,7 @@
 {% set node_cpu = meta.get("node_cpu") or custom_node_cpu %}
 {% set node_ram = meta.get("node_ram") or custom_node_ram %}
 {% set node_disk = meta.get("node_disk") or custom_node_disk %}
+{% set node_image = meta.get("node_image") or custom_node_image %}
 
 {% if meta.get("nested_lxd") is not none %}
   {% set nested_lxd = (meta.get("nested_lxd") | string | lower == "true") %}
@@ -453,6 +455,24 @@ write_files:
     
     source /etc/repro-env
     
+    # Generate a minimal cloud-init
+    cat << 'EOF_CLOUD_INIT' > /tmp/userdata.yaml
+    #cloud-config
+    users:
+      - name: {{ sys_user }}
+        sudo: ALL=(ALL) NOPASSWD:ALL
+        groups: adm, sys, lxd, sudo
+        shell: /bin/bash
+{% if ssh_key %}
+        ssh_authorized_keys:
+          - {{ ssh_key }}
+{% endif %}
+{% if ssh_import_id %}
+        ssh_import_id:
+          - {{ ssh_import_id }}
+{% endif %}
+    EOF_CLOUD_INIT
+    
     # Create VMs directly via LXD
     echo -e "\n\n${BYELLOW}-------- Creating VMs in LXD... --------${NC}\n"
     
@@ -462,7 +482,7 @@ write_files:
       RAM=$(echo "{{ nodes_rams }}" | cut -d' ' -f$i)
       DISK=$(echo "{{ nodes_disks }}" | cut -d' ' -f$i)
       
-      lxc init "$HOST" --vm -c limits.cpu="$CPU" -c limits.memory="$RAM" -d root,size="$DISK"
+      lxc init "{{ node_image }}" "$HOST" --vm -c limits.cpu="$CPU" -c limits.memory="$RAM" -d root,size="$DISK" -c cloud-init.user-data="$(cat /tmp/userdata.yaml)"
       
       i=$((i + 1))
     done

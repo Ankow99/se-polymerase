@@ -41,6 +41,7 @@ Current available labs include:
 | `maas` | Standalone, scalable MAAS provisioning environment | MAAS, PostgreSQL |
 | `lxd` | Automated scalable cloud-init install of an LXD environment | LXD |
 | `snapcraft` | Dedicated, isolated VM specifically tailored for Snap building | LXD, Snapcraft |
+| `simple-example` | Simple example of a simple payload | LXD |
 
 ---
 
@@ -52,11 +53,7 @@ Ensure the following dependencies are installed on the host machine:
 * `openssl`
 * `python3`
 
-You must also have an SSH key pair generated before launching `synth`, as it requires one to establish the final SSH connection into the created lab. If you don't already have one, you can generate it using:
-
-```bash
-ssh-keygen -t rsa -b 4096 -f ~/.ssh/id_rsa -N ""
-```
+`synth` requires an SSH key pair to establish the final SSH connection into the created lab. It will automatically detect existing keys in `~/.ssh/` or your `ssh-agent`. If no key is found, `synth` will interactively prompt you to either provide a custom path or auto-generate a new 4096-bit RSA key pair on the fly.
 
 ---
 

@@ -3,7 +3,7 @@
 
 # ---
 # kubeadm transcript: Automated scalable cloud-init install of Kubernetes using kubeadm
-# version: 2.1.0
+# version: 2.2.0
 #
 # Synthesized by: Pablo Gonzalez De Greiff @ Canonical
 # ---
@@ -821,6 +821,10 @@ write_files:
     chmod 600 /home/{{ sys_user }}/.ssh/id_rsa
     chmod 644 /home/{{ sys_user }}/.ssh/id_rsa.pub
     maas {{ maas_user }} sshkeys create key="$(cat /home/{{ sys_user }}/.ssh/id_rsa.pub)"
+    
+{% if ssh_key %}
+    maas {{ maas_user }} sshkeys create key="{{ ssh_key }}"
+{% endif %}
 
 - path: /usr/local/bin/03-maas-networking
   permissions: '0755'

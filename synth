@@ -4,7 +4,7 @@
 # se-polymerase (synth)
 # Acts as the polymerase to synthesize an isolated, terraform-free LXD 
 # reproducer environment using the host's LXD for MAAS + Juju deployments.
-# version: 7.5.0
+# version: 7.6.0
 #
 # Synthesized by: Pablo Gonzalez De Greiff @ Canonical
 # ---
@@ -754,20 +754,73 @@ else
 fi
 
 # Smart SSH Key Detection
-if [ -f ~/.ssh/id_ed25519 ]; then
-    SSH_ID=~/.ssh/id_ed25519
-elif [ -f ~/.ssh/id_rsa ]; then
-    SSH_ID=~/.ssh/id_rsa
+if [ -n "${CONFIG_PROVIDED_ssh_key}" ]; then
+    echo -e "${BYELLOW}-> Injecting SSH public key (from config)${NC}"
+    echo ""
+    LXC_OPTIONAL_ARGS+=("-c" "user.ssh_key=${CONFIG_PROVIDED_ssh_key}")
 else
-    # Only prompt for a local key if no user ID was provided
-    if [[ ! " ${LXC_OPTIONAL_ARGS[*]} " == *"user.ssh_import_id"* ]] && [ -z "${CONFIG_PROVIDED_ssh_import_id}" ]; then
-        echo -ne "No SSH identity found, please insert path to one: "
-        read -r user_input </dev/tty
-        
-        # Safely expand tilde (~) to $HOME if the user typed it
-        user_input=$(echo "$user_input" | tr -d '"'\')
-        user_input="${user_input/#\~/$HOME}"
-        SSH_ID="$user_input"
+    PUB_KEY=""
+    SSH_ID=""
+    
+    # Fallback to standard local public keys
+    if [ -f ~/.ssh/id_ed25519.pub ]; then
+        SSH_ID=~/.ssh/id_ed25519
+    elif [ -f ~/.ssh/id_rsa.pub ]; then
+        SSH_ID=~/.ssh/id_rsa
+    elif [ -f ~/.ssh/id_ecdsa.pub ]; then
+        SSH_ID=~/.ssh/id_ecdsa
+    else
+        # Keys don't have standard names, but are loaded in the ssh-agent
+        if command -v ssh-add >/dev/null 2>&1; then
+            AGENT_KEY=$(ssh-add -L 2>/dev/null | grep '^ssh-' | head -n 1)
+            if [ -n "$AGENT_KEY" ]; then
+                PUB_KEY="$AGENT_KEY"
+                echo -e "${BYELLOW}-> Auto-injecting SSH public key from ssh-agent:${NC} ${PUB_KEY}"
+                echo ""
+            fi
+        fi
+    fi
+    
+    # No keys found anywhere, prompt for custom path or auto-generation
+    if [ -z "$SSH_ID" ] && [ -z "$PUB_KEY" ]; then
+        # Only prompt for a local key if no user ID was provided
+        if [[ ! " ${LXC_OPTIONAL_ARGS[*]} " == *"user.ssh_import_id"* ]] && [ -z "${CONFIG_PROVIDED_ssh_import_id}" ]; then
+            echo -ne "No SSH identity found, enter path to private key [or press Enter to auto-generate]: "
+            read -r user_input </dev/tty
+            
+            if [ -n "$user_input" ]; then
+                # User provided a custom path, safely expand tilde (~) to $HOME if the user typed it
+                user_input=$(echo "$user_input" | tr -d '"'\')
+                user_input="${user_input/#\~/$HOME}"
+                SSH_ID="$user_input"
+            else
+                echo ""
+                confirm_or_abort "Generate a new 4096-bit RSA SSH key pair at ~/.ssh/id_rsa?"
+                
+                mkdir -p ~/.ssh
+                chmod 700 ~/.ssh
+                
+                if ssh-keygen -t rsa -b 4096 -f ~/.ssh/id_rsa -N ""; then
+                    SSH_ID=~/.ssh/id_rsa
+                else
+                    echo ""
+                    echo -e "${BRED}Error: Failed to generate SSH key. Aborting.${NC}"
+                    exit 1
+                fi
+            fi
+        fi
+    fi
+    
+    # Read the local file if one was selected, mapped, or generated
+    if [ -n "$SSH_ID" ] && [ -f "${SSH_ID}.pub" ]; then
+        echo -e "${BYELLOW}-> Auto-injecting local SSH public key:${NC} ${SSH_ID}.pub"
+        echo ""
+        PUB_KEY=$(cat "${SSH_ID}.pub")
+    fi
+    
+    # Final payload injection
+    if [ -n "$PUB_KEY" ]; then
+        LXC_OPTIONAL_ARGS+=("-c" "user.ssh_key=$PUB_KEY")
     fi
 fi
 
@@ -778,17 +831,9 @@ if [[ ! " ${LXC_OPTIONAL_ARGS[*]} " == *"user.ssh_import_id"* ]] && [ -n "${CONF
     LXC_OPTIONAL_ARGS+=("-c" "user.ssh_import_id=${CONFIG_PROVIDED_ssh_import_id}")
 fi
 
-# Auto-inject local SSH public key
-if [ -n "$SSH_ID" ] && [ -f "${SSH_ID}.pub" ]; then
-    echo -e "${BYELLOW}-> Auto-injecting local SSH public key:${NC} ${SSH_ID}.pub"
-    echo ""
-    PUB_KEY=$(cat "${SSH_ID}.pub")
-    LXC_OPTIONAL_ARGS+=("-c" "user.ssh_key=$PUB_KEY")
-fi
-
-# Abort if there's neither a local key nor a user ID
+# Abort if absolutely nothing was found or generated
 if [[ ! " ${LXC_OPTIONAL_ARGS[*]} " == *"user.ssh_key"* ]] && [[ ! " ${LXC_OPTIONAL_ARGS[*]} " == *"user.ssh_import_id"* ]]; then
-    echo -e "${BRED}Error: No SSH keys found (${NC}${SSH_ID}.pub${BRED}) and no user ID provided! Aborting.${NC}"
+    echo -e "${BRED}Error: No SSH keys found and no user ID provided! Aborting.${NC}"
     exit 1
 fi
 
