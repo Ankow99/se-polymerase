@@ -625,7 +625,7 @@ write_files:
     export LXD_ADDR="$LXD_ADDR"
     export LXD_CERT="$LXD_CERT"
     export LXD_KEY="$LXD_KEY"
-    export MANIFEST_FILE="/etc/manifest.yaml"
+    export MANIFEST_FILE="/home/{{ sys_user }}/manifest.yaml"
     EOF
     
     # 3. Secure the state file (Only root and sys_user can read it)
@@ -1370,35 +1370,39 @@ write_files:
     
     source /etc/repro-env
     
-    if [ -f "$MANIFEST_FILE" ]; then
+    if [ -f "/etc/manifest.yaml" ]; then
         # Use custom Sunbeam deployment manifest
         echo -e "\n\n${BYELLOW}-------- Using custom Sunbeam manifest... --------${NC}\n"
+        # Move it to the user's home directory so Sunbeam can read it
+        mv /etc/manifest.yaml "$MANIFEST_FILE"
+    elif [ -f "$MANIFEST_FILE" ]; then
+        echo -e "\n\n${BYELLOW}-------- Using existing Sunbeam manifest... --------${NC}\n"
     else
         # Generate Sunbeam deployment manifest
         echo -e "\n\n${BYELLOW}-------- Generating Sunbeam manifest... --------${NC}\n"
         
         cat <<EOF > "$MANIFEST_FILE"
-        core:
-          config:
-            proxy:
-              proxy_required: false
-            database: single
-            region: RegionOne
-            user:
-              run_demo_setup: {{ 'true' if os_run_demo else 'false' }}
-              username: demo
-              password: password
-              cidr: 192.168.0.0/24
-              nameservers: {{ maas_dns }}
-              security_group_rules: true
-              remote_access_location: local
-              physnet: physnet1
-            external-networks:
-              physnet1:
-                cidr: {{ os_neutron_cidr }}
-                network_type: flat
-                nics:
-        EOF
+    core:
+      config:
+        proxy:
+          proxy_required: false
+        database: single
+        region: RegionOne
+        user:
+          run_demo_setup: {{ 'true' if os_run_demo else 'false' }}
+          username: demo
+          password: password
+          cidr: 192.168.0.0/24
+          nameservers: {{ maas_dns }}
+          security_group_rules: true
+          remote_access_location: local
+          physnet: physnet1
+        external-networks:
+          physnet1:
+            cidr: {{ os_neutron_cidr }}
+            network_type: flat
+            nics:
+    EOF
         
         # Dynamically append all cloud nodes and their neutron interfaces
         for HOST in {{ nodes_hostnames }}; do
