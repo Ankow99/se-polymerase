@@ -270,9 +270,9 @@ write_files:
     export RUN_AS_LOGIN="sudo -i -u {{ sys_user }}"
     EOF
     
-    # 3. Secure the state file (Only root and sys_user can read it)
+    # 3. Secure the state file but allow read access so the 'stack' user can source it
     chown {{ sys_user }}:{{ sys_user }} /etc/repro-env
-    chmod 600 /etc/repro-env
+    chmod 644 /etc/repro-env
 
 - path: /usr/local/bin/01-verify-deps
   permissions: '0755'
