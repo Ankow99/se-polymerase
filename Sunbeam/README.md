@@ -65,17 +65,17 @@ Deploy this Transcript using the `se-polymerase` orchestrator. The orchestrator 
 
 Accept all default variables and let `synth` auto-generate a deployment ID:
 ```bash
-./synth.sh Sunbeam/sunbeam.yaml -y
+./synth Sunbeam/sunbeam.yaml -y
 ```
 
 Deploy with using deb MAAS, prompt for all variables interactively, and assign a specific case number as the deployment ID:
 ```bash
-./synth.sh Sunbeam/sunbeam.yaml -d 00426900
+./synth Sunbeam/sunbeam.yaml -d 00426900
 ```
 
 Deploy bypassing prompts by passing a pre-generated configuration file from a previous run:
 ```bash
-./synth.sh Sunbeam/sunbeam.yaml -c Sunbeam/00426900/config-sunbeam-00426900.yaml
+./synth Sunbeam/sunbeam.yaml -c Sunbeam/00426900/config-sunbeam-00426900.yaml
 ```
 
 ## Access and Cleanup
