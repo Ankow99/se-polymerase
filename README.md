@@ -90,6 +90,7 @@ Invoke the script against a cloud-init template:
 | `-i, --id <user_id>` | Import SSH public keys from trusted online identities. (`lp:`,`gh:`,`gl:`) |
 | `-I, --isolate-images` | Isolate LXD images per project (disables host image sharing). |
 | `-c, --config <file>`| Load a pre-defined YAML configuration file to bypass prompts and replicate an environment. |
+| `-m, --manifest <file>`| Provide a custom deployment manifest (e.g., Sunbeam manifest.yaml) to override the default. |
 
 ### Examples
 
@@ -111,6 +112,11 @@ Redeploy a previous exact environment using a saved configuration file:
 Run a fully automated background deployment (Start it, and press `Ctrl+C` to detach once the logs begin):
 ```bash
 ./synth Sunbeam/sunbeam.yaml -y
+```
+
+Deploy an environment injecting a custom deployment manifest (only available for the Sunbeam lab):
+```bash
+./synth Sunbeam/sunbeam.yaml -m custom-manifest.yaml
 ```
 
 ---

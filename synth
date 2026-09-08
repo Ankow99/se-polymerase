@@ -4,7 +4,7 @@
 # se-polymerase (synth)
 # Acts as the polymerase to synthesize an isolated, terraform-free LXD 
 # reproducer environment using the host's LXD for MAAS + Juju deployments.
-# version: 7.6.0
+# version: 7.8.0
 #
 # Synthesized by: Pablo Gonzalez De Greiff @ Canonical
 # ---
@@ -67,6 +67,7 @@ ${BYELLOW}Options:${NC}
   -i, --id <user_id>        Import SSH public keys from trusted online identities.
   -I, --isolate-images      Isolate LXD images per project (disables host image sharing).
   -c, --config <file>       Load a pre-defined YAML configuration file to bypass prompts.
+  -m, --manifest <file>     Provide a custom Sunbeam manifest.yaml to override the default.
 
 ${BYELLOW}Arguments:${NC}
   CLOUD_INIT_FILE           Path to the cloud-init.yaml template to deploy.
@@ -644,6 +645,12 @@ while [[ $# -gt 0 ]]; do
             echo ""
             shift 2
             ;;
+        -m|--manifest)
+            CUSTOM_MANIFEST_FILE="$2"
+            echo -e "${BYELLOW}-> Using custom Sunbeam manifest:${NC} $CUSTOM_MANIFEST_FILE"
+            echo ""
+            shift 2
+            ;;
         -*)
             echo -e "${BRED}Error: Unknown flag '${NC}${1}${BRED}'${NC}"
             exit 1
@@ -681,6 +688,11 @@ if [ -n "$INPUT_CONFIG_FILE" ]; then
     fi
     # Force absolute path immediately so later comparisons don't fail
     INPUT_CONFIG_FILE="$(realpath "$INPUT_CONFIG_FILE")"
+fi
+
+if [ ! -f "$CUSTOM_MANIFEST_FILE" ]; then
+    echo -e "${BRED}Error: Custom manifest file '${NC}${CUSTOM_MANIFEST_FILE}${BRED}' not found!${NC}"
+    exit 1
 fi
 
 # Dynamically set directories based on the resolved absolute path of the file
@@ -802,6 +814,7 @@ else
                 
                 if ssh-keygen -t rsa -b 4096 -f ~/.ssh/id_rsa -N ""; then
                     SSH_ID=~/.ssh/id_rsa
+                    echo ""
                 else
                     echo ""
                     echo -e "${BRED}Error: Failed to generate SSH key. Aborting.${NC}"
@@ -835,6 +848,12 @@ fi
 if [[ ! " ${LXC_OPTIONAL_ARGS[*]} " == *"user.ssh_key"* ]] && [[ ! " ${LXC_OPTIONAL_ARGS[*]} " == *"user.ssh_import_id"* ]]; then
     echo -e "${BRED}Error: No SSH keys found and no user ID provided! Aborting.${NC}"
     exit 1
+fi
+
+# Inject custom manifest if provided
+if [ -n "$CUSTOM_MANIFEST_FILE" ] && [ -f "$CUSTOM_MANIFEST_FILE" ]; then
+    MANIFEST_B64=$(base64 -w0 "$CUSTOM_MANIFEST_FILE")
+    LXC_OPTIONAL_ARGS+=("-c" "user.os_manifest_b64=$MANIFEST_B64")
 fi
 
 # Catch normal exits and crashes

@@ -78,6 +78,11 @@ Deploy bypassing prompts by passing a pre-generated configuration file from a pr
 ./synth Sunbeam/sunbeam.yaml -c Sunbeam/00426900/config-sunbeam-00426900.yaml
 ```
 
+Deploy using a custom Sunbeam manifest file to override the default cloud generation:
+```bash
+./synth Sunbeam/sunbeam.yaml -m custom-manifest.yaml
+```
+
 ## Access and Cleanup
 Because the deployment is executed in the background, you can detach your terminal at any time. Monitor the live progress by tailing the log file stored in the deployment directory:
 ```bash

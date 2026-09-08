@@ -3,7 +3,7 @@
 
 # ---
 # sunbeam transcript: Automated scalable cloud-init install of Sunbeam using MAAS
-# version: 7.2.0
+# version: 7.3.0
 #
 # Synthesized by: Pablo Gonzalez De Greiff @ Canonical
 # ---
@@ -144,6 +144,7 @@
 {% set os_neutron_cidr = meta.get("os_neutron_cidr") or custom_os_neutron_cidr %}
 {% set os_pub_api_ip_count = meta.get("os_pub_api_ip_count") | default(custom_os_pub_api_ip_count, true) | int %}
 {% set os_int_api_ip_count = meta.get("os_int_api_ip_count") | default(custom_os_int_api_ip_count, true) | int %}
+{% set os_manifest_b64 = meta.get("os_manifest_b64") %}
 
 {% set juju_ha = meta.get("juju_ha") | default(custom_juju_ha, true) | int %}
 {% set juju_cpu = meta.get("juju_cpu") or custom_juju_cpu %}
@@ -624,6 +625,7 @@ write_files:
     export LXD_ADDR="$LXD_ADDR"
     export LXD_CERT="$LXD_CERT"
     export LXD_KEY="$LXD_KEY"
+    export MANIFEST_FILE="/etc/manifest.yaml"
     EOF
     
     # 3. Secure the state file (Only root and sys_user can read it)
@@ -1348,6 +1350,14 @@ write_files:
     $RUN_AS_LOGIN sunbeam deployment show {{ os_deployment }}
     sleep 10
 
+{% if os_manifest_b64 %}
+- path: /etc/manifest.yaml
+  owner: root:root
+  permissions: '0644'
+  encoding: b64
+  content: {{ os_manifest_b64 }}
+{% endif %}
+
 - path: /usr/local/bin/12-sunbeam-bootstrap
   permissions: '0755'
   content: |
@@ -1360,53 +1370,59 @@ write_files:
     
     source /etc/repro-env
     
-    # Generate Sunbeam deployment manifest
-    echo -e "\n\n${BYELLOW}-------- Generating Sunbeam manifest... --------${NC}\n"
+    if [ -f "$MANIFEST_FILE" ]; then
+        # Use custom Sunbeam deployment manifest
+        echo -e "\n\n${BYELLOW}-------- Using custom Sunbeam manifest... --------${NC}\n"
+    else
+        # Generate Sunbeam deployment manifest
+        echo -e "\n\n${BYELLOW}-------- Generating Sunbeam manifest... --------${NC}\n"
+        
+        cat <<EOF > "$MANIFEST_FILE"
+        core:
+          config:
+            proxy:
+              proxy_required: false
+            database: single
+            region: RegionOne
+            user:
+              run_demo_setup: {{ 'true' if os_run_demo else 'false' }}
+              username: demo
+              password: password
+              cidr: 192.168.0.0/24
+              nameservers: {{ maas_dns }}
+              security_group_rules: true
+              remote_access_location: local
+              physnet: physnet1
+            external-networks:
+              physnet1:
+                cidr: {{ os_neutron_cidr }}
+                network_type: flat
+                nics:
+        EOF
+        
+        # Dynamically append all cloud nodes and their neutron interfaces
+        for HOST in {{ nodes_hostnames }}; do
+          case "$HOST" in
+            cloud-*)
+              echo "          $HOST: eth1" >> "$MANIFEST_FILE"
+              ;;
+          esac
+        done
+    fi
     
-    cat <<EOF > /home/{{ sys_user }}/manifest.yaml
-    core:
-      config:
-        proxy:
-          proxy_required: false
-        database: single
-        region: RegionOne
-        user:
-          run_demo_setup: {{ 'true' if os_run_demo else 'false' }}
-          username: demo
-          password: password
-          cidr: 192.168.0.0/24
-          nameservers: {{ maas_dns }}
-          security_group_rules: true
-          remote_access_location: local
-          physnet: physnet1
-        external-networks:
-          physnet1:
-            cidr: {{ os_neutron_cidr }}
-            network_type: flat
-            nics:
-    EOF
-    
-    # Dynamically append all cloud nodes and their neutron interfaces
-    for HOST in {{ nodes_hostnames }}; do
-      case "$HOST" in
-        cloud-*)
-          echo "          $HOST: eth1" >> /home/{{ sys_user }}/manifest.yaml
-          ;;
-      esac
-    done
-    
-    chown {{ sys_user }}:{{ sys_user }} /home/{{ sys_user }}/manifest.yaml
-    cat /home/{{ sys_user }}/manifest.yaml
+    chown {{ sys_user }}:{{ sys_user }} "$MANIFEST_FILE"
+    chmod 644 "$MANIFEST_FILE"
+    cat "$MANIFEST_FILE"
     
     # Bootstrap the orchestration layer
     echo -e "\n\n${BYELLOW}-------- Bootstrapping the orchestration layer... --------${NC}\n"
     
     LOGFILE="/tmp/sunbeam-bootstrap.log"
-    if ! $RUN_AS_LOGIN script -q -e -f -c "sunbeam cluster bootstrap --accept-defaults --manifest /home/{{ sys_user }}/manifest.yaml" "$LOGFILE"; then
+    if ! $RUN_AS_LOGIN script -q -e -f -c "sunbeam cluster bootstrap --accept-defaults --manifest $MANIFEST_FILE" "$LOGFILE"; then
         if grep -q "wait timed out after" "$LOGFILE"; then
             echo -e "\n\n${BRED}Timeout detected. Waiting 60s and retrying bootstrap once...${NC}\n"
             sleep 60
-            $RUN_AS_LOGIN script -q -e -f -c "sunbeam cluster bootstrap --accept-defaults --manifest /home/{{ sys_user }}/manifest.yaml" /dev/null
+            $RUN_AS_LOGIN script -q -e -f -c "sunbeam cluster bootstrap --accept-defaults --manifest $MANIFEST_FILE" /dev/null
         else
             echo -e "\n\n${BRED}Bootstrap failed with a non-timeout error. Proceeding without retry.${NC}\n"
         fi
@@ -1434,11 +1450,11 @@ write_files:
     echo -e "\n\n${BYELLOW}-------- Deploying the cloud... --------${NC}\n"
     
     LOGFILE="/tmp/sunbeam-deploy.log"
-    if ! $RUN_AS_LOGIN script -q -e -f -c "sunbeam cluster deploy --accept-defaults --manifest /home/{{ sys_user }}/manifest.yaml" "$LOGFILE"; then
+    if ! $RUN_AS_LOGIN script -q -e -f -c "sunbeam cluster deploy --accept-defaults --manifest $MANIFEST_FILE" "$LOGFILE"; then
         if grep -q "wait timed out after" "$LOGFILE"; then
             echo -e "\n\n${BRED}Timeout detected. Waiting 60s and retrying deploy once...${NC}\n"
             sleep 60
-            $RUN_AS_LOGIN script -q -e -f -c "sunbeam cluster deploy --accept-defaults --manifest /home/{{ sys_user }}/manifest.yaml" /dev/null
+            $RUN_AS_LOGIN script -q -e -f -c "sunbeam cluster deploy --accept-defaults --manifest $MANIFEST_FILE" /dev/null
         else
             echo -e "\n\n${BRED}Deploy failed with a non-timeout error. Proceeding without retry.${NC}\n"
         fi
@@ -1466,11 +1482,11 @@ write_files:
     echo -e "\n\n${BYELLOW}-------- Configuring the cloud... --------${NC}\n"
     
     LOGFILE="/tmp/sunbeam-configure.log"
-    if ! $RUN_AS_LOGIN script -q -e -f -c "sunbeam configure --accept-defaults --openrc /home/{{ sys_user }}/demo-openrc --manifest /home/{{ sys_user }}/manifest.yaml" "$LOGFILE"; then
+    if ! $RUN_AS_LOGIN script -q -e -f -c "sunbeam configure --accept-defaults --openrc /home/{{ sys_user }}/demo-openrc --manifest $MANIFEST_FILE" "$LOGFILE"; then
         if grep -q "wait timed out after" "$LOGFILE"; then
             echo -e "\n\n${BRED}Timeout detected. Waiting 60s and retrying configure once...${NC}\n"
             sleep 60
-            $RUN_AS_LOGIN script -q -e -f -c "sunbeam configure --accept-defaults --openrc /home/{{ sys_user }}/demo-openrc --manifest /home/{{ sys_user }}/manifest.yaml" /dev/null
+            $RUN_AS_LOGIN script -q -e -f -c "sunbeam configure --accept-defaults --openrc /home/{{ sys_user }}/demo-openrc --manifest $MANIFEST_FILE" /dev/null
         else
             echo -e "\n\n${BRED}Configure failed with a non-timeout error. Proceeding without retry.${NC}\n"
         fi
