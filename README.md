@@ -90,7 +90,7 @@ Invoke the script against a cloud-init template:
 | `-y, --yes` | Bypass interactive CLI prompts and auto-accept all template defaults. |
 | `-n, --nested` | Deploy using a nested LXD architecture. |
 | `-d, --deb` | Force DEB packages for MAAS instead of the default snap. |
-| `-i, --id <lp_id>` | Import SSH public keys directly from a Launchpad account. |
+| `-i, --id <user_id>` | Import SSH public keys from trusted online identities. (`lp:`,`gh:`,`gl:`) |
 | `-I, --isolate-images` | Isolate LXD images per project (disables host image sharing). |
 | `-c, --config <file>`| Load a pre-defined YAML configuration file to bypass prompts and replicate an environment. |
 
@@ -103,7 +103,7 @@ Deploy interactively with a custom ID:
 
 Deploy an automated cluster using deb MAAS and Launchpad keys:
 ```bash
-./synth Openstack/focal-ussuri.yaml -y -d -i pgdg99
+./synth Openstack/focal-ussuri.yaml -y -d -i lp:pgdg99
 ```
 
 Redeploy a previous exact environment using a saved configuration file:

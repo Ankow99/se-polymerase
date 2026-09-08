@@ -4,7 +4,7 @@
 # se-polymerase (synth)
 # Acts as the polymerase to synthesize an isolated, terraform-free LXD 
 # reproducer environment using the host's LXD for MAAS + Juju deployments.
-# version: 7.4.0
+# version: 7.5.0
 #
 # Synthesized by: Pablo Gonzalez De Greiff @ Canonical
 # ---
@@ -64,7 +64,7 @@ ${BYELLOW}Options:${NC}
   -y, --yes                 Bypass interactive prompts and accept all defaults.
   -n, --nested              Deploy using a nested LXD architecture (default is non-nested).
   -d, --deb                 Use DEB packages for MAAS instead of the default snap.
-  -i, --id <launchpad_id>   Import SSH public keys directly from a Launchpad account.
+  -i, --id <user_id>        Import SSH public keys from trusted online identities.
   -I, --isolate-images      Isolate LXD images per project (disables host image sharing).
   -c, --config <file>       Load a pre-defined YAML configuration file to bypass prompts.
 
@@ -627,9 +627,9 @@ while [[ $# -gt 0 ]]; do
             shift 1
             ;;
         -i|--id)
-            echo -e "${BYELLOW}-> Importing SSH keys from Launchpad:${NC} lp:$2"
+            echo -e "${BYELLOW}-> Importing SSH keys from user ID:${NC} $2"
             echo ""
-            LXC_OPTIONAL_ARGS+=("-c" "user.ssh_import_id=lp:$2")
+            LXC_OPTIONAL_ARGS+=("-c" "user.ssh_import_id=$2")
             shift 2
             ;;
         -I|--isolate-images)
@@ -759,7 +759,7 @@ if [ -f ~/.ssh/id_ed25519 ]; then
 elif [ -f ~/.ssh/id_rsa ]; then
     SSH_ID=~/.ssh/id_rsa
 else
-    # Only prompt for a local key if no Launchpad ID was provided
+    # Only prompt for a local key if no user ID was provided
     if [[ ! " ${LXC_OPTIONAL_ARGS[*]} " == *"user.ssh_import_id"* ]] && [ -z "${CONFIG_PROVIDED_ssh_import_id}" ]; then
         echo -ne "No SSH identity found, please insert path to one: "
         read -r user_input </dev/tty
@@ -771,9 +771,9 @@ else
     fi
 fi
 
-# If Launchpad key was in config file and not passed via CLI flag, inject it
+# If user ID key was in config file and not passed via CLI flag, inject it
 if [[ ! " ${LXC_OPTIONAL_ARGS[*]} " == *"user.ssh_import_id"* ]] && [ -n "${CONFIG_PROVIDED_ssh_import_id}" ]; then
-    echo -e "${BYELLOW}-> Importing SSH keys from Launchpad (from config):${NC} ${CONFIG_PROVIDED_ssh_import_id}"
+    echo -e "${BYELLOW}-> Importing SSH keys from user ID (from config):${NC} ${CONFIG_PROVIDED_ssh_import_id}"
     echo ""
     LXC_OPTIONAL_ARGS+=("-c" "user.ssh_import_id=${CONFIG_PROVIDED_ssh_import_id}")
 fi
@@ -786,9 +786,9 @@ if [ -n "$SSH_ID" ] && [ -f "${SSH_ID}.pub" ]; then
     LXC_OPTIONAL_ARGS+=("-c" "user.ssh_key=$PUB_KEY")
 fi
 
-# Abort if there's neither a local key nor a Launchpad ID
+# Abort if there's neither a local key nor a user ID
 if [[ ! " ${LXC_OPTIONAL_ARGS[*]} " == *"user.ssh_key"* ]] && [[ ! " ${LXC_OPTIONAL_ARGS[*]} " == *"user.ssh_import_id"* ]]; then
-    echo -e "${BRED}Error: No SSH keys found (${NC}${SSH_ID}.pub${BRED}) and no Launchpad ID provided! Aborting.${NC}"
+    echo -e "${BRED}Error: No SSH keys found (${NC}${SSH_ID}.pub${BRED}) and no user ID provided! Aborting.${NC}"
     exit 1
 fi
 
