@@ -3,7 +3,7 @@
 
 # ---
 # sunbeam transcript: Automated scalable cloud-init install of Sunbeam using MAAS
-# version: 7.0.0
+# version: 7.1.0
 #
 # Synthesized by: Pablo Gonzalez De Greiff @ Canonical
 # ---
@@ -980,7 +980,7 @@ write_files:
     lxc config trust add $LXD_CERT --name lxd-local
     
     # Provide certs to user context
-    $RUN_AS mkdir -p /home/{{ sys_user }}/snap/lxd/common/config
+    $RUN_AS_LOGIN mkdir -p /home/{{ sys_user }}/snap/lxd/common/config
     cp $LXD_CERT /home/{{ sys_user }}/snap/lxd/common/config/client.crt
     cp $LXD_KEY /home/{{ sys_user }}/snap/lxd/common/config/client.key
     chown -R {{ sys_user }}:{{ sys_user }} /home/{{ sys_user }}/snap/lxd/common/config
@@ -994,12 +994,12 @@ write_files:
     lxc remote switch host-lxd
     
     # Provide certs to user context
-    $RUN_AS mkdir -p /home/{{ sys_user }}/snap/lxd/common/config
+    $RUN_AS_LOGIN mkdir -p /home/{{ sys_user }}/snap/lxd/common/config
     cp $LXD_CERT /home/{{ sys_user }}/snap/lxd/common/config/client.crt
     cp $LXD_KEY /home/{{ sys_user }}/snap/lxd/common/config/client.key
     chown -R {{ sys_user }}:{{ sys_user }} /home/{{ sys_user }}/snap/lxd/common/config
     
-    $RUN_AS lxc remote add host-lxd https://$LXD_ADDR --accept-certificate
+    $RUN_AS_LOGIN lxc remote add host-lxd https://$LXD_ADDR --accept-certificate
     
 {% endif %}
     
