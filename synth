@@ -690,9 +690,11 @@ if [ -n "$INPUT_CONFIG_FILE" ]; then
     INPUT_CONFIG_FILE="$(realpath "$INPUT_CONFIG_FILE")"
 fi
 
-if [ ! -f "$CUSTOM_MANIFEST_FILE" ]; then
-    echo -e "${BRED}Error: Custom manifest file '${NC}${CUSTOM_MANIFEST_FILE}${BRED}' not found!${NC}"
-    exit 1
+if [ -n "$CUSTOM_MANIFEST_FILE" ]; then
+    if [ ! -f "$CUSTOM_MANIFEST_FILE" ]; then
+        echo -e "${BRED}Error: Custom manifest file '${NC}${CUSTOM_MANIFEST_FILE}${BRED}' not found!${NC}"
+        exit 1
+    fi
 fi
 
 # Dynamically set directories based on the resolved absolute path of the file
