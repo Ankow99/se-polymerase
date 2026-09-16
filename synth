@@ -1906,7 +1906,7 @@ USER_TERM_HEIGHT=$(tput lines 2>/dev/null || echo 40)
         OS_PASSWORD=""
         
         # Try Sunbeam first
-        SUNBEAM_URL=$(lxc exec "$VM_NAME" --project "$LXD_PROJECT" -- su - "$SYS_USER" -c "sunbeam dashboard-url 2>/dev/null")
+        SUNBEAM_URL=$(lxc exec "$VM_NAME" --project "$LXD_PROJECT" -- su - "$SYS_USER" -c "sunbeam dashboard url 2>/dev/null")
         
         if [[ "$SUNBEAM_URL" == *"http"* ]]; then
             echo -e "  ${BYELLOW}Sunbeam deployment detected.${NC}"
@@ -1925,6 +1925,14 @@ try:
 except Exception:
     pass
 " "$HORIZON_URL")"
+            
+            # If HORIZON_IP is a hostname instead of an IPv4 address, resolve it
+            if [ -n "$HORIZON_IP" ] && ! [[ "$HORIZON_IP" =~ ^[0-9]+\.[0-9]+\.[0-9]+\.[0-9]+$ ]]; then
+                RESOLVED_IP=$(lxc exec "$VM_NAME" --project "$LXD_PROJECT" -- getent hosts "$HORIZON_IP" | awk '{print $1}' | head -n 1)
+                if [ -n "$RESOLVED_IP" ]; then
+                    HORIZON_IP="$RESOLVED_IP"
+                fi
+            fi
             
             # Fetch Sunbeam credentials
             SUNBEAM_RC=$(lxc exec "$VM_NAME" --project "$LXD_PROJECT" -- su - "$SYS_USER" -c "sunbeam openrc 2>/dev/null")
