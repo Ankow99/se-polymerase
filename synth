@@ -30,7 +30,7 @@ ACCEPT_DEFAULTS=false # Auto accept all defaults flag
 SHARED_IMAGES=true # Share host LXD images by default (false = isolated images per project)
 CLEANUP_HANDOVER=false # Emergency rollback cleanup handover flag
 PROJECT_CREATED=false # Tracks if it created the LXD project to prevent wiping existing ones
-CLOUD_INIT_LOG_LINES=7 # Lines to show while Juju status watch
+CLOUD_INIT_LOG_LINES=9 # Lines to show while Juju status watch
 MAX_WAIT=300 # Maximum wait time in seconds for loops
 
 INPUT_CONFIG_FILE=""
@@ -1867,7 +1867,7 @@ USER_TERM_HEIGHT=$(tput lines 2>/dev/null || echo 40)
                 if [ "$JUJU_LINE_COUNT" -gt "$MAX_JUJU_LINES" ]; then
                     HIDDEN_LINES=$(( JUJU_LINE_COUNT - MAX_JUJU_LINES ))
                     echo -e "$JUJU_OUTPUT" | head -n "$MAX_JUJU_LINES" | sed "s/$/${CLR_EOL}/"
-                    echo -e "... [ Output truncated by $HIDDEN_LINES lines to fit terminal. Maximize window to see more! ] ...${CLR_EOL}"
+                    echo -e "... [ Output truncated by $HIDDEN_LINES lines to fit terminal ] ...${CLR_EOL}"
                 else
                     echo -e "$JUJU_OUTPUT" | sed "s/$/${CLR_EOL}/"
                 fi
