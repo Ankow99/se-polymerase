@@ -907,6 +907,7 @@ ACCESS_FILE="$PROJECT_DIR/access-${LXD_PROJECT}.txt"
 LOG_FILE="$PROJECT_DIR/log-${LXD_PROJECT}.log"
 CONFIG_FILE="$PROJECT_DIR/config-${LXD_PROJECT}.yaml"
 CONFIG_FILE_TMP="${CONFIG_FILE}.tmp"
+WORKER_PID_FILE="$PROJECT_DIR/.worker-${LXD_PROJECT}.pid"
 
 # Initialize configuration file to a temporary file (Prevents overwrite if using the same file as input -c)
 echo "# ==========================================" > "$CONFIG_FILE_TMP"
@@ -1596,6 +1597,20 @@ else
 fi
 echo ""
 
+echo -e "${BYELLOW}-> Terminating active background tracking processes...${NC}"
+
+if [ -f "$WORKER_PID_FILE" ]; then
+    WPID=\$(cat "$WORKER_PID_FILE")
+    if kill -0 "\$WPID" 2>/dev/null; then
+        kill -9 "\$WPID" 2>/dev/null
+        echo "Background worker process (\$WPID) forcibly terminated."
+    fi
+    rm -f "$WORKER_PID_FILE"
+else
+    echo "PID file '$WORKER_PID_FILE' not found, skipping..."
+fi
+echo ""
+
 echo -e "${BYELLOW}-------------- Cleanup Complete --------------${NC}"
 
 # Remove the cleanup script itself to avoid clutter
@@ -1641,7 +1656,7 @@ USER_TERM_HEIGHT=$(tput lines 2>/dev/null || echo 40)
     exec 3>&- 4>&-
     
     # Worker Trap: Enter auto-accept mode to breeze past remaining prompts silently if terminal detaches
-    trap 'ACCEPT_DEFAULTS=true' INT HUP TERM
+    trap 'ACCEPT_DEFAULTS=true' INT HUP
     
     # ==========================================
     # OBTAIN LXD PRIMARY IP ADDRESS
@@ -1746,6 +1761,13 @@ USER_TERM_HEIGHT=$(tput lines 2>/dev/null || echo 40)
     CLR_EOL=$'\033[K'
     
     while [ "$PHASE" != "DONE" ]; do
+        
+        # Prevent infinite loops if VM or Project is destroyed externally
+        if ! lxc info "$VM_NAME" --project "$LXD_PROJECT" >/dev/null 2>&1; then
+            echo ""
+            echo -e "${BRED}Fatal: VM '$VM_NAME' or Project '$LXD_PROJECT' no longer exists. Aborting watch loop.${NC}${CLR_EOL}"
+            exit 1
+        fi
         
         # PHASE A: LOG TAILING
         if [ "$PHASE" == "LOG_TAIL" ]; then
@@ -1947,7 +1969,7 @@ except Exception:
             [ -n "$TMP_DOM" ] && OS_DOMAIN="$TMP_DOM"
         else
             # Try charmed OpenStack
-
+            
             # Identify the target model from the JUJU_MODELS string (grab the first word)
             TARGET_MODEL=$(echo "$JUJU_MODELS" | awk '{print $1}')
             [ -z "$TARGET_MODEL" ] && TARGET_MODEL="openstack"
@@ -2103,15 +2125,26 @@ except Exception:
     } >> "$LOG_FILE"
 ) &
 WORKER_PID=$!
+echo "$WORKER_PID" > "$WORKER_PID_FILE"
 
 # Wait for the background worker to finish naturally
 wait $WORKER_PID
+WORKER_EXIT_CODE=$?
 
 # Kill the tail process (fails silently since the worker already did it)
 [ -n "$TAIL_PID" ] && kill "$TAIL_PID" 2>/dev/null
 
+# Clean up PID file if worker finished naturally
+rm -f "$WORKER_PID_FILE" 2>/dev/null
+
 # If we get here, the user DID NOT interrupt (Ctrl+C). Restore normal traps
 trap 'emergency_rollback; exit 1' INT TERM HUP
+
+# Abort the parent if the worker failed
+if [ $WORKER_EXIT_CODE -ne 0 ]; then
+    echo -e "${BRED}Deployment process failed or was aborted.${NC}"
+    exit $WORKER_EXIT_CODE
+fi
 
 # Restore stdout/stderr back to the terminal for a clean interactive ssh session
 exec 1>&3 2>&4
