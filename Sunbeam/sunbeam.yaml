@@ -1025,7 +1025,7 @@ write_files:
         
         ATTEMPTS=$((ATTEMPTS+1))
         if [ $ATTEMPTS -ge $MAX_ATTEMPTS ]; then
-            echo -e "\n${BRED}[FATAL] Timeout waiting for MAAS to discover subnet. Aborting.${NC}\n"
+            echo -e "${BRED}[FATAL] Timeout waiting for MAAS to discover subnet. Aborting.${NC}\n"
             exit 1
         fi
         
@@ -1157,7 +1157,7 @@ write_files:
         
         ATTEMPTS=$((ATTEMPTS+1))
         if [ $ATTEMPTS -ge $MAX_ATTEMPTS ]; then
-            echo -e "\n${BRED}[FATAL] Timeout waiting for MAAS boot images to sync. Aborting.${NC}\n"
+            echo -e "${BRED}[FATAL] Timeout waiting for MAAS boot images to sync. Aborting.${NC}\n"
             exit 1
         fi
         
@@ -1311,7 +1311,7 @@ write_files:
         
         # If the flag is still true, everyone is enlisted -> break the loop
         if [ "$all_enlisted" = true ]; then
-            echo -e "All VMs have successfully enlisted!\n"
+            echo "All VMs have successfully enlisted!"
             lxc list
             sleep 10
             break
@@ -1319,7 +1319,7 @@ write_files:
         
         ATTEMPTS=$((ATTEMPTS+1))
         if [ $ATTEMPTS -ge $MAX_ATTEMPTS ]; then
-            echo -e "\n${BRED}[FATAL] Timeout waiting for VMs to enlist. Aborting.${NC}\n"
+            echo -e "${BRED}[FATAL] Timeout waiting for VMs to enlist. Aborting.${NC}\n"
             exit 1
         fi
         
@@ -1437,7 +1437,7 @@ write_files:
         
         # If the flag is still true, everyone is ready -> break the loop
         if [ "$all_ready" = true ]; then
-            echo -e "All VMs are Ready!\n"
+            echo "All VMs are Ready!"
             maast {{ maas_user }} machines read
             netplan apply # Update MAAS DNS record
             sleep 10
@@ -1446,7 +1446,7 @@ write_files:
         
         ATTEMPTS=$((ATTEMPTS+1))
         if [ $ATTEMPTS -ge $MAX_ATTEMPTS ]; then
-            echo -e "\n${BRED}[FATAL] Timeout waiting for VMs to reach 'Ready' state. Aborting.${NC}\n"
+            echo -e "${BRED}[FATAL] Timeout waiting for VMs to reach 'Ready' state. Aborting.${NC}\n"
             exit 1
         fi
         
@@ -1571,11 +1571,11 @@ write_files:
     LATEST_REPORT=$(ls -t /home/{{ sys_user }}/snap/openstack/common/reports/ | head -n 1)
     
     cat "/home/{{ sys_user }}/snap/openstack/common/reports/$LATEST_REPORT"
-    echo -e "\n"
+    echo ""
     echo -e "Number of fails      - ${BRED}$(grep -c failed /home/{{ sys_user }}/snap/openstack/common/reports/$LATEST_REPORT)${NC}"
     echo -e "Number of warnings   - ${BYELLOW}$(grep -c warning /home/{{ sys_user }}/snap/openstack/common/reports/$LATEST_REPORT)${NC}"
     echo -e "Number of successes  - ${BGREEN}$(grep -c success /home/{{ sys_user }}/snap/openstack/common/reports/$LATEST_REPORT)${NC}"
-    echo -e "\n"
+    echo ""
     
     $RUN_AS_LOGIN sunbeam deployment show {{ os_deployment }}
     sleep 10
@@ -1892,13 +1892,13 @@ write_files:
             
             # If the flag is still true, all hostnames resolved successfully -> break loop
             if [ "$all_resolved" = true ]; then
-                echo -e "All DNS records are ready and resolving!\n"
+                echo "All DNS records are ready and resolving!"
                 break
             fi
             
             ATTEMPTS=$((ATTEMPTS+1))
             if [ $ATTEMPTS -ge $MAX_ATTEMPTS ]; then
-                echo -e "Proceeding anyway, but DNS might be lagging...\n"
+                echo "Proceeding anyway, but DNS might be lagging..."
                 break
             fi
             
