@@ -3,7 +3,7 @@
 
 # ---
 # sunbeam transcript: Automated scalable cloud-init install of Sunbeam using MAAS
-# version: 11.3.0
+# version: 11.4.1
 #
 # Synthesized by: Pablo Gonzalez De Greiff @ Canonical
 # ---
@@ -76,9 +76,9 @@
 {% set custom_os_add_ldap = False %}                # PROMPT:Enable LDAP
 {% set custom_os_add_images = False %}              # PROMPT:Enable Images Sync
 {% set custom_os_add_watcher = False %}             # PROMPT:Enable Watcher
-{% set custom_os_add_maintenance = False %}         # PROMPT:Enable Maintenance Mode
 {% set custom_os_add_telemetry = False %}           # PROMPT:Enable Ceilometer/Aodh
 {% set custom_os_add_manila = False %}              # PROMPT:Enable Manila
+{% set custom_os_add_maintenance = False %}         # PROMPT:Enable Maintenance Mode
 {% set custom_os_add_tempest = False %}             # PROMPT:Enable Tempest
 {% set custom_os_add_cos = False %}                 # PROMPT:Enable Observability Stack
 
@@ -192,9 +192,9 @@
 {% set os_add_ldap = meta.get("os_add_ldap") | default(custom_os_add_ldap, true) | string | lower == "true" %}
 {% set os_add_images = meta.get("os_add_images") | default(custom_os_add_images, true) | string | lower == "true" %}
 {% set os_add_watcher = meta.get("os_add_watcher") | default(custom_os_add_watcher, true) | string | lower == "true" %}
-{% set os_add_maintenance = meta.get("os_add_maintenance") | default(custom_os_add_maintenance, true) | string | lower == "true" %}
 {% set os_add_telemetry = meta.get("os_add_telemetry") | default(custom_os_add_telemetry, true) | string | lower == "true" %}
 {% set os_add_manila = meta.get("os_add_manila") | default(custom_os_add_manila, true) | string | lower == "true" %}
+{% set os_add_maintenance = meta.get("os_add_maintenance") | default(custom_os_add_maintenance, true) | string | lower == "true" %}
 {% set os_add_tempest = meta.get("os_add_tempest") | default(custom_os_add_tempest, true) | string | lower == "true" %}
 {% set os_add_cos = meta.get("os_add_cos") | default(custom_os_add_cos, true) | string | lower == "true" %}
 
@@ -759,7 +759,7 @@ write_files:
     BGREEN='\033[1;32m'
     NC='\033[0m'
     
-    echo -e "\n\n${BYELLOW}-------- Generating Runtime Environment... --------${NC}\n"
+    echo -e "\n${BYELLOW}-------- Generating Runtime Environment... --------${NC}\n"
     
     # 1. Calculate Runtime Variables
     IP_ADDRESS=$(hostname -I | awk '{print $1}')
@@ -800,7 +800,7 @@ write_files:
     chmod 600 /etc/repro-env
     
     # 4. Handle Python IP Math (Append output to state file)
-    echo -e "\n\n${BYELLOW}-------- Calculating Payload IP Allocations --------${NC}\n"
+    echo -e "\n${BYELLOW}-------- Calculating Payload IP Allocations --------${NC}\n"
     
     python3 -c "
     import ipaddress, sys
@@ -885,7 +885,7 @@ write_files:
 {% if not maas_snap %}
     
     # Install MAAS (not using apt module or else bind conflicts with LXD)
-    echo -e "\n\n${BYELLOW}-------- Installing deb MAAS... --------${NC}\n"
+    echo -e "\n${BYELLOW}-------- Installing deb MAAS... --------${NC}\n"
     
     apt-get update
     apt-get install -y maas
@@ -893,7 +893,7 @@ write_files:
 {% endif %}
     
     # Verify critical dependencies
-    echo -e "\n\n${BYELLOW}-------- Verifying dependencies... --------${NC}\n"
+    echo -e "\n${BYELLOW}-------- Verifying dependencies... --------${NC}\n"
     
     for cmd in lxc jq maas sunbeam; do
         if ! command -v $cmd >/dev/null 2>&1; then
@@ -919,14 +919,14 @@ write_files:
 {% if maas_snap %}
     
     # Install PostgreSQL
-    echo -e "\n\n${BYELLOW}-------- Install PostgreSQL... --------${NC}\n"
+    echo -e "\n${BYELLOW}-------- Install PostgreSQL... --------${NC}\n"
     
     systemctl disable --now systemd-timesyncd
     apt-get update
     apt-get install -y postgresql
     
     # Configure PostgreSQL
-    echo -e "\n\n${BYELLOW}-------- Configure PostgreSQL... --------${NC}\n"
+    echo -e "\n${BYELLOW}-------- Configure PostgreSQL... --------${NC}\n"
     
     sudo -i -u postgres psql -c "CREATE USER \"{{ maas_user }}\" WITH ENCRYPTED PASSWORD '{{ maas_password }}'"
     sudo -i -u postgres createdb -O "{{ maas_user }}" "{{ maas_db_name }}"
@@ -935,7 +935,7 @@ write_files:
     systemctl restart postgresql
     
     # Initialise snap MAAS
-    echo -e "\n\n${BYELLOW}-------- Initializing snap MAAS... --------${NC}\n"
+    echo -e "\n${BYELLOW}-------- Initializing snap MAAS... --------${NC}\n"
     
     maas init region+rack --database-uri "postgres://{{ maas_user }}:{{ maas_password }}@$HOSTNAME/{{ maas_db_name }}" --maas-url http://${IP_ADDRESS}:5240/MAAS
     maas createadmin --username {{ maas_user }} --password {{ maas_password }} --email {{ maas_email }} {% if ssh_import_id %}--ssh-import {{ ssh_import_id }}{% endif %}
@@ -943,14 +943,14 @@ write_files:
 {% else %}
     
     # Initialise deb MAAS
-    echo -e "\n\n${BYELLOW}-------- Initializing deb MAAS... --------${NC}\n"
+    echo -e "\n${BYELLOW}-------- Initializing deb MAAS... --------${NC}\n"
     
     maas createadmin --username {{ maas_user }} --password {{ maas_password }} --email {{ maas_email }} {% if ssh_import_id %}--ssh-import {{ ssh_import_id }}{% endif %}
     
 {% endif %}
     
     # Wait for MAAS services to be ready
-    echo -e "\n\n${BYELLOW}-------- Waiting for MAAS API to be ready... --------${NC}\n"
+    echo -e "\n${BYELLOW}-------- Waiting for MAAS API to be ready... --------${NC}\n"
     
     sleep 30
     until maas login {{ maas_user }} 'http://localhost:5240/MAAS/' $(maas apikey --username {{ maas_user }}) > /dev/null 2>&1; do
@@ -959,7 +959,7 @@ write_files:
     done
     
     # Grab API key and login as admin
-    echo -e "\n\n${BYELLOW}-------- Logging in as '{{ maas_user }}' user... --------${NC}\n"
+    echo -e "\n${BYELLOW}-------- Logging in as '{{ maas_user }}' user... --------${NC}\n"
     
     export APIKEY=$(maas apikey --username {{ maas_user }})
     
@@ -976,7 +976,7 @@ write_files:
     maas {{ maas_user }} maas set-config name=kernel_opts value="console=tty1 console=ttyS0,115200 loglevel=4 fsck.mode=auto fsck.repair=yes systemd.show_status=false mitigations=auto nosplash"
     
     # Automatically create and add ssh keys to MAAS
-    echo -e "\n\n${BYELLOW}-------- Generating SSH keys and adding them to MAAS... --------${NC}\n"
+    echo -e "\n${BYELLOW}-------- Generating SSH keys and adding them to MAAS... --------${NC}\n"
     
     ssh-keygen -q -t rsa -N "" -f "/home/{{ sys_user }}/.ssh/id_rsa"
     chown {{ sys_user }}:{{ sys_user }} /home/{{ sys_user }}/.ssh/id_rsa /home/{{ sys_user }}/.ssh/id_rsa.pub
@@ -1002,7 +1002,7 @@ write_files:
     
     # Wait for MAAS to finish background network discovery
     
-    echo -e "\n\n${BYELLOW}-------- Waiting for MAAS to discover subnet {{ maas_cidr }}... --------${NC}\n"
+    echo -e "\n${BYELLOW}-------- Waiting for MAAS to discover subnet '{{ maas_cidr }}'... --------${NC}\n"
     
     ATTEMPTS=0
     MAX_ATTEMPTS=12 # Timeout - 2 min
@@ -1034,7 +1034,7 @@ write_files:
     done
     
     # Configure MAAS networking (set gateways, vlans, DHCP on etc)
-    echo -e "\n\n${BYELLOW}-------- Configuring MAAS networking... --------${NC}\n"
+    echo -e "\n${BYELLOW}-------- Configuring MAAS networking... --------${NC}\n"
     
     export FABRIC_ID=$(maas {{ maas_user }} subnet read "{{ maas_cidr }}" | jq -r ".vlan.fabric_id")
     export VLAN_TAG=$(maas {{ maas_user }} subnet read "{{ maas_cidr }}" | jq -r ".vlan.vid")
@@ -1051,13 +1051,13 @@ write_files:
     maast {{ maas_user }} maas set-config name=upstream_dns value={{ maas_dns }}
     
     # Map network spaces to cloud networks
-    echo -e "\n\n${BYELLOW}-------- Mapping network spaces to cloud networks... --------${NC}\n"
+    echo -e "\n${BYELLOW}-------- Mapping network spaces to cloud networks... --------${NC}\n"
     
     maast {{ maas_user }} spaces create name={{ maas_space }}
     maast {{ maas_user }} vlan update $FABRIC_ID $VLAN_TAG space={{ maas_space }}
     
     # Set the MAAS domain name
-    echo -e "\n\n${BYELLOW}-------- Configuring MAAS domain '{{ tld if tld else 'maas' }}'... --------${NC}\n"
+    echo -e "\n${BYELLOW}-------- Configuring MAAS domain '{{ tld if tld else 'maas' }}'... --------${NC}\n"
     
     # Check if MAAS auto-created the domain during initialization
     EXISTING_DOMAIN_ID=$(maas {{ maas_user }} domains read | jq -r '.[] | select(.name=="'{{ tld if tld else 'maas' }}'") | .id')
@@ -1110,7 +1110,7 @@ write_files:
     source /etc/repro-env
     
     # Configure boot images
-    echo -e "\n\n${BYELLOW}-------- Configuring MAAS boot images... --------${NC}\n"
+    echo -e "\n${BYELLOW}-------- Configuring MAAS boot images... --------${NC}\n"
     
     export BOOT_SOURCE_ID=$(maas {{ maas_user }} boot-sources read | jq -r '.[0].id')
     
@@ -1120,7 +1120,7 @@ write_files:
     maas {{ maas_user }} boot-resources import
     
     # Wait for MAAS boot images to be ready
-    echo -e "\n\n${BYELLOW}-------- Waiting for all MAAS boot images to sync... --------${NC}\n"
+    echo -e "\n${BYELLOW}-------- Waiting for all MAAS boot images to sync... --------${NC}\n"
     
     ATTEMPTS=0
     MAX_ATTEMPTS=60 # Timeout - 30 min
@@ -1180,7 +1180,7 @@ write_files:
 {% if nested_lxd %}
     
     # Generate local LXD trust certificate
-    echo -e "\n\n${BYELLOW}-------- Generating trust certificate for local LXD... --------${NC}\n"
+    echo -e "\n${BYELLOW}-------- Generating trust certificate for local LXD... --------${NC}\n"
     
     openssl req -x509 -newkey rsa:2048 -keyout $LXD_KEY -out $LXD_CERT -nodes -days 3650 -subj "/CN=lxd-local"
     lxc config trust add $LXD_CERT --name lxd-local
@@ -1194,7 +1194,7 @@ write_files:
 {% else %}
     
     # Setup external LXD client certificates and remote connection
-    echo -e "\n\n${BYELLOW}-------- Configuring remote LXD connection... --------${NC}\n"
+    echo -e "\n${BYELLOW}-------- Configuring remote LXD connection... --------${NC}\n"
     
     lxc remote add host-lxd https://$LXD_ADDR --accept-certificate
     lxc remote switch host-lxd
@@ -1212,7 +1212,7 @@ write_files:
 {% if lxd_project != "default" %}
     
     # Switch to LXD MAAS project
-    echo -e "\n\n${BYELLOW}-------- Switching to LXD '{{ lxd_project }}' project... --------${NC}\n"
+    echo -e "\n${BYELLOW}-------- Switching to LXD '{{ lxd_project }}' project... --------${NC}\n"
     
     lxc project switch {{ lxd_project }}
     
@@ -1231,7 +1231,7 @@ write_files:
     source /etc/repro-env
     
     # Create VMs directly via LXD
-    echo -e "\n\n${BYELLOW}-------- Creating empty VMs in LXD... --------${NC}\n"
+    echo -e "\n${BYELLOW}-------- Creating empty VMs in LXD... --------${NC}\n"
     
     i=1
     for HOST in {{ nodes_hostnames }}; do
@@ -1273,14 +1273,14 @@ write_files:
     source /etc/repro-env
     
     # Start VMs to trigger PXE Boot & Enlistment
-    echo -e "\n\n${BYELLOW}-------- Starting VMs for MAAS enlistment... --------${NC}\n"
+    echo -e "\n${BYELLOW}-------- Starting VMs for MAAS enlistment... --------${NC}\n"
     
     for HOST in {{ nodes_hostnames }}; do
         lxc start $HOST
     done
     
     # Wait for VMs to enlist in MAAS via MAC
-    echo -e "\n\n${BYELLOW}-------- Waiting for all VMs to enlist in MAAS... --------${NC}\n"
+    echo -e "\n${BYELLOW}-------- Waiting for all VMs to enlist in MAAS... --------${NC}\n"
     
     ATTEMPTS=0
     MAX_ATTEMPTS=40 # Timeout - 20 min
@@ -1311,7 +1311,7 @@ write_files:
         
         # If the flag is still true, everyone is enlisted -> break the loop
         if [ "$all_enlisted" = true ]; then
-            echo "All VMs have successfully enlisted!"
+            echo -e "All VMs have successfully enlisted!\n"
             lxc list
             sleep 10
             break
@@ -1340,7 +1340,7 @@ write_files:
     source /etc/repro-env
     
     # Create Availability Zones in MAAS
-    echo -e "\n\n${BYELLOW}-------- Creating Availability Zones... --------${NC}\n"
+    echo -e "\n${BYELLOW}-------- Creating Availability Zones... --------${NC}\n"
     for i in $(seq 1 {{ max_ha }}); do
         ZONE="AZ$i"
         if ! maas {{ maas_user }} zones read | jq -e ".[] | select(.name==\"$ZONE\")" > /dev/null; then
@@ -1355,7 +1355,7 @@ write_files:
     maast {{ maas_user }} rack-controller update "$PRIMARY_RACK" zone="AZ1"
     
     # Find machines by MAC and set hostnames, domain, and explicit LXD power controls
-    echo -e "\n\n${BYELLOW}-------- Configuring hostnames and power controls... --------${NC}\n"
+    echo -e "\n${BYELLOW}-------- Configuring hostnames and power controls... --------${NC}\n"
     
     LXD_CERT_CONTENT=$(cat $LXD_CERT)
     LXD_KEY_CONTENT=$(cat $LXD_KEY)
@@ -1393,7 +1393,7 @@ write_files:
     source /etc/repro-env
     
     # Commission machines
-    echo -e "\n\n${BYELLOW}-------- Commissioning machines... --------${NC}\n"
+    echo -e "\n${BYELLOW}-------- Commissioning machines... --------${NC}\n"
     
     for HOST in {{ nodes_hostnames }}; do
         SYSTEM_ID=$(maas {{ maas_user }} machines read hostname=$HOST | jq -r '.[0].system_id')
@@ -1401,7 +1401,7 @@ write_files:
     done
     
     # Wait for VMs to be ready
-    echo -e "\n\n${BYELLOW}-------- Waiting for VMs to enter 'Ready' state... --------${NC}\n"
+    echo -e "\n${BYELLOW}-------- Waiting for VMs to enter 'Ready' state... --------${NC}\n"
     
     ATTEMPTS=0
     MAX_ATTEMPTS=30 # Timeout - 30 min
@@ -1467,7 +1467,7 @@ write_files:
     source /etc/repro-env
     
     # Create tags and add them to commissioned machines
-    echo -e "\n\n${BYELLOW}-------- Creating and adding tags... --------${NC}\n"
+    echo -e "\n${BYELLOW}-------- Creating and adding tags... --------${NC}\n"
     
     maast {{ maas_user }} tags create name=openstack-{{ os_deployment }}
     maast {{ maas_user }} tags create name=control
@@ -1481,7 +1481,7 @@ write_files:
         SYSTEM_ID=$(maas {{ maas_user }} machines read hostname=$HOST | jq -r '.[0].system_id')
         
         # Tag main disks as SSDs
-        echo -e "\n\n${BYELLOW}-------- Tagging main disks as SSDs for '$HOST'... --------${NC}\n"
+        echo -e "\n${BYELLOW}-------- Tagging main disks as SSDs for '$HOST'... --------${NC}\n"
         
         MAIN_BLOCK_ID=$(maas {{ maas_user }} block-devices read $SYSTEM_ID | jq -r '.[] | select(.serial | tostring | contains("lxd_osd") | not) | .id' | head -n 1)
         if [ -n "$MAIN_BLOCK_ID" ] && [ "$MAIN_BLOCK_ID" != "null" ]; then
@@ -1492,7 +1492,7 @@ write_files:
             maast {{ maas_user }} machine set-storage-layout $SYSTEM_ID storage_layout=flat
         fi
         
-        echo -e "\n\n${BYELLOW}-------- Tagging '$HOST'... --------${NC}\n"
+        echo -e "\n${BYELLOW}-------- Tagging '$HOST'... --------${NC}\n"
         
         # Base tag for all nodes
         maast {{ maas_user }} tag update-nodes openstack-{{ os_deployment }} add=$SYSTEM_ID
@@ -1513,7 +1513,7 @@ write_files:
                 maast {{ maas_user }} tag update-nodes network add=$SYSTEM_ID
                 
                 # Tag the ceph osd devices
-                echo -e "\n\n${BYELLOW}-------- Tagging ceph storage for '$HOST'... --------${NC}\n"
+                echo -e "\n${BYELLOW}-------- Tagging ceph storage for '$HOST'... --------${NC}\n"
                 
                 for i in $(seq 1 {{ cloud_osd_count }}); do
                     OSD_BLOCK_ID=$(maas {{ maas_user }} block-devices read $SYSTEM_ID | jq -r '.[] | select(.serial == "lxd_osd'${i}'") | .id')
@@ -1527,7 +1527,7 @@ write_files:
                 done
                 
                 # Tag the additional neutron interface
-                echo -e "\n\n${BYELLOW}-------- Tagging neutron interface for '$HOST'... --------${NC}\n"
+                echo -e "\n${BYELLOW}-------- Tagging neutron interface for '$HOST'... --------${NC}\n"
                 
                 CLOUD_NEUTRON_MAC=$(lxc config get $HOST volatile.eth1.hwaddr)
                 CLOUD_NEUTRON_INTERFACE_ID=$(maas {{ maas_user }} interfaces read $SYSTEM_ID | jq -r '.[] | select(.mac_address=="'$CLOUD_NEUTRON_MAC'") | .id')
@@ -1552,18 +1552,18 @@ write_files:
     source /etc/repro-env
     
     # Prepare machine for Sunbeam usage
-    echo -e "\n\n${BYELLOW}-------- Preparing machine for Sunbeam usage... --------${NC}\n"
+    echo -e "\n${BYELLOW}-------- Preparing machine for Sunbeam usage... --------${NC}\n"
     
     $RUN_AS_LOGIN sunbeam prepare-node-script --client | $RUN_AS_LOGIN bash -x
     
     # Add the Canonical MAAS provider
-    echo -e "\n\n${BYELLOW}-------- Adding the Canonical MAAS provider... --------${NC}\n"
+    echo -e "\n${BYELLOW}-------- Adding the Canonical MAAS provider... --------${NC}\n"
     
     $RUN_AS_LOGIN sunbeam deployment add maas {{ os_deployment }} $APIKEY http://${IP_ADDRESS}:5240/MAAS
     $RUN_AS_LOGIN sunbeam deployment space map {{ maas_space }}
     
     # Validate MAAS provider
-    echo -e "\n\n${BYELLOW}-------- Validating MAAS provider... --------${NC}\n"
+    echo -e "\n${BYELLOW}-------- Validating MAAS provider... --------${NC}\n"
     
     $RUN_AS_LOGIN sunbeam deployment validate
     
@@ -1602,14 +1602,14 @@ write_files:
     
     if [ -f "/etc/manifest.yaml" ]; then
         # Use custom Sunbeam deployment manifest
-        echo -e "\n\n${BYELLOW}-------- Using custom Sunbeam manifest... --------${NC}\n"
+        echo -e "\n${BYELLOW}-------- Using custom Sunbeam manifest... --------${NC}\n"
         # Move it to the user's home directory so Sunbeam can read it
         mv /etc/manifest.yaml "$MANIFEST_FILE"
     elif [ -f "$MANIFEST_FILE" ]; then
-        echo -e "\n\n${BYELLOW}-------- Using existing Sunbeam manifest... --------${NC}\n"
+        echo -e "\n${BYELLOW}-------- Using existing Sunbeam manifest... --------${NC}\n"
     else
         # Generate Sunbeam deployment manifest
-        echo -e "\n\n${BYELLOW}-------- Generating Sunbeam manifest... --------${NC}\n"
+        echo -e "\n${BYELLOW}-------- Generating Sunbeam manifest... --------${NC}\n"
         
         cat <<EOF > "$MANIFEST_FILE"
 {% if os_add_octavia or os_add_magnum or os_add_cos %}
@@ -1709,17 +1709,17 @@ write_files:
     cat "$MANIFEST_FILE"
     
     # Bootstrap the orchestration layer
-    echo -e "\n\n${BYELLOW}-------- Bootstrapping the orchestration layer... --------${NC}\n"
+    echo -e "\n${BYELLOW}-------- Bootstrapping the orchestration layer... --------${NC}\n"
     
     LOGFILE="/tmp/sunbeam-bootstrap.log"
     
     if run_sunbeam "sunbeam cluster bootstrap --accept-defaults --manifest $MANIFEST_FILE" "$LOGFILE"; then
         echo "export BOOTSTRAP_SUCCESS=true" >> /etc/repro-env
         
-        echo -e "\n\n${BYELLOW}-------- Controller Model Status... --------${NC}\n"
+        echo -e "\n${BYELLOW}-------- Controller Model Status... --------${NC}\n"
         $RUN_AS_LOGIN juju status -m controller
         
-        echo -e "\n\n${BYELLOW}-------- OpenStack-Infra Model Status... --------${NC}\n"
+        echo -e "\n${BYELLOW}-------- OpenStack-Infra Model Status... --------${NC}\n"
         $RUN_AS_LOGIN juju status -m openstack-infra
     else
         echo "export BOOTSTRAP_SUCCESS=false" >> /etc/repro-env
@@ -1753,22 +1753,22 @@ write_files:
     fi
     
     # Deploy the cloud
-    echo -e "\n\n${BYELLOW}-------- Deploying the cloud... --------${NC}\n"
+    echo -e "\n${BYELLOW}-------- Deploying the cloud... --------${NC}\n"
     
     LOGFILE="/tmp/sunbeam-deploy.log"
     
     if run_sunbeam "sunbeam cluster deploy --accept-defaults --manifest $MANIFEST_FILE" "$LOGFILE"; then
         echo "export DEPLOY_SUCCESS=true" >> /etc/repro-env
         
-        echo -e "\n\n${BYELLOW}-------- OpenStack-Machines Model Status... --------${NC}\n"
+        echo -e "\n${BYELLOW}-------- OpenStack-Machines Model Status... --------${NC}\n"
         $RUN_AS_LOGIN juju status -m openstack-machines
         
-        echo -e "\n\n${BYELLOW}-------- OpenStack Model Status... --------${NC}\n"
+        echo -e "\n${BYELLOW}-------- OpenStack Model Status... --------${NC}\n"
         $RUN_AS_LOGIN juju status -m openstack
         
 {% if ssh_key %}
         # Auto-inject custom SSH keys into all currently bootstrapped Juju models if a custom manifest was provided
-        echo -e "\n\n${BYELLOW}-------- Injecting external SSH keys into Juju models... --------${NC}\n"
+        echo -e "\n${BYELLOW}-------- Injecting external SSH keys into Juju models... --------${NC}\n"
         
         for model in $($RUN_AS_LOGIN juju models --format json | jq -r '.models[] | select(."model-type" == "iaas") | .name'); do
             echo "Injecting key into machine model '$model'..."
@@ -1810,7 +1810,7 @@ write_files:
     wait_for_model "openstack-machines" || exit 1
     wait_for_model "openstack" || exit 1
     
-    echo -e "\n\n${BYELLOW}-------- Syncing MetalLB VIPs to MAAS DNS... --------${NC}\n"
+    echo -e "\n${BYELLOW}-------- Syncing MetalLB VIPs to MAAS DNS... --------${NC}\n"
     
     CLOUD_IP=$(maas {{ maas_user }} machines read hostname=cloud-1 | jq -r '.[0].ip_addresses[0]')
     SSH_CMD="ssh -i /home/{{ sys_user }}/.ssh/id_rsa -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null -q ubuntu@$CLOUD_IP"
@@ -1865,7 +1865,7 @@ write_files:
     
     resolvectl flush-caches
     
-    echo -e "\n\n${BYELLOW}-------- Waiting for MAAS DNS records to propagate locally... --------${NC}\n"
+    echo -e "\n${BYELLOW}-------- Waiting for MAAS DNS records to propagate locally... --------${NC}\n"
     
     # Compile the list of active hostnames to check
     VALID_HOSTS=""
@@ -1911,17 +1911,21 @@ write_files:
 {% endif %}
     
     # Configure the cloud
-    echo -e "\n\n${BYELLOW}-------- Configuring the cloud... --------${NC}\n"
+    echo -e "\n${BYELLOW}-------- Configuring the cloud... --------${NC}\n"
     
     LOGFILE="/tmp/sunbeam-configure.log"
     
     if run_sunbeam "sunbeam configure --accept-defaults --openrc /home/{{ sys_user }}/demo-openrc --manifest $MANIFEST_FILE" "$LOGFILE"; then
         echo "export CONFIGURE_SUCCESS=true" >> /etc/repro-env
         
-        echo -e "\n\n${BYELLOW}-------- Generating Admin Credentials... --------${NC}\n"
+        echo -e "\n${BYELLOW}-------- Generating Admin Credentials... --------${NC}\n"
         
         $RUN_AS_LOGIN sunbeam openrc > /home/{{ sys_user }}/admin-openrc
         chown {{ sys_user }}:{{ sys_user }} /home/{{ sys_user }}/admin-openrc
+        
+        echo -e "\n${BYELLOW}-------- Sunbeam Cluster List... --------${NC}\n"
+        
+        $RUN_AS_LOGIN sunbeam cluster list
     else
         echo "export CONFIGURE_SUCCESS=false" >> /etc/repro-env
         
@@ -1953,16 +1957,16 @@ write_files:
         exit 1
     fi
     
-    echo -e "\n\n${BYELLOW}-------- Activating Optional Features... --------${NC}"
+    echo -e "\n${BYELLOW}-------- Activating Optional Features... --------${NC}\n"
     
 {% if pro_token %}
-    echo -e "\n-> Enabling Ubuntu Pro..."
+    echo -e "\n${BYELLOW}-------- Enabling Ubuntu Pro... --------${NC}\n"
     run_sunbeam "sunbeam enable pro {{ pro_token }}" "/tmp/sunbeam-pro.log"
 {% endif %}
     
 {% set deploy_vault = os_add_vault or os_add_barbican or os_add_magnum %}
 {% if deploy_vault %}
-    echo -e "\n-> Enabling Vault..."
+    echo -e "\n${BYELLOW}-------- Enabling Vault... --------${NC}\n"
     run_sunbeam "sunbeam enable vault" "/tmp/sunbeam-vault.log"
     
     if grep -q "Root token:" /home/{{ sys_user }}/vault-keys.txt 2>/dev/null; then
@@ -1997,7 +2001,7 @@ write_files:
 {% endif %}
     
 {% if os_add_tls and deploy_vault %}
-    echo -e "\n-> Enabling TLS via Vault for API Endpoints..."
+    echo -e "\n${BYELLOW}-------- Enabling TLS via Vault for API Endpoints... --------${NC}\n"
     
     echo "Creating OpenSSL CA configuration..."
     cat <<EOF > /home/{{ sys_user }}/ca.conf
@@ -2041,20 +2045,20 @@ write_files:
         echo "No CSR found. Vault TLS may not be fully initialized."
     fi
 {% elif os_add_tls %}
-    echo -e "\n-> Enabling TLS self-signed for API Endpoints..."
+    echo -e "\n${BYELLOW}-------- Enabling TLS self-signed for API Endpoints... --------${NC}\n"
     run_sunbeam "sunbeam enable tls self-signed" "/tmp/sunbeam-tls.log"
 {% endif %}
     
 {% if os_add_barbican or os_add_magnum %}
-    echo -e "\n-> Enabling Barbican (Secrets)..."
+    echo -e "\n${BYELLOW}-------- Enabling Barbican (Secrets)... --------${NC}\n"
     run_sunbeam "sunbeam enable secrets" "/tmp/sunbeam-barbican.log"
     wait_for_app "barbican"
 {% endif %}
     
 {% if os_add_octavia or os_add_magnum %}
-    echo -e "\n-> Enabling Octavia (Load Balancer)..."
+    echo -e "\n${BYELLOW}-------- Enabling Octavia (Load Balancer)... --------${NC}\n"
 {% if os_add_amphora %}
-    echo -e "\n-> Enabling snap feature gates for Octavia Amphora..."
+    echo -e "\n${BYELLOW}-------- Enabling snap feature gates for Octavia Amphora... --------${NC}\n"
     snap set openstack feature.loadbalancer-amphora=true # Maybe not needed (?)
     snap set openstack feature.microovn-sdn=true
 {% endif %}
@@ -2063,76 +2067,76 @@ write_files:
 {% endif %}
     
 {% if os_add_masakari %}
-    echo -e "\n-> Enabling Masakari (Instances HA)..."
+    echo -e "\n${BYELLOW}-------- Enabling Masakari (Instances HA)... --------${NC}\n"
     run_sunbeam "sunbeam enable instance-recovery" "/tmp/sunbeam-masakari.log"
     wait_for_app "masakari"
 {% endif %}
     
 {% if os_add_heat %}
-    echo -e "\n-> Enabling Heat (Orchestration)..."
+    echo -e "\n${BYELLOW}-------- Enabling Heat (Orchestration)... --------${NC}\n"
     run_sunbeam "sunbeam enable orchestration" "/tmp/sunbeam-heat.log"
     wait_for_app "heat"
 {% endif %}
     
 {% if os_add_designate %}
-    echo -e "\n-> Enabling Designate (DNS)..."
+    echo -e "\n${BYELLOW}-------- Enabling Designate (DNS)... --------${NC}\n"
     run_sunbeam "sunbeam enable dns 'ns1.{{ tld if tld else 'maas' }}.'" "/tmp/sunbeam-designate.log"
     wait_for_app "designate"
 {% endif %}
     
 {% if os_add_magnum %}
-    echo -e "\n-> Enabling Magnum (Containers as a Service)..."
+    echo -e "\n${BYELLOW}-------- Enabling Magnum (Containers as a Service)... --------${NC}\n"
     run_sunbeam "sunbeam enable caas" "/tmp/sunbeam-magnum.log"
 {% endif %}
     
 {% if os_add_ldap %}
-    echo -e "\n-> Enabling LDAP..."
+    echo -e "\n${BYELLOW}-------- Enabling LDAP... --------${NC}\n"
     run_sunbeam "sunbeam enable ldap" "/tmp/sunbeam-ldap.log"
 {% endif %}
     
 {% if os_add_images %}
-    echo -e "\n-> Enabling Image Sync..."
+    echo -e "\n${BYELLOW}-------- Enabling Image Sync... --------${NC}\n"
     run_sunbeam "sunbeam enable images-sync" "/tmp/sunbeam-images.log"
 {% endif %}
     
 {% if os_add_watcher %}
-    echo -e "\n-> Enabling Watcher (Resource Optimization)..."
+    echo -e "\n${BYELLOW}-------- Enabling Watcher (Resource Optimization)... --------${NC}\n"
     run_sunbeam "sunbeam enable resource-optimization" "/tmp/sunbeam-watcher.log"
 {% endif %}
     
-{% if os_add_maintenance %}
-    echo -e "\n-> Enabling Watcher (Resource Optimization)..."
-    snap set openstack feature.maintenance=true
-    run_sunbeam "sunbeam enable maintenance" "/tmp/sunbeam-maintenance.log"
-{% endif %}
-    
 {% if os_add_telemetry %}
-    echo -e "\n-> Enabling Telemetry (Ceilometer/Aodh)..."
+    echo -e "\n${BYELLOW}-------- Enabling Telemetry (Ceilometer/Aodh)... --------${NC}\n"
     run_sunbeam "sunbeam enable telemetry" "/tmp/sunbeam-telemetry.log"
 {% endif %}
     
 {% if os_add_manila %}
-    echo -e "\n-> Enabling Manila (Shared Filesystems)..."
+    echo -e "\n${BYELLOW}-------- Enabling Manila (Shared Filesystems)... --------${NC}\n"
     snap set openstack feature.shared-filesystem=true
     run_sunbeam "sunbeam enable shared-filesystem" "/tmp/sunbeam-manila.log"
 {% endif %}
     
+{% if os_add_maintenance %}
+    echo -e "\n${BYELLOW}-------- Enabling Maintenance Mode... --------${NC}\n"
+    snap set openstack feature.maintenance=true
+    run_sunbeam "sunbeam enable maintenance" "/tmp/sunbeam-maintenance.log"
+{% endif %}
+    
 {% if os_add_tempest %}
-    echo -e "\n-> Enabling Tempest (Validation)..."
+    echo -e "\n${BYELLOW}-------- Enabling Tempest (Validation)... --------${NC}\n"
     run_sunbeam "sunbeam enable validation" "/tmp/sunbeam-tempest.log"
 {% endif %}
     
 {% if os_add_cos %}
-    echo -e "\n-> Enabling Observability Stack (COS)..."
+    echo -e "\n${BYELLOW}-------- Enabling Observability Stack (COS)... --------${NC}\n"
     run_sunbeam "sunbeam enable observability embedded" "/tmp/sunbeam-cos.log"
 {% endif %}
     
-    echo -e "\n\n${BYELLOW}-------- Listing Enabled Optional Features... --------${NC}"
+    echo -e "\n${BYELLOW}-------- Listing Enabled Optional Features... --------${NC}\n"
     
     $RUN_AS_LOGIN sunbeam list-features
     $RUN_AS_LOGIN sunbeam list-feature-gates
     
-    echo -e "\n\n${BYELLOW}-------- Finished deploying Sunbeam, have fun!... --------${NC}\n"
+    echo -e "\n${BYELLOW}-------- Finished deploying Sunbeam, have fun!... --------${NC}\n"
 
 # ==========================================
 # END OF AUTOMATION SCRIPTS (00 to 15)
