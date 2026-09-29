@@ -15,6 +15,8 @@ When launching this Transcript, `synth` will parse the payload and optionally pr
 
 | Variable | Default Value | Description |
 | :--- | :--- | :--- |
+| update_n_upgrade | True | Auto Update & Upgrade base packages |
+| auto_retry | True | Auto-retry once on Sunbeam deployment timeouts |
 | vm_image | ubuntu:24.04 | Base operating system image for the primary MAAS controller |
 | sys_user | ubuntu | Default system user for SSH access |
 | password | ubuntu | Password for the default system user |
@@ -42,6 +44,26 @@ When launching this Transcript, `synth` will parse the payload and optionally pr
 | os_neutron_cidr | 10.20.0.0/22 | Subnet CIDR for the OpenStack provider network |
 | os_pub_api_ip_count | 50 | Number of IPs to reserve for the OpenStack Public API |
 | os_int_api_ip_count | 50 | Number of IPs to reserve for the OpenStack Internal API |
+| os_pub_api_hostname | public | OpenStack Public API Hostname |
+| os_int_api_hostname | internal | OpenStack Internal API Hostname |
+| os_rgw_api_hostname | rgw | OpenStack RGW API Hostname |
+| os_add_vault | False | Enable Vault |
+| os_add_tls | False | Enable TLS Endpoints |
+| os_add_barbican | False | Enable Barbican |
+| os_add_octavia | False | Enable Octavia |
+| os_add_amphora | False | Enable Octavia Amphora |
+| os_add_masakari | False | Enable Masakari |
+| os_add_heat | False | Enable Heat |
+| os_add_designate | False | Enable Designate |
+| os_add_magnum | False | Enable Magnum |
+| os_add_ldap | False | Enable LDAP |
+| os_add_images | False | Enable Images Sync |
+| os_add_watcher | False | Enable Watcher |
+| os_add_maintenance | False | Enable Maintenance Mode |
+| os_add_telemetry | False | Enable Ceilometer/Aodh |
+| os_add_manila | False | Enable Manila |
+| os_add_tempest | False | Enable Tempest |
+| os_add_cos | False | Enable Observability Stack |
 | maas_cpu | 4 | CPU cores allocated to the MAAS controller |
 | maas_ram | 8GiB | RAM allocated to the MAAS controller |
 | maas_disk | 30GiB | Root disk size for the MAAS controller |
@@ -68,7 +90,7 @@ Accept all default variables and let `synth` auto-generate a deployment ID:
 ./synth Sunbeam/sunbeam.yaml -y
 ```
 
-Deploy with using deb MAAS, prompt for all variables interactively, and assign a specific case number as the deployment ID:
+Deploy using deb MAAS, prompt for all variables interactively, and assign a specific case number as the deployment ID:
 ```bash
 ./synth Sunbeam/sunbeam.yaml -d 00426900
 ```
@@ -78,7 +100,7 @@ Deploy bypassing prompts by passing a pre-generated configuration file from a pr
 ./synth Sunbeam/sunbeam.yaml -c Sunbeam/00426900/config-sunbeam-00426900.yaml
 ```
 
-Deploy using a custom Sunbeam manifest file to override the default cloud generation:
+Deploy using a custom Sunbeam manifest file to override the default cloud generation (it is the user's responsibility to ensure this manifest works - not recommended):
 ```bash
 ./synth Sunbeam/sunbeam.yaml -m custom-manifest.yaml
 ```
@@ -124,6 +146,7 @@ If a specific phase of the deployment fails or times out, you do not need to des
 | `12-sunbeam-bootstrap` | Generates the deployment manifest and bootstraps the Juju controller |
 | `13-sunbeam-deploy` | Executes the main Sunbeam cluster deployment for the OpenStack services |
 | `14-sunbeam-configure` | Runs post-deployment cloud configuration and generates user credentials |
+| `15-sunbeam-addons` | Activates and configures all requested optional addons (Vault, Octavia, etc.) |
 
 ### Why is this useful?
 
@@ -136,4 +159,4 @@ ubuntu@maas-1:~$ 12-sunbeam-bootstrap
 ## Architecture Overview
 * Network Topology: Utilizes a dual-bridge network. The primary bridge handles MAAS provisioning and PXE traffic, while a secondary bridge provides an isolated Neutron provider network for OpenStack traffic.
 * Node Distribution: Features one primary MAAS controller, one dedicated Juju controller, one Sunbeam cluster controller, and one heavy compute node handling the bulk of the virtualization and storage workload.
-* Provisioning Pipeline: Nodes are created natively via the LXD API and commissioned in MAAS. Ceph OSDs are mapped to the compute node as raw block devices. The `sunbeam` CLI is invoked on the primary MAAS controller to validate the MAAS provider, map the network spaces, generate a multi-node manifest, and ultimately execute the cluster bootstrap and cloud configuration sequences.
+* Provisioning Pipeline: Nodes are created natively via the LXD API and commissioned in MAAS. Ceph OSDs are mapped to the compute node as raw block devices. The `sunbeam` CLI is invoked on the primary MAAS controller to validate the MAAS provider, map the network spaces, generate a multi-node manifest, and ultimately execute the cluster bootstrap, cloud configuration, and addon deployment sequences.

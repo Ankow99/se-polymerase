@@ -15,13 +15,16 @@ State & Artifacts
 * `Isolated Directories` - All generated artifacts (logs, certificates, teardown scripts, configurations, and access credentials) are cleanly consolidated into a unique deployment ID folder created right next to your payload.
 * `Declarative Replication` - Saves the deployment state into a reusable `config-<project>.yaml` file inside the unique deployment folder, allowing 1:1 declarative environment replication without prompting.
 * `Manifest Generation` - Generates an `access-<project_name>.txt` manifest containing all URLs, local-forwarding tunnels, passwords, and a final cluster IP inventory table.
-* `Intelligent Teardown` - Generates a bespoke teardown script that wipes the LXD project, networks, and certificates, and finally attempts to cleanly delete the unique deployment folder if left empty.
+* `Intelligent Teardown` - Generates a bespoke teardown script that wipes the LXD project, networks, and certificates, prompts to optionally save your declarative config file, and cleanly deletes the unique deployment folder.
 
 Infrastructure & Provisioning
 * `Dynamic Parsing` - Parses Jinja `cloud-config.yaml` payloads to dynamically calculate hardware requirements and generate interactive CLI prompts.
 * `Host Optimization` - Supports nested LXD architectures or bare-metal LXD daemons, leveraging the host's LXD image cache by default to massively speed up VM provisioning.
 * `Network Provisioning` - Provisions `ipv4.nat` bridges, calculates CIDR gateways, and validates DHCP settings to prevent collisions.
 * `Credential Management` - Auto-injects local or Launchpad SSH keys and establishes secure SSH tunnels for dashboard port-forwarding.
+* `Custom Manifests` - Supports injecting custom Sunbeam `manifest.yaml` files directly via CLI flags to override deployment defaults.
+* `Smart SSH Detection` - Automatically extracts keys from your local `ssh-agent` if standard identity files aren't found, or interactively generates a new RSA pair on the fly if you have none.
+* `Predictable Port Mapping` - Dynamically calculates collision-free, high-range local ports for remote dashboard SSH tunnels based on your unique deployment ID.
 
 ---
 

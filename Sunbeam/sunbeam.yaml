@@ -3,7 +3,7 @@
 
 # ---
 # sunbeam transcript: Automated scalable cloud-init install of Sunbeam using MAAS
-# version: 7.3.0
+# version: 11.3.0
 #
 # Synthesized by: Pablo Gonzalez De Greiff @ Canonical
 # ---
@@ -16,6 +16,7 @@
 {% set custom_nested_lxd = True %}
 {% set custom_maas_snap = True %}
 {% set custom_update_n_upgrade = True %}            # PROMPT:Auto Update & Upgrade
+{% set custom_auto_retry = True %}                  # PROMPT:Auto-Retry Once on Sunbeam Timeouts
 
 # --- Auth & System ---
 {% set custom_repro_name = "sunbeam" %}
@@ -58,6 +59,28 @@
 {% set custom_os_neutron_cidr = "10.20.0.0/22" %}
 {% set custom_os_pub_api_ip_count = 50 %}           # PROMPT:OpenStack Public API Pool Size
 {% set custom_os_int_api_ip_count = 50 %}           # PROMPT:OpenStack Internal API Pool Size
+{% set custom_os_pub_api_hostname = "public" %}     # PROMPT:OpenStack Public API Hostname
+{% set custom_os_int_api_hostname = "internal" %}   # PROMPT:OpenStack Internal API Hostname
+{% set custom_os_rgw_api_hostname = "rgw" %}        # PROMPT:OpenStack RGW API Hostname
+
+# --- OpenStack Addons ---
+{% set custom_os_add_vault = False %}               # PROMPT:Enable Vault
+{% set custom_os_add_tls = False %}                 # PROMPT:Enable TLS Endpoints
+{% set custom_os_add_barbican = False %}            # PROMPT:Enable Barbican
+{% set custom_os_add_octavia = False %}             # PROMPT:Enable Octavia
+{% set custom_os_add_amphora = False %}             # PROMPT:Enable Octavia Amphora
+{% set custom_os_add_masakari = False %}            # PROMPT:Enable Masakari
+{% set custom_os_add_heat = False %}                # PROMPT:Enable Heat
+{% set custom_os_add_designate = False %}           # PROMPT:Enable Designate
+{% set custom_os_add_magnum = False %}              # PROMPT:Enable Magnum
+{% set custom_os_add_ldap = False %}                # PROMPT:Enable LDAP
+{% set custom_os_add_images = False %}              # PROMPT:Enable Images Sync
+{% set custom_os_add_watcher = False %}             # PROMPT:Enable Watcher
+{% set custom_os_add_maintenance = False %}         # PROMPT:Enable Maintenance Mode
+{% set custom_os_add_telemetry = False %}           # PROMPT:Enable Ceilometer/Aodh
+{% set custom_os_add_manila = False %}              # PROMPT:Enable Manila
+{% set custom_os_add_tempest = False %}             # PROMPT:Enable Tempest
+{% set custom_os_add_cos = False %}                 # PROMPT:Enable Observability Stack
 
 # --- Hardware Allocation ---
 # Total: ( CPU = 22 | RAM = 60GiB | DISK = 310GiB )
@@ -89,21 +112,21 @@
 
 # Juju watch trigger message and models (space separated, order matters)
 {% set custom_juju_trigger = "-------- Bootstrapping the orchestration layer... --------" %}
-{% set custom_juju_models = "openstack openstack-machines openstack-infra" %}
+{% set custom_juju_models = "observability openstack openstack-machines openstack-infra" %}
 
 # ==========================================
 # DATASOURCE PARSER (LXD vs Cloud)
 # ==========================================
 
 {% if cloud_name == "lxd" %}
-  {% set meta = {} %}
-  {% for key, value in ds.config.items() %}
-    {% if key.startswith("user_") %}
-      {% set _ = meta.__setitem__(key[5:], value) %}
-    {% endif %}
-  {% endfor %}
+    {% set meta = {} %}
+    {% for key, value in ds.config.items() %}
+        {% if key.startswith("user_") %}
+            {% set _ = meta.__setitem__(key[5:], value) %}
+        {% endif %}
+    {% endfor %}
 {% else %}
-  {% set meta = ds.meta_data.get("meta") if ds.meta_data.get("meta") else {} %}
+    {% set meta = ds.meta_data.get("meta") if ds.meta_data.get("meta") else {} %}
 {% endif %}
 
 # ==========================================
@@ -116,7 +139,8 @@
 {% set password = meta.get("password") or custom_password %}
 {% set pro_token = meta.get("pro_token") or custom_pro_token %}
 {% set hostname_base = meta.get("hostname") or custom_hostname %}
-{% set tld = meta.get("tld") or custom_tld %}
+{% set _raw_tld = meta.get("tld") if meta.get("tld") is not none else custom_tld %}
+{% set tld = "" if _raw_tld | string | lower in ['none', 'false', 'null', ''] else _raw_tld %}
 {% set timezone = meta.get("timezone") or custom_timezone %}
 
 {% set lxd_channel = meta.get("lxd_channel") or custom_lxd_channel %}
@@ -144,6 +168,36 @@
 {% set os_neutron_cidr = meta.get("os_neutron_cidr") or custom_os_neutron_cidr %}
 {% set os_pub_api_ip_count = meta.get("os_pub_api_ip_count") | default(custom_os_pub_api_ip_count, true) | int %}
 {% set os_int_api_ip_count = meta.get("os_int_api_ip_count") | default(custom_os_int_api_ip_count, true) | int %}
+
+{% set _raw_pub = meta.get("os_pub_api_hostname") if meta.get("os_pub_api_hostname") is not none else custom_os_pub_api_hostname %}
+{% set os_pub_api_hostname = "" if _raw_pub | string | lower in ['none', 'false', 'null', ''] else _raw_pub %}
+{% set _raw_int = meta.get("os_int_api_hostname") if meta.get("os_int_api_hostname") is not none else custom_os_int_api_hostname %}
+{% set os_int_api_hostname = "" if _raw_int | string | lower in ['none', 'false', 'null', ''] else _raw_int %}
+{% set _raw_rgw = meta.get("os_rgw_api_hostname") if meta.get("os_rgw_api_hostname") is not none else custom_os_rgw_api_hostname %}
+{% set os_rgw_api_hostname = "" if _raw_rgw | string | lower in ['none', 'false', 'null', ''] else _raw_rgw %}
+
+{% set pub_fqdn = (os_pub_api_hostname ~ '.' ~ (tld if tld else 'maas')) if (os_pub_api_hostname and '.' not in os_pub_api_hostname) else os_pub_api_hostname %}
+{% set int_fqdn = (os_int_api_hostname ~ '.' ~ (tld if tld else 'maas')) if (os_int_api_hostname and '.' not in os_int_api_hostname) else os_int_api_hostname %}
+{% set rgw_fqdn = (os_rgw_api_hostname ~ '.' ~ (tld if tld else 'maas')) if (os_rgw_api_hostname and '.' not in os_rgw_api_hostname) else os_rgw_api_hostname %}
+
+{% set os_add_vault = meta.get("os_add_vault") | default(custom_os_add_vault, true) | string | lower == "true" %}
+{% set os_add_tls = meta.get("os_add_tls") | default(custom_os_add_tls, true) | string | lower == "true" %}
+{% set os_add_barbican = meta.get("os_add_barbican") | default(custom_os_add_barbican, true) | string | lower == "true" %}
+{% set os_add_octavia = meta.get("os_add_octavia") | default(custom_os_add_octavia, true) | string | lower == "true" %}
+{% set os_add_amphora = meta.get("os_add_amphora") | default(custom_os_add_amphora, true) | string | lower == "true" %}
+{% set os_add_masakari = meta.get("os_add_masakari") | default(custom_os_add_masakari, true) | string | lower == "true" %}
+{% set os_add_heat = meta.get("os_add_heat") | default(custom_os_add_heat, true) | string | lower == "true" %}
+{% set os_add_designate = meta.get("os_add_designate") | default(custom_os_add_designate, true) | string | lower == "true" %}
+{% set os_add_magnum = meta.get("os_add_magnum") | default(custom_os_add_magnum, true) | string | lower == "true" %}
+{% set os_add_ldap = meta.get("os_add_ldap") | default(custom_os_add_ldap, true) | string | lower == "true" %}
+{% set os_add_images = meta.get("os_add_images") | default(custom_os_add_images, true) | string | lower == "true" %}
+{% set os_add_watcher = meta.get("os_add_watcher") | default(custom_os_add_watcher, true) | string | lower == "true" %}
+{% set os_add_maintenance = meta.get("os_add_maintenance") | default(custom_os_add_maintenance, true) | string | lower == "true" %}
+{% set os_add_telemetry = meta.get("os_add_telemetry") | default(custom_os_add_telemetry, true) | string | lower == "true" %}
+{% set os_add_manila = meta.get("os_add_manila") | default(custom_os_add_manila, true) | string | lower == "true" %}
+{% set os_add_tempest = meta.get("os_add_tempest") | default(custom_os_add_tempest, true) | string | lower == "true" %}
+{% set os_add_cos = meta.get("os_add_cos") | default(custom_os_add_cos, true) | string | lower == "true" %}
+
 {% set os_manifest_b64 = meta.get("os_manifest_b64") %}
 
 {% set juju_ha = meta.get("juju_ha") | default(custom_juju_ha, true) | int %}
@@ -164,27 +218,33 @@
 {% set cloud_osd_count = meta.get("cloud_osd_count") | default(custom_cloud_osd_count, true) | int %}
 
 {% if meta.get("nested_lxd") is not none %}
-  {% set nested_lxd = (meta.get("nested_lxd") | string | lower == "true") %}
+    {% set nested_lxd = (meta.get("nested_lxd") | string | lower == "true") %}
 {% else %}
-  {% set nested_lxd = (custom_nested_lxd | string | lower == "true") %}
+    {% set nested_lxd = (custom_nested_lxd | string | lower == "true") %}
 {% endif %}
 
 {% if meta.get("maas_snap") is not none %}
-  {% set maas_snap = (meta.get("maas_snap") | string | lower == "true") %}
+    {% set maas_snap = (meta.get("maas_snap") | string | lower == "true") %}
 {% else %}
-  {% set maas_snap = (custom_maas_snap | string | lower == "true") %}
+    {% set maas_snap = (custom_maas_snap | string | lower == "true") %}
 {% endif %}
 
 {% if meta.get("update_n_upgrade") is not none %}
-  {% set update_n_upgrade = (meta.get("update_n_upgrade") | string | lower == "true") %}
+    {% set update_n_upgrade = (meta.get("update_n_upgrade") | string | lower == "true") %}
 {% else %}
-  {% set update_n_upgrade = (custom_update_n_upgrade | string | lower == "true") %}
+    {% set update_n_upgrade = (custom_update_n_upgrade | string | lower == "true") %}
 {% endif %}
 
 {% if meta.get("os_run_demo") is not none %}
-  {% set os_run_demo = (meta.get("os_run_demo") | string | lower == "true") %}
+    {% set os_run_demo = (meta.get("os_run_demo") | string | lower == "true") %}
 {% else %}
-  {% set os_run_demo = (custom_os_run_demo | string | lower == "true") %}
+    {% set os_run_demo = (custom_os_run_demo | string | lower == "true") %}
+{% endif %}
+
+{% if meta.get("auto_retry") is not none %}
+    {% set auto_retry = (meta.get("auto_retry") | string | lower == "true") %}
+{% else %}
+    {% set auto_retry = (custom_auto_retry | string | lower == "true") %}
 {% endif %}
 
 # ==========================================
@@ -214,26 +274,26 @@
 
 # 1. Generate Juju Controllers
 {% for i in range(1, juju_ha + 1) %}
-  {% set _ = hostnames_list.append("juju-controller-" ~ i) %}
-  {% set _ = cpus_list.append(juju_cpu) %}
-  {% set _ = rams_list.append(juju_ram) %}
-  {% set _ = disks_list.append(juju_disk) %}
+    {% set _ = hostnames_list.append("juju-controller-" ~ i) %}
+    {% set _ = cpus_list.append(juju_cpu) %}
+    {% set _ = rams_list.append(juju_ram) %}
+    {% set _ = disks_list.append(juju_disk) %}
 {% endfor %}
 
 # 2. Generate Sunbeam Controllers
 {% for i in range(1, sunbeam_ha + 1) %}
-  {% set _ = hostnames_list.append("sunbeam-controller-" ~ i) %}
-  {% set _ = cpus_list.append(sunbeam_cpu) %}
-  {% set _ = rams_list.append(sunbeam_ram) %}
-  {% set _ = disks_list.append(sunbeam_disk) %}
+    {% set _ = hostnames_list.append("sunbeam-controller-" ~ i) %}
+    {% set _ = cpus_list.append(sunbeam_cpu) %}
+    {% set _ = rams_list.append(sunbeam_ram) %}
+    {% set _ = disks_list.append(sunbeam_disk) %}
 {% endfor %}
 
 # 3. Generate Cloud Nodes
 {% for i in range(1, cloud_ha + 1) %}
-  {% set _ = hostnames_list.append("cloud-" ~ i) %}
-  {% set _ = cpus_list.append(cloud_cpu) %}
-  {% set _ = rams_list.append(cloud_ram) %}
-  {% set _ = disks_list.append(cloud_disk) %}
+    {% set _ = hostnames_list.append("cloud-" ~ i) %}
+    {% set _ = cpus_list.append(cloud_cpu) %}
+    {% set _ = rams_list.append(cloud_ram) %}
+    {% set _ = disks_list.append(cloud_disk) %}
 {% endfor %}
 
 # Compile final strings
@@ -249,8 +309,8 @@
 # Dynamic Nested Storage Calculation
 {% set ns = namespace(total_storage=0) %}
 {% for disk in nodes_disks.split(' ') %}
-  {% set disk_val = disk | replace('GiB', '') | replace('GB', '') | int %}
-  {% set ns.total_storage = ns.total_storage + disk_val %}
+    {% set disk_val = disk | replace('GiB', '') | replace('GB', '') | int %}
+    {% set ns.total_storage = ns.total_storage + disk_val %}
 {% endfor %}
 
 # Add the specific Cloud OSD disk(s) and a 10GB buffer
@@ -385,7 +445,7 @@ write_files:
 - path: /etc/profile.d/maas-login.sh
   permissions: '0644'
   content: |
-    if [ "$USER" = "{{ sys_user }}" ]; then
+    if [ "$USER" = "{{ sys_user }}" ] || [ "$USER" = "root" ]; then
         IS_NESTED_LXD="{{ 'true' if nested_lxd else 'false' }}"
         LXD_PROJECT="{{ lxd_project }}"
         ADMIN_USER="{{ maas_user }}"
@@ -548,6 +608,112 @@ write_files:
             ;;
     esac
 
+# Sunbeam function to simplify automated usage - run_sunbeam "command" [logfile]
+- path: /usr/local/bin/run_sunbeam
+  permissions: '0755'
+  content: |
+    #!/bin/bash
+    
+    # Source the environment variables so it has $RUN_AS_LOGIN, $AUTO_RETRY, $BRED, etc.
+    if [ -f "/etc/repro-env" ]; then
+        source /etc/repro-env
+    else
+        echo "Error: /etc/repro-env not found."
+        exit 1
+    fi
+    
+    cmd="$1"
+    log_file="$2"
+    exit_code=0
+    
+    if [ -z "$log_file" ]; then
+        # No log file provided, just print cleanly to stdout
+        $RUN_AS_LOGIN script -q -e -f -c "$cmd" /dev/null | sed -u -e 's/\r$//' -e 's/.*\r//'
+        exit_code=${PIPESTATUS[0]}
+    else
+        > "$log_file" # Clean the log file on the first run
+        $RUN_AS_LOGIN script -q -e -f -c "$cmd" /dev/null | sed -u -e 's/\r$//' -e 's/.*\r//' | tee "$log_file"
+        exit_code=${PIPESTATUS[0]}
+        
+        # Auto-retry once if a Juju timeout is detected
+        if [ "$AUTO_RETRY" = "true" ] && [ $exit_code -ne 0 ] && grep -q "wait timed out after" "$log_file"; then
+            echo -e "\n${BYELLOW}Timeout detected. Waiting 60s and retrying once...${NC}\n"
+            sleep 60
+            $RUN_AS_LOGIN script -q -e -f -c "$cmd" /dev/null | sed -u -e 's/\r$//' -e 's/.*\r//' | tee -a "$log_file"
+            exit_code=${PIPESTATUS[0]}
+        fi
+        
+        # Warn user and show logfile command if the run failed
+        if [ $exit_code -ne 0 ]; then
+            echo -e "\n${BRED}Command failed. To check the logfile for errors, run:${NC} less -R $log_file\n"
+        fi
+    fi
+    
+    # Return the exit code of 'script', bypassing sed/tee
+    echo -ne "\033[?25h" # Force cursor to reappear
+    exit $exit_code
+
+# Sunbeam helper: Wait for an entire model to stabilize - wait_for_model <model>
+- path: /usr/local/bin/wait_for_model
+  permissions: '0755'
+  content: |
+    #!/bin/bash
+    
+    # Source the environment variables so it has $RUN_AS_LOGIN, $AUTO_RETRY, $BRED, etc.
+    if [ -f "/etc/repro-env" ]; then
+        source /etc/repro-env
+    else
+        echo "Error: /etc/repro-env not found."
+        exit 1
+    fi
+    
+    MODEL="$1"
+    
+    if [ -z "$MODEL" ]; then
+        echo "Usage: wait_for_model <model-name>"
+        exit 1
+    fi
+    
+    echo -e "\n${BYELLOW}-------- Waiting for '$MODEL' model to stabilize... --------${NC}\n"
+    
+    if ! $RUN_AS_LOGIN juju wait-for model "$MODEL" --timeout=30m --query='life=="alive" && status=="available" && forEach(applications, app => app.status == "active")'; then
+        echo -e "  [${BRED}!!${NC}] Timed out waiting for '$MODEL' model to stabilize.  Aborting."
+        exit 1
+    else
+        echo -e "  [${BGREEN}OK${NC}] The '$MODEL' model is stable!"
+    fi
+
+# Sunbeam helper: Wait for an application to become active - wait_for_app <app> [model] [unit_count]
+- path: /usr/local/bin/wait_for_app
+  permissions: '0755'
+  content: |
+    #!/bin/bash
+    
+    if [ -f "/etc/repro-env" ]; then source /etc/repro-env; fi
+    
+    APP="$1"
+    MODEL="${2:-openstack}"
+    UNIT_COUNT="$3"
+    
+    if [ -z "$APP" ]; then
+        echo "Usage: wait_for_app <application-name> [model-name] [unit-count]"
+        exit 1
+    fi
+    
+    echo -e "\n${BYELLOW}-------- Waiting for '$APP' to reach 'active' state in model '$MODEL'... --------${NC}\n"
+    
+    QUERY='life=="alive" && status=="active"'
+    if [ -n "$UNIT_COUNT" ]; then
+        QUERY="life==\"alive\" && status==\"active\" && len(units) == $UNIT_COUNT"
+    fi
+    
+    if ! $RUN_AS_LOGIN juju wait-for application "$APP" -m "$MODEL" --timeout=20m --query="$QUERY"; then
+        echo -e "  [${BRED}!!${NC}] $APP failed to become active within the timeout. Aborting."
+        exit 1
+    else
+        echo -e "  [${BGREEN}OK${NC}] $APP is Active!"
+    fi
+
 - path: /etc/profile.d/default-editor.sh
   permissions: '0644'
   content: |
@@ -574,7 +740,7 @@ write_files:
 {% endif %}
 
 # ==========================================
-# START OF AUTOMATION SCRIPTS (00 to 14)
+# START OF AUTOMATION SCRIPTS (00 to 15)
 # ==========================================
 
 - path: /usr/local/bin/00-generate-env
@@ -626,6 +792,7 @@ write_files:
     export LXD_CERT="$LXD_CERT"
     export LXD_KEY="$LXD_KEY"
     export MANIFEST_FILE="/home/{{ sys_user }}/manifest.yaml"
+    export AUTO_RETRY="{{ 'true' if auto_retry else 'false' }}"
     EOF
     
     # 3. Secure the state file (Only root and sys_user can read it)
@@ -644,9 +811,12 @@ write_files:
         dhcp_count = int('{{ maas_ip_count }}')
         int_count  = int('{{ os_int_api_ip_count }}')
         pub_count  = int('{{ os_pub_api_ip_count }}')
+        masakari   = '{{ "true" if os_add_masakari else "false" }}' == 'true'
         
-        # Ensure the subnet is large enough to hold the requested IPs + Gateway + Static
-        total_needed = dhcp_count + int_count + pub_count + 5
+        instance_rec = 1 if masakari else 0
+        
+        # Ensure the subnet is large enough (dhcp + int + pub + instance_rec + 5 static)
+        total_needed = dhcp_count + int_count + pub_count + instance_rec + 5
         if len(hosts) < total_needed:
             sys.stderr.write(f'CRITICAL: Subnet {net} is too small to fit the requested IP ranges!\n')
             sys.exit(1)
@@ -670,6 +840,11 @@ write_files:
         print(f'export OS_INTERNAL_API_IP_END={int_e}')
         print(f'export OS_PUBLIC_API_IP_START={pub_s}')
         print(f'export OS_PUBLIC_API_IP_END={pub_e}')
+        
+        if masakari:
+            instance_rec_ip = hosts[-(dhcp_count + int_count + pub_count + 1)]
+            print(f'export OS_INST_REC_IP={instance_rec_ip}')
+        
     except Exception as e:
         sys.stderr.write(f'IP Math Error: {e}\n')
         sys.exit(1)
@@ -690,6 +865,10 @@ write_files:
     echo "Public API IP Count    - {{ os_pub_api_ip_count }}"
     echo "Public API IP Start    - $OS_PUBLIC_API_IP_START"
     echo "Public API IP End      - $OS_PUBLIC_API_IP_END"
+{% if os_add_masakari %}
+    echo ""
+    echo "Instance Recovery IP   - $OS_INST_REC_IP"
+{% endif %}
 
 - path: /usr/local/bin/01-verify-deps
   permissions: '0755'
@@ -717,11 +896,11 @@ write_files:
     echo -e "\n\n${BYELLOW}-------- Verifying dependencies... --------${NC}\n"
     
     for cmd in lxc jq maas sunbeam; do
-      if ! command -v $cmd >/dev/null 2>&1; then
-        echo "CRITICAL ERROR: Required command '$cmd' not found."
-        echo "Snap/apt package installation likely failed due to a network error."
-        exit 1
-      fi
+        if ! command -v $cmd >/dev/null 2>&1; then
+            echo "CRITICAL ERROR: Required command '$cmd' not found."
+            echo "Snap/apt package installation likely failed due to a network error."
+            exit 1
+        fi
     done
     echo "All dependencies verified successfully!"
 
@@ -775,8 +954,8 @@ write_files:
     
     sleep 30
     until maas login {{ maas_user }} 'http://localhost:5240/MAAS/' $(maas apikey --username {{ maas_user }}) > /dev/null 2>&1; do
-      echo "MAAS is not ready yet (502). Retrying in 30 seconds..."
-      sleep 30
+        echo "MAAS is not ready yet (502). Retrying in 30 seconds..."
+        sleep 30
     done
     
     # Grab API key and login as admin
@@ -825,25 +1004,33 @@ write_files:
     
     echo -e "\n\n${BYELLOW}-------- Waiting for MAAS to discover subnet {{ maas_cidr }}... --------${NC}\n"
     
+    ATTEMPTS=0
+    MAX_ATTEMPTS=12 # Timeout - 2 min
     while true; do
-      missing_subnet=false
-      
-      # Check if the subnet exists in the MAAS database
-      if maas {{ maas_user }} subnets read | jq -e ".[] | select(.cidr == \"{{ maas_cidr }}\")" > /dev/null 2>&1; then
-        echo -e "  [${BGREEN}OK${NC}] Subnet '{{ maas_cidr }}' has been discovered!"
-      else
-        echo "  [..] Subnet '{{ maas_cidr }}' is currently syncing/discovering..."
-        missing_subnet=true
-      fi
-      
-      # Check for missing subnets
-      if [ "$missing_subnet" = "false" ]; then
-        echo "Target subnet '{{ maas_cidr }}' is fully populated!"
-        break
-      fi
-      
-      echo "Subnet '{{ maas_cidr }}' not yet discovered by rack controller. Retrying in 10 seconds..."
-      sleep 10
+        missing_subnet=false
+        
+        # Check if the subnet exists in the MAAS database
+        if maas {{ maas_user }} subnets read | jq -e ".[] | select(.cidr == \"{{ maas_cidr }}\")" > /dev/null 2>&1; then
+            echo -e "  [${BGREEN}OK${NC}] Subnet '{{ maas_cidr }}' has been discovered!"
+        else
+            echo "  [..] Subnet '{{ maas_cidr }}' is currently syncing/discovering..."
+            missing_subnet=true
+        fi
+        
+        # Check for missing subnets
+        if [ "$missing_subnet" = "false" ]; then
+            echo "Target subnet '{{ maas_cidr }}' is fully populated!"
+            break
+        fi
+        
+        ATTEMPTS=$((ATTEMPTS+1))
+        if [ $ATTEMPTS -ge $MAX_ATTEMPTS ]; then
+            echo -e "\n${BRED}[FATAL] Timeout waiting for MAAS to discover subnet. Aborting.${NC}\n"
+            exit 1
+        fi
+        
+        echo "Subnet '{{ maas_cidr }}' not yet discovered by rack controller. Retrying in 10 seconds (Attempt $ATTEMPTS/$MAX_ATTEMPTS)..."
+        sleep 10
     done
     
     # Configure MAAS networking (set gateways, vlans, DHCP on etc)
@@ -857,32 +1044,39 @@ write_files:
     maast {{ maas_user }} ipranges create type=dynamic start_ip=$MAAS_RESERVED_IP_START end_ip=$MAAS_RESERVED_IP_END
     maast {{ maas_user }} ipranges create type=reserved start_ip=$OS_INTERNAL_API_IP_START end_ip=$OS_INTERNAL_API_IP_END comment="{{ os_deployment }}-internal-api"
     maast {{ maas_user }} ipranges create type=reserved start_ip=$OS_PUBLIC_API_IP_START end_ip=$OS_PUBLIC_API_IP_END comment="{{ os_deployment }}-public-api"
+{% if os_add_masakari %}
+    #maast {{ maas_user }} ipranges create type=reserved start_ip=$OS_INST_REC_IP end_ip=$OS_INST_REC_IP comment="{{ os_deployment }}-storage-ippool"
+{% endif %}
     maast {{ maas_user }} vlan update $FABRIC_ID $VLAN_TAG dhcp_on=true primary_rack=$PRIMARY_RACK
     maast {{ maas_user }} maas set-config name=upstream_dns value={{ maas_dns }}
     
-    # Set the MAAS domain name
+    # Map network spaces to cloud networks
+    echo -e "\n\n${BYELLOW}-------- Mapping network spaces to cloud networks... --------${NC}\n"
     
+    maast {{ maas_user }} spaces create name={{ maas_space }}
+    maast {{ maas_user }} vlan update $FABRIC_ID $VLAN_TAG space={{ maas_space }}
+    
+    # Set the MAAS domain name
     echo -e "\n\n${BYELLOW}-------- Configuring MAAS domain '{{ tld if tld else 'maas' }}'... --------${NC}\n"
     
     # Check if MAAS auto-created the domain during initialization
     EXISTING_DOMAIN_ID=$(maas {{ maas_user }} domains read | jq -r '.[] | select(.name=="'{{ tld if tld else 'maas' }}'") | .id')
     
     if [ -n "$EXISTING_DOMAIN_ID" ] && [ "$EXISTING_DOMAIN_ID" != "null" ]; then
-      echo "Domain '{{ tld if tld else 'maas' }}' already exists! Setting as default and authoritative..."
-      export MAAS_DOMAIN_NAME_ID=$EXISTING_DOMAIN_ID
-      maast {{ maas_user }} domain update $MAAS_DOMAIN_NAME_ID authoritative=true
-      maast {{ maas_user }} domain set-default $MAAS_DOMAIN_NAME_ID
+        echo "Domain '{{ tld if tld else 'maas' }}' already exists! Setting as default and authoritative..."
+        export MAAS_DOMAIN_NAME_ID=$EXISTING_DOMAIN_ID
+        maast {{ maas_user }} domain update $MAAS_DOMAIN_NAME_ID authoritative=true
+        maast {{ maas_user }} domain set-default $MAAS_DOMAIN_NAME_ID
     else
-      echo "Domain not found. Renaming default domain to '{{ tld if tld else 'maas' }}'..."
-      export MAAS_DOMAIN_NAME_ID=$(maas {{ maas_user }} domains read | jq -r '.[] | select(.is_default==true) | .id')
-      maast {{ maas_user }} domain update $MAAS_DOMAIN_NAME_ID name={{ tld if tld else 'maas' }} authoritative=true
+        echo "Domain not found. Renaming default domain to '{{ tld if tld else 'maas' }}'..."
+        export MAAS_DOMAIN_NAME_ID=$(maas {{ maas_user }} domains read | jq -r '.[] | select(.is_default==true) | .id')
+        maast {{ maas_user }} domain update $MAAS_DOMAIN_NAME_ID name={{ tld if tld else 'maas' }} authoritative=true
     fi
     
     # Update the rack controller to use the correct domain
     maast {{ maas_user }} rack-controller update $PRIMARY_RACK domain={{ tld if tld else 'maas' }}
     
     # Add MAAS DNS to host
-    
     cat <<EOF > /etc/netplan/99-maas-dns.yaml
     network:
       version: 2
@@ -899,8 +1093,6 @@ write_files:
     
     # Persist dynamic networking variables
     cat <<EOF >> /etc/repro-env
-    export FABRIC_ID="$FABRIC_ID"
-    export VLAN_TAG="$VLAN_TAG"
     export PRIMARY_RACK="$PRIMARY_RACK"
     export MAAS_DOMAIN_NAME_ID="$MAAS_DOMAIN_NAME_ID"
     EOF
@@ -923,46 +1115,54 @@ write_files:
     export BOOT_SOURCE_ID=$(maas {{ maas_user }} boot-sources read | jq -r '.[0].id')
     
     for RELEASE in {{ maas_images }}; do
-      maast {{ maas_user }} boot-source-selections create $BOOT_SOURCE_ID os="ubuntu" release="$RELEASE" arches="amd64" labels='*' subarches='*'
+        maast {{ maas_user }} boot-source-selections create $BOOT_SOURCE_ID os="ubuntu" release="$RELEASE" arches="amd64" labels='*' subarches='*'
     done
     maas {{ maas_user }} boot-resources import
     
     # Wait for MAAS boot images to be ready
     echo -e "\n\n${BYELLOW}-------- Waiting for all MAAS boot images to sync... --------${NC}\n"
     
+    ATTEMPTS=0
+    MAX_ATTEMPTS=60 # Timeout - 30 min
     while true; do
-      missing_images=false
-      
-      importing_status=$(maas {{ maas_user }} boot-resources is-importing)
-      requested_releases=$(maas {{ maas_user }} boot-source-selections read $BOOT_SOURCE_ID | jq -r '.[].release')
-      downloaded_releases=$(maas {{ maas_user }} boot-resources read | jq -r '.[].name' | sort | uniq)
-      
-      # Check if the image has been downloaded
-      for release in $requested_releases; do
-        if echo "$downloaded_releases" | grep -q "$release"; then
-           # Image exists. Now check if import is finished
-           if [ "$importing_status" = "false" ]; then
-               echo -e "  [${BGREEN}OK${NC}] Image '$release' has downloaded!"
-           else
-               echo "  [..] Image '$release' is currently syncing..."
-               missing_images=true
-           fi
-        else
-           echo "  [??] Image '$release' was not found in boot resources..."
-           missing_images=true
+        missing_images=false
+        
+        importing_status=$(maas {{ maas_user }} boot-resources is-importing)
+        requested_releases=$(maas {{ maas_user }} boot-source-selections read $BOOT_SOURCE_ID | jq -r '.[].release')
+        downloaded_releases=$(maas {{ maas_user }} boot-resources read | jq -r '.[].name' | sort | uniq)
+        
+        # Check if the image has been downloaded
+        for release in $requested_releases; do
+            if echo "$downloaded_releases" | grep -q "$release"; then
+                # Image exists. Now check if import is finished
+                if [ "$importing_status" = "false" ]; then
+                    echo -e "  [${BGREEN}OK${NC}] Image '$release' has downloaded!"
+                else
+                    echo "  [..] Image '$release' is currently syncing..."
+                    missing_images=true
+                fi
+            else
+                echo "  [??] Image '$release' was not found in boot resources..."
+                missing_images=true
+            fi
+        done
+        
+        # Check for missing images
+        if [ "$missing_images" = "false" ]; then
+            clean_list=$(echo "$requested_releases" | tr '\n' ' ')
+            echo "All selected boot images ( $clean_list) are fully synced!"
+            maast {{ maas_user }} boot-resources read
+            break
         fi
-      done
-      
-      # Check for missing images
-      if [ "$missing_images" = "false" ]; then
-        clean_list=$(echo "$requested_releases" | tr '\n' ' ')
-        echo "All selected boot images ( $clean_list) are fully synced!"
-        maast {{ maas_user }} boot-resources read
-        break
-      fi
-      
-      echo "Some images are missing. Waiting 30s..."
-      sleep 30
+        
+        ATTEMPTS=$((ATTEMPTS+1))
+        if [ $ATTEMPTS -ge $MAX_ATTEMPTS ]; then
+            echo -e "\n${BRED}[FATAL] Timeout waiting for MAAS boot images to sync. Aborting.${NC}\n"
+            exit 1
+        fi
+        
+        echo "Some images are missing. Waiting 30s (Attempt $ATTEMPTS/$MAX_ATTEMPTS)..."
+        sleep 30
     done
 
 - path: /usr/local/bin/05-lxd-setup
@@ -1035,29 +1235,29 @@ write_files:
     
     i=1
     for HOST in {{ nodes_hostnames }}; do
-      CPU=$(echo "{{ nodes_cpus }}" | cut -d' ' -f$i)
-      RAM=$(echo "{{ nodes_rams }}" | cut -d' ' -f$i)
-      DISK=$(echo "{{ nodes_disks }}" | cut -d' ' -f$i)
-      
-      lxc init "$HOST" --vm --empty -c limits.cpu="$CPU" -c limits.memory="$RAM" -d root,size="$DISK"
-      
-      i=$((i + 1))
+        CPU=$(echo "{{ nodes_cpus }}" | cut -d' ' -f$i)
+        RAM=$(echo "{{ nodes_rams }}" | cut -d' ' -f$i)
+        DISK=$(echo "{{ nodes_disks }}" | cut -d' ' -f$i)
+        
+        lxc init "$HOST" --vm --empty -c limits.cpu="$CPU" -c limits.memory="$RAM" -d root,size="$DISK"
+        
+        i=$((i + 1))
     done
     
     # Attach specific extra devices to the cloud nodes
     for HOST in {{ nodes_hostnames }}; do
-      case "$HOST" in
-        cloud-*)
-          # Loop to create and attach multiple OSD disks
-          for i in $(seq 1 {{ cloud_osd_count }}); do
-            lxc storage volume create {{ lxd_pool }} ${HOST}-osd${i}-disk size={{ cloud_osd_disk }} --type=block
-            lxc config device add $HOST osd${i} disk pool={{ lxd_pool }} source=${HOST}-osd${i}-disk
-          done
-          
-          # Attach Neutron networking
-          lxc config device add $HOST eth1 nic nictype=bridged parent="{{ os_neutron_bridge }}"
-          ;;
-      esac
+        case "$HOST" in
+            cloud-*)
+                # Loop to create and attach multiple OSD disks
+                for i in $(seq 1 {{ cloud_osd_count }}); do
+                    lxc storage volume create {{ lxd_pool }} ${HOST}-osd${i}-disk size={{ cloud_osd_disk }} --type=block
+                    lxc config device add $HOST osd${i} disk pool={{ lxd_pool }} source=${HOST}-osd${i}-disk
+                done
+                
+                # Attach Neutron networking
+                lxc config device add $HOST eth1 nic nictype=bridged parent="{{ os_neutron_bridge }}"
+                ;;
+        esac
     done
 
 - path: /usr/local/bin/07-maas-enlist
@@ -1076,42 +1276,55 @@ write_files:
     echo -e "\n\n${BYELLOW}-------- Starting VMs for MAAS enlistment... --------${NC}\n"
     
     for HOST in {{ nodes_hostnames }}; do
-      lxc start $HOST
+        lxc start $HOST
     done
     
     # Wait for VMs to enlist in MAAS via MAC
     echo -e "\n\n${BYELLOW}-------- Waiting for all VMs to enlist in MAAS... --------${NC}\n"
     
+    ATTEMPTS=0
+    MAX_ATTEMPTS=40 # Timeout - 20 min
     while true; do
-      all_enlisted=true
-      
-      for HOST in {{ nodes_hostnames }}; do
-        # Fetch the dynamic MAC to identify the machine in MAAS
-        MAC=$(lxc config get $HOST volatile.eth0.hwaddr)
-        SYSTEM_ID=$(maas {{ maas_user }} machines read mac_address=$MAC | jq -r '.[0].system_id')
-        status=$(maas {{ maas_user }} machines read mac_address=$MAC | jq -r '.[0].status_name')
+        all_enlisted=true
         
-        if [ "$SYSTEM_ID" != "null" ] && [ "$status" = "New" ]; then
-          echo -e "  [${BGREEN}OK${NC}] '$HOST' was enlisted with ID '$SYSTEM_ID'!"
-        else
-          if [ "$status" = "null" ]; then
-             status="Waiting for PXE"
-          fi
-          echo "  [..] '$HOST' ($MAC) is currently '$status'..."
-          all_enlisted=false
+        for HOST in {{ nodes_hostnames }}; do
+            # Fetch the dynamic MAC to identify the machine in MAAS
+            MAC=$(lxc config get $HOST volatile.eth0.hwaddr)
+            SYSTEM_ID=$(maas {{ maas_user }} machines read mac_address=$MAC | jq -r '.[0].system_id')
+            status=$(maas {{ maas_user }} machines read mac_address=$MAC | jq -r '.[0].status_name')
+            
+            if [ "$SYSTEM_ID" != "null" ] && [ "$status" = "New" ]; then
+                echo -e "  [${BGREEN}OK${NC}] '$HOST' was enlisted with ID '$SYSTEM_ID'!"
+           elif [[ "$status" == *"Failed"* ]]; then
+                # Automatically retry testing on failure
+                echo -e "  [${BYELLOW}!!${NC}] '$HOST' is currently '$status'... Retrying!"
+                maast {{ maas_user }} machine test $SYSTEM_ID
+                all_ready=false
+            else
+                if [ "$status" = "null" ]; then
+                    status="Waiting for PXE"
+                fi
+                echo "  [..] '$HOST' ($MAC) is currently '$status'..."
+                all_enlisted=false
+            fi
+        done
+        
+        # If the flag is still true, everyone is enlisted -> break the loop
+        if [ "$all_enlisted" = true ]; then
+            echo -e "All VMs have successfully enlisted!\n"
+            lxc list
+            sleep 10
+            break
         fi
-      done
-      
-      # If the flag is still true, everyone is enlisted -> break the loop
-      if [ "$all_enlisted" = true ]; then
-        echo -e "All VMs have successfully enlisted!\n"
-        lxc list
-        sleep 10
-        break
-      fi
-      
-      echo "Waiting 30s before next check..."
-      sleep 30
+        
+        ATTEMPTS=$((ATTEMPTS+1))
+        if [ $ATTEMPTS -ge $MAX_ATTEMPTS ]; then
+            echo -e "\n${BRED}[FATAL] Timeout waiting for VMs to enlist. Aborting.${NC}\n"
+            exit 1
+        fi
+        
+        echo "Waiting 30s before next check (Attempt $ATTEMPTS/$MAX_ATTEMPTS)..."
+        sleep 30
     done
 
 - path: /usr/local/bin/08-maas-configure
@@ -1129,13 +1342,13 @@ write_files:
     # Create Availability Zones in MAAS
     echo -e "\n\n${BYELLOW}-------- Creating Availability Zones... --------${NC}\n"
     for i in $(seq 1 {{ max_ha }}); do
-      ZONE="AZ$i"
-      if ! maas {{ maas_user }} zones read | jq -e ".[] | select(.name==\"$ZONE\")" > /dev/null; then
-        echo "Creating zone: $ZONE"
-        maast {{ maas_user }} zones create name="$ZONE" description="Auto-generated AZ for HA Node $i"
-      else
-        echo "Zone $ZONE already exists."
-      fi
+        ZONE="AZ$i"
+        if ! maas {{ maas_user }} zones read | jq -e ".[] | select(.name==\"$ZONE\")" > /dev/null; then
+            echo "Creating zone: $ZONE"
+            maast {{ maas_user }} zones create name="$ZONE" description="Auto-generated AZ for HA Node $i"
+        else
+            echo "Zone $ZONE already exists."
+        fi
     done
     
     echo "Assigning Primary MAAS Controller to AZ1..."
@@ -1148,23 +1361,23 @@ write_files:
     LXD_KEY_CONTENT=$(cat $LXD_KEY)
     
     for HOST in {{ nodes_hostnames }}; do
-      MAC=$(lxc config get $HOST volatile.eth0.hwaddr)
-      SYSTEM_ID=$(maas {{ maas_user }} machines read mac_address=$MAC | jq -r '.[0].system_id')
-      
-      NODE_NUM=$(echo "$HOST" | awk -F'-' '{print $NF}')
-      TARGET_ZONE="AZ${NODE_NUM}"
-      
-      # Force the MAAS hostname, domain, and explicit LXD power controls
-      maast {{ maas_user }} machine update $SYSTEM_ID \
-        hostname=$HOST \
-        domain=$MAAS_DOMAIN_NAME_ID \
-        zone=$TARGET_ZONE \
-        power_type="lxd" \
-        power_parameters_power_address="https://$LXD_ADDR" \
-        power_parameters_certificate="$LXD_CERT_CONTENT" \
-        power_parameters_key="$LXD_KEY_CONTENT" \
-        power_parameters_instance_name="$HOST" \
-        power_parameters_project="{{ lxd_project }}"
+        MAC=$(lxc config get $HOST volatile.eth0.hwaddr)
+        SYSTEM_ID=$(maas {{ maas_user }} machines read mac_address=$MAC | jq -r '.[0].system_id')
+        
+        NODE_NUM=$(echo "$HOST" | awk -F'-' '{print $NF}')
+        TARGET_ZONE="AZ${NODE_NUM}"
+        
+        # Force the MAAS hostname, domain, and explicit LXD power controls
+        maast {{ maas_user }} machine update $SYSTEM_ID \
+          hostname=$HOST \
+          domain=$MAAS_DOMAIN_NAME_ID \
+          zone=$TARGET_ZONE \
+          power_type="lxd" \
+          power_parameters_power_address="https://$LXD_ADDR" \
+          power_parameters_certificate="$LXD_CERT_CONTENT" \
+          power_parameters_key="$LXD_KEY_CONTENT" \
+          power_parameters_instance_name="$HOST" \
+          power_parameters_project="{{ lxd_project }}"
     done
 
 - path: /usr/local/bin/09-maas-commission
@@ -1183,39 +1396,62 @@ write_files:
     echo -e "\n\n${BYELLOW}-------- Commissioning machines... --------${NC}\n"
     
     for HOST in {{ nodes_hostnames }}; do
-      SYSTEM_ID=$(maas {{ maas_user }} machines read hostname=$HOST | jq -r '.[0].system_id')
-      maast {{ maas_user }} machine commission $SYSTEM_ID
+        SYSTEM_ID=$(maas {{ maas_user }} machines read hostname=$HOST | jq -r '.[0].system_id')
+        maast {{ maas_user }} machine commission $SYSTEM_ID
     done
     
     # Wait for VMs to be ready
     echo -e "\n\n${BYELLOW}-------- Waiting for VMs to enter 'Ready' state... --------${NC}\n"
     
+    ATTEMPTS=0
+    MAX_ATTEMPTS=30 # Timeout - 30 min
+    HALF_ATTEMPTS=$((MAX_ATTEMPTS / 2))
     while true; do
-      all_ready=true
-      
-      for HOST in {{ nodes_hostnames }}; do
-        # Query MAAS for the status
-        status=$(maas {{ maas_user }} machines read hostname=$HOST | jq -r '.[0].status_name')
+        all_ready=true
         
-        if [ "$status" = "Ready" ]; then
-          echo -e "  [${BGREEN}OK${NC}] '$HOST' is '$status'!"
-        else
-          echo "  [..] '$HOST' is currently '$status'..."
-          all_ready=false
+        for HOST in {{ nodes_hostnames }}; do
+            # Query MAAS for the status
+            status=$(maas {{ maas_user }} machines read hostname=$HOST | jq -r '.[0].status_name')
+            
+            if [ "$status" = "Ready" ]; then
+                echo -e "  [${BGREEN}OK${NC}] '$HOST' is '$status'!"
+            elif [[ "$status" == *"Failed"* ]]; then
+                # Automatically retry commissioning on failure
+                echo -e "  [${BYELLOW}!!${NC}] '$HOST' is currently '$status'... Retrying!"
+                SYSTEM_ID=$(maas {{ maas_user }} machines read hostname=$HOST | jq -r '.[0].system_id')
+                maast {{ maas_user }} machine commission $SYSTEM_ID
+                all_ready=false
+            elif [[ "$status" == *"Commissioning"* ]] && [ $ATTEMPTS -eq $HALF_ATTEMPTS ]; then
+                # If stuck for 15 minutes, abort the current operation and try again
+                echo -e "  [${BYELLOW}!!${NC}] '$HOST' has been '$status' for too long. Aborting and retrying!"
+                SYSTEM_ID=$(maas {{ maas_user }} machines read hostname=$HOST | jq -r '.[0].system_id')
+                maast {{ maas_user }} machine abort $SYSTEM_ID
+                sleep 5
+                maast {{ maas_user }} machine commission $SYSTEM_ID
+                all_ready=false
+            else
+                echo "  [..] '$HOST' is currently '$status'..."
+                all_ready=false
+            fi
+        done
+        
+        # If the flag is still true, everyone is ready -> break the loop
+        if [ "$all_ready" = true ]; then
+            echo -e "All VMs are Ready!\n"
+            maast {{ maas_user }} machines read
+            netplan apply # Update MAAS DNS record
+            sleep 10
+            break
         fi
-      done
-      
-      # If the flag is still true, everyone is ready -> break the loop
-      if [ "$all_ready" = true ]; then
-        echo -e "All VMs are Ready!\n"
-        maast {{ maas_user }} machines read
-        netplan apply # Update MAAS DNS record
-        sleep 10
-        break
-      fi
-      
-      echo "Waiting 60s before checking again..."
-      sleep 60
+        
+        ATTEMPTS=$((ATTEMPTS+1))
+        if [ $ATTEMPTS -ge $MAX_ATTEMPTS ]; then
+            echo -e "\n${BRED}[FATAL] Timeout waiting for VMs to reach 'Ready' state. Aborting.${NC}\n"
+            exit 1
+        fi
+        
+        echo "Waiting 60s before checking again (Attempt $ATTEMPTS/$MAX_ATTEMPTS)..."
+        sleep 60
     done
 
 - path: /usr/local/bin/10-maas-tagging
@@ -1242,65 +1478,65 @@ write_files:
     maast {{ maas_user }} tags create name=juju-controller
     
     for HOST in {{ nodes_hostnames }}; do
-      SYSTEM_ID=$(maas {{ maas_user }} machines read hostname=$HOST | jq -r '.[0].system_id')
-      
-      # Tag main disks as SSDs
-      echo -e "\n\n${BYELLOW}-------- Tagging main disks as SSDs for '$HOST'... --------${NC}\n"
-      
-      MAIN_BLOCK_ID=$(maas {{ maas_user }} block-devices read $SYSTEM_ID | jq -r '.[] | select(.serial | tostring | contains("lxd_osd") | not) | .id' | head -n 1)
-      if [ -n "$MAIN_BLOCK_ID" ] && [ "$MAIN_BLOCK_ID" != "null" ]; then
-        maast {{ maas_user }} block-device add-tag $SYSTEM_ID $MAIN_BLOCK_ID tag=ssd
-        maast {{ maas_user }} block-device remove-tag $SYSTEM_ID $MAIN_BLOCK_ID tag=rotary
-        maast {{ maas_user }} block-device remove-tag $SYSTEM_ID $MAIN_BLOCK_ID tag=1rpm
-        maast {{ maas_user }} block-device set-boot-disk $SYSTEM_ID $MAIN_BLOCK_ID
-        maast {{ maas_user }} machine set-storage-layout $SYSTEM_ID storage_layout=flat
-      fi
-      
-      echo -e "\n\n${BYELLOW}-------- Tagging '$HOST'... --------${NC}\n"
-      
-      # Base tag for all nodes
-      maast {{ maas_user }} tag update-nodes openstack-{{ os_deployment }} add=$SYSTEM_ID
-      
-      case "$HOST" in
-        juju-controller-*)
-          maast {{ maas_user }} tag update-nodes juju-controller add=$SYSTEM_ID
-          ;;
+        SYSTEM_ID=$(maas {{ maas_user }} machines read hostname=$HOST | jq -r '.[0].system_id')
         
-        sunbeam-controller-*)
-          maast {{ maas_user }} tag update-nodes sunbeam add=$SYSTEM_ID
-          ;;
+        # Tag main disks as SSDs
+        echo -e "\n\n${BYELLOW}-------- Tagging main disks as SSDs for '$HOST'... --------${NC}\n"
         
-        cloud-*)
-          maast {{ maas_user }} tag update-nodes control add=$SYSTEM_ID
-          maast {{ maas_user }} tag update-nodes compute add=$SYSTEM_ID
-          maast {{ maas_user }} tag update-nodes storage add=$SYSTEM_ID
-          maast {{ maas_user }} tag update-nodes network add=$SYSTEM_ID
-          
-          # Tag the ceph osd devices
-          echo -e "\n\n${BYELLOW}-------- Tagging ceph storage for '$HOST'... --------${NC}\n"
-          
-          for i in $(seq 1 {{ cloud_osd_count }}); do
-            OSD_BLOCK_ID=$(maas {{ maas_user }} block-devices read $SYSTEM_ID | jq -r '.[] | select(.serial == "lxd_osd'${i}'") | .id')
+        MAIN_BLOCK_ID=$(maas {{ maas_user }} block-devices read $SYSTEM_ID | jq -r '.[] | select(.serial | tostring | contains("lxd_osd") | not) | .id' | head -n 1)
+        if [ -n "$MAIN_BLOCK_ID" ] && [ "$MAIN_BLOCK_ID" != "null" ]; then
+            maast {{ maas_user }} block-device add-tag $SYSTEM_ID $MAIN_BLOCK_ID tag=ssd
+            maast {{ maas_user }} block-device remove-tag $SYSTEM_ID $MAIN_BLOCK_ID tag=rotary
+            maast {{ maas_user }} block-device remove-tag $SYSTEM_ID $MAIN_BLOCK_ID tag=1rpm
+            maast {{ maas_user }} block-device set-boot-disk $SYSTEM_ID $MAIN_BLOCK_ID
+            maast {{ maas_user }} machine set-storage-layout $SYSTEM_ID storage_layout=flat
+        fi
+        
+        echo -e "\n\n${BYELLOW}-------- Tagging '$HOST'... --------${NC}\n"
+        
+        # Base tag for all nodes
+        maast {{ maas_user }} tag update-nodes openstack-{{ os_deployment }} add=$SYSTEM_ID
+        
+        case "$HOST" in
+            juju-controller-*)
+                maast {{ maas_user }} tag update-nodes juju-controller add=$SYSTEM_ID
+                ;;
             
-            if [ -n "$OSD_BLOCK_ID" ] && [ "$OSD_BLOCK_ID" != "null" ]; then
-              maast {{ maas_user }} block-device add-tag $SYSTEM_ID $OSD_BLOCK_ID tag=ceph
-              maast {{ maas_user }} block-device add-tag $SYSTEM_ID $OSD_BLOCK_ID tag=ssd
-              maast {{ maas_user }} block-device remove-tag $SYSTEM_ID $OSD_BLOCK_ID tag=rotary
-              maast {{ maas_user }} block-device remove-tag $SYSTEM_ID $OSD_BLOCK_ID tag=1rpm
-            fi
-          done
-          
-          # Tag the additional neutron interface
-          echo -e "\n\n${BYELLOW}-------- Tagging neutron interface for '$HOST'... --------${NC}\n"
-          
-          CLOUD_NEUTRON_MAC=$(lxc config get $HOST volatile.eth1.hwaddr)
-          CLOUD_NEUTRON_INTERFACE_ID=$(maas {{ maas_user }} interfaces read $SYSTEM_ID | jq -r '.[] | select(.mac_address=="'$CLOUD_NEUTRON_MAC'") | .id')
-          
-          if [ -n "$CLOUD_NEUTRON_INTERFACE_ID" ] && [ "$CLOUD_NEUTRON_INTERFACE_ID" != "null" ]; then
-            maast {{ maas_user }} interface update $SYSTEM_ID $CLOUD_NEUTRON_INTERFACE_ID tags=neutron:physnet1
-          fi
-          ;;
-      esac
+            sunbeam-controller-*)
+                maast {{ maas_user }} tag update-nodes sunbeam add=$SYSTEM_ID
+                ;;
+            
+            cloud-*)
+                maast {{ maas_user }} tag update-nodes control add=$SYSTEM_ID
+                maast {{ maas_user }} tag update-nodes compute add=$SYSTEM_ID
+                maast {{ maas_user }} tag update-nodes storage add=$SYSTEM_ID
+                maast {{ maas_user }} tag update-nodes network add=$SYSTEM_ID
+                
+                # Tag the ceph osd devices
+                echo -e "\n\n${BYELLOW}-------- Tagging ceph storage for '$HOST'... --------${NC}\n"
+                
+                for i in $(seq 1 {{ cloud_osd_count }}); do
+                    OSD_BLOCK_ID=$(maas {{ maas_user }} block-devices read $SYSTEM_ID | jq -r '.[] | select(.serial == "lxd_osd'${i}'") | .id')
+                    
+                    if [ -n "$OSD_BLOCK_ID" ] && [ "$OSD_BLOCK_ID" != "null" ]; then
+                        maast {{ maas_user }} block-device add-tag $SYSTEM_ID $OSD_BLOCK_ID tag=ceph
+                        maast {{ maas_user }} block-device add-tag $SYSTEM_ID $OSD_BLOCK_ID tag=ssd
+                        maast {{ maas_user }} block-device remove-tag $SYSTEM_ID $OSD_BLOCK_ID tag=rotary
+                        maast {{ maas_user }} block-device remove-tag $SYSTEM_ID $OSD_BLOCK_ID tag=1rpm
+                    fi
+                done
+                
+                # Tag the additional neutron interface
+                echo -e "\n\n${BYELLOW}-------- Tagging neutron interface for '$HOST'... --------${NC}\n"
+                
+                CLOUD_NEUTRON_MAC=$(lxc config get $HOST volatile.eth1.hwaddr)
+                CLOUD_NEUTRON_INTERFACE_ID=$(maas {{ maas_user }} interfaces read $SYSTEM_ID | jq -r '.[] | select(.mac_address=="'$CLOUD_NEUTRON_MAC'") | .id')
+                
+                if [ -n "$CLOUD_NEUTRON_INTERFACE_ID" ] && [ "$CLOUD_NEUTRON_INTERFACE_ID" != "null" ]; then
+                    maast {{ maas_user }} interface update $SYSTEM_ID $CLOUD_NEUTRON_INTERFACE_ID tags=neutron:physnet1
+                fi
+                ;;
+        esac
     done
 
 - path: /usr/local/bin/11-sunbeam-prep
@@ -1324,12 +1560,6 @@ write_files:
     echo -e "\n\n${BYELLOW}-------- Adding the Canonical MAAS provider... --------${NC}\n"
     
     $RUN_AS_LOGIN sunbeam deployment add maas {{ os_deployment }} $APIKEY http://${IP_ADDRESS}:5240/MAAS
-    
-    # Map network spaces to cloud networks
-    echo -e "\n\n${BYELLOW}-------- Mapping network spaces to cloud networks... --------${NC}\n"
-    
-    maast {{ maas_user }} spaces create name={{ maas_space }}
-    maast {{ maas_user }} vlan update $FABRIC_ID $VLAN_TAG space={{ maas_space }}
     $RUN_AS_LOGIN sunbeam deployment space map {{ maas_space }}
     
     # Validate MAAS provider
@@ -1342,9 +1572,9 @@ write_files:
     
     cat "/home/{{ sys_user }}/snap/openstack/common/reports/$LATEST_REPORT"
     echo -e "\n"
-    echo "Number of fails      - $(grep -c failed /home/{{ sys_user }}/snap/openstack/common/reports/$LATEST_REPORT)"
-    echo "Number of warnings   - $(grep -c warning /home/{{ sys_user }}/snap/openstack/common/reports/$LATEST_REPORT)"
-    echo "Number of successes  - $(grep -c success /home/{{ sys_user }}/snap/openstack/common/reports/$LATEST_REPORT)"
+    echo -e "Number of fails      - ${BRED}$(grep -c failed /home/{{ sys_user }}/snap/openstack/common/reports/$LATEST_REPORT)${NC}"
+    echo -e "Number of warnings   - ${BYELLOW}$(grep -c warning /home/{{ sys_user }}/snap/openstack/common/reports/$LATEST_REPORT)${NC}"
+    echo -e "Number of successes  - ${BGREEN}$(grep -c success /home/{{ sys_user }}/snap/openstack/common/reports/$LATEST_REPORT)${NC}"
     echo -e "\n"
     
     $RUN_AS_LOGIN sunbeam deployment show {{ os_deployment }}
@@ -1382,12 +1612,72 @@ write_files:
         echo -e "\n\n${BYELLOW}-------- Generating Sunbeam manifest... --------${NC}\n"
         
         cat <<EOF > "$MANIFEST_FILE"
+{% if os_add_octavia or os_add_magnum or os_add_cos %}
+    features:
+{% if os_add_octavia %}
+      loadbalancer:
+        config:
+          amphora_enabled: {{ 'true' if os_add_amphora else 'false' }}
+{% if os_add_amphora %}
+          autocreate_image: true
+          autocreate_flavor: true
+          autocreate_network: true
+          autocreate_securitygroups: true
+{% endif %}
+{% endif %}
+{% if os_add_cos %}
+      observability:
+        embedded:
+          software:
+            charms:
+              prometheus-k8s:
+                channel: "latest/stable"
+                storage:
+                  database: "20G"
+              loki-k8s:
+                channel: "latest/stable"
+                storage:
+                  active-index-directory: "2G"
+                  loki-chunks: "5G"
+              grafana-k8s:
+                channel: "latest/stable"
+                storage:
+                  database: "1G"
+              alertmanager-k8s:
+                channel: "latest/stable"
+                storage:
+                  data: "1G"
+              opentelemetry-collector-k8s:
+                channel: "latest/stable"
+                storage:
+                  persisted: "1G"
+{% endif %}
+{% endif %}
     core:
       config:
         proxy:
           proxy_required: false
         database: single
         region: RegionOne
+        bootstrap:
+          management_cidr: {{ maas_cidr }}
+        k8s-addons:
+          loadbalancer: $OS_INTERNAL_API_IP_START-$OS_INTERNAL_API_IP_END
+{% if pub_fqdn or int_fqdn or rgw_fqdn %}
+        endpoints:
+{% if pub_fqdn %}
+          ingress-public:
+            hostname: {{ pub_fqdn }}
+{% endif %}
+{% if int_fqdn %}
+          ingress-internal:
+            hostname: {{ int_fqdn }}
+{% endif %}
+{% if rgw_fqdn %}
+          ingress-rgw:
+            hostname: {{ rgw_fqdn }}
+{% endif %}
+{% endif %}
         user:
           run_demo_setup: {{ 'true' if os_run_demo else 'false' }}
           username: demo
@@ -1406,11 +1696,11 @@ write_files:
         
         # Dynamically append all cloud nodes and their neutron interfaces
         for HOST in {{ nodes_hostnames }}; do
-          case "$HOST" in
-            cloud-*)
-              echo "          $HOST: eth1" >> "$MANIFEST_FILE"
-              ;;
-          esac
+            case "$HOST" in
+                cloud-*)
+                    echo "          $HOST: eth1" >> "$MANIFEST_FILE"
+                    ;;
+            esac
         done
     fi
     
@@ -1422,21 +1712,25 @@ write_files:
     echo -e "\n\n${BYELLOW}-------- Bootstrapping the orchestration layer... --------${NC}\n"
     
     LOGFILE="/tmp/sunbeam-bootstrap.log"
-    if ! $RUN_AS_LOGIN script -q -e -f -c "sunbeam cluster bootstrap --accept-defaults --manifest $MANIFEST_FILE" "$LOGFILE"; then
-        if grep -q "wait timed out after" "$LOGFILE"; then
-            echo -e "\n\n${BRED}Timeout detected. Waiting 60s and retrying bootstrap once...${NC}\n"
-            sleep 60
-            $RUN_AS_LOGIN script -q -e -f -c "sunbeam cluster bootstrap --accept-defaults --manifest $MANIFEST_FILE" /dev/null
-        else
-            echo -e "\n\n${BRED}Bootstrap failed with a non-timeout error. Proceeding without retry.${NC}\n"
-        fi
+    
+    if run_sunbeam "sunbeam cluster bootstrap --accept-defaults --manifest $MANIFEST_FILE" "$LOGFILE"; then
+        echo "export BOOTSTRAP_SUCCESS=true" >> /etc/repro-env
+        
+        echo -e "\n\n${BYELLOW}-------- Controller Model Status... --------${NC}\n"
+        $RUN_AS_LOGIN juju status -m controller
+        
+        echo -e "\n\n${BYELLOW}-------- OpenStack-Infra Model Status... --------${NC}\n"
+        $RUN_AS_LOGIN juju status -m openstack-infra
+    else
+        echo "export BOOTSTRAP_SUCCESS=false" >> /etc/repro-env
+        
+        echo -e "\n${BRED}======================================================================${NC}"
+        echo -e "${BRED}[FAILURE] Sunbeam Cluster Bootstrap failed!${NC}"
+        echo -e "${BRED}To inspect logs:${NC} less /tmp/sunbeam-bootstrap.log"
+        echo -e "${BRED}To rerun this step manually:${NC} 12-sunbeam-bootstrap"
+        echo -e "${BRED}======================================================================${NC}\n"
+        exit 1
     fi
-    
-    echo -e "\n\n${BYELLOW}-------- Controller Model Status... --------${NC}\n"
-    $RUN_AS_LOGIN juju status -m controller
-    
-    echo -e "\n\n${BYELLOW}-------- OpenStack-Infra Model Status... --------${NC}\n"
-    $RUN_AS_LOGIN juju status -m openstack-infra
 
 - path: /usr/local/bin/13-sunbeam-deploy
   permissions: '0755'
@@ -1450,25 +1744,48 @@ write_files:
     
     source /etc/repro-env
     
+    if [ "$BOOTSTRAP_SUCCESS" != "true" ]; then
+        echo -e "\n${BYELLOW}======================================================================${NC}"
+        echo -e "${BYELLOW}[SKIPPED] Deploy script skipped because step '${NC}12-sunbeam-bootstrap${BYELLOW}' failed.${NC}"
+        echo -e "${BYELLOW}Once step 12 passes, run deploy manually with:${NC} 13-sunbeam-deploy"
+        echo -e "${BYELLOW}======================================================================${NC}\n"
+        exit 1
+    fi
+    
     # Deploy the cloud
     echo -e "\n\n${BYELLOW}-------- Deploying the cloud... --------${NC}\n"
     
     LOGFILE="/tmp/sunbeam-deploy.log"
-    if ! $RUN_AS_LOGIN script -q -e -f -c "sunbeam cluster deploy --accept-defaults --manifest $MANIFEST_FILE" "$LOGFILE"; then
-        if grep -q "wait timed out after" "$LOGFILE"; then
-            echo -e "\n\n${BRED}Timeout detected. Waiting 60s and retrying deploy once...${NC}\n"
-            sleep 60
-            $RUN_AS_LOGIN script -q -e -f -c "sunbeam cluster deploy --accept-defaults --manifest $MANIFEST_FILE" /dev/null
-        else
-            echo -e "\n\n${BRED}Deploy failed with a non-timeout error. Proceeding without retry.${NC}\n"
-        fi
+    
+    if run_sunbeam "sunbeam cluster deploy --accept-defaults --manifest $MANIFEST_FILE" "$LOGFILE"; then
+        echo "export DEPLOY_SUCCESS=true" >> /etc/repro-env
+        
+        echo -e "\n\n${BYELLOW}-------- OpenStack-Machines Model Status... --------${NC}\n"
+        $RUN_AS_LOGIN juju status -m openstack-machines
+        
+        echo -e "\n\n${BYELLOW}-------- OpenStack Model Status... --------${NC}\n"
+        $RUN_AS_LOGIN juju status -m openstack
+        
+{% if ssh_key %}
+        # Auto-inject custom SSH keys into all currently bootstrapped Juju models if a custom manifest was provided
+        echo -e "\n\n${BYELLOW}-------- Injecting external SSH keys into Juju models... --------${NC}\n"
+        
+        for model in $($RUN_AS_LOGIN juju models --format json | jq -r '.models[] | select(."model-type" == "iaas") | .name'); do
+            echo "Injecting key into machine model '$model'..."
+            $RUN_AS_LOGIN juju add-ssh-key -m "$model" "{{ ssh_key }}"
+        done
+{% endif %}
+    else
+        echo "export DEPLOY_SUCCESS=false" >> /etc/repro-env
+        
+        echo -e "\n${BRED}======================================================================${NC}"
+        echo -e "${BRED}[FAILURE] Sunbeam Cluster Deploy failed!${NC}"
+        echo -e "${BRED}To inspect logs:${NC} less /tmp/sunbeam-deploy.log"
+        echo -e "${BRED}To inspect model status:${NC} juju status -m openstack"
+        echo -e "${BRED}To rerun this step manually:${NC} 13-sunbeam-deploy"
+        echo -e "${BRED}======================================================================${NC}\n"
+        exit 1
     fi
-    
-    echo -e "\n\n${BYELLOW}-------- OpenStack-Machines Model Status... --------${NC}\n"
-    $RUN_AS_LOGIN juju status -m openstack-machines
-    
-    echo -e "\n\n${BYELLOW}-------- OpenStack Model Status... --------${NC}\n"
-    $RUN_AS_LOGIN juju status -m openstack
 
 - path: /usr/local/bin/14-sunbeam-configure
   permissions: '0755'
@@ -1482,46 +1799,360 @@ write_files:
     
     source /etc/repro-env
     
+    if [ "$DEPLOY_SUCCESS" != "true" ]; then
+        echo -e "\n${BYELLOW}======================================================================${NC}"
+        echo -e "${BYELLOW}[SKIPPED] Configure script skipped because step '${NC}13-sunbeam-deploy${BYELLOW}' failed.${NC}"
+        echo -e "${BYELLOW}Once step 13 passes, run configure manually with:${NC} 14-sunbeam-configure"
+        echo -e "${BYELLOW}======================================================================${NC}\n"
+        exit 1
+    fi
+    
+    wait_for_model "openstack-machines" || exit 1
+    wait_for_model "openstack" || exit 1
+    
+    echo -e "\n\n${BYELLOW}-------- Syncing MetalLB VIPs to MAAS DNS... --------${NC}\n"
+    
+    CLOUD_IP=$(maas {{ maas_user }} machines read hostname=cloud-1 | jq -r '.[0].ip_addresses[0]')
+    SSH_CMD="ssh -i /home/{{ sys_user }}/.ssh/id_rsa -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null -q ubuntu@$CLOUD_IP"
+    
+    # Fetch all LoadBalancer services and their IPs dynamically
+    SVC_LIST=$($SSH_CMD "sudo k8s kubectl get svc -n openstack --field-selector spec.type=LoadBalancer --no-headers -o custom-columns=NAME:.metadata.name,IP:.status.loadBalancer.ingress[0].ip")
+    
+    PUBLIC_VIP=$(echo "$SVC_LIST" | grep "traefik" | grep "public" | awk '{print $2}')
+    RGW_VIP=$(echo "$SVC_LIST" | grep "traefik" | grep "rgw" | awk '{print $2}')
+    INTERNAL_VIP=$(echo "$SVC_LIST" | grep "traefik" | grep -v "public" | grep -v "rgw" | awk '{print $2}')
+    
+    echo ""
+    echo "Assigned Public VIP:   $PUBLIC_VIP"
+    echo "Assigned Internal VIP: $INTERNAL_VIP"
+    echo "Assigned RGW VIP:      $RGW_VIP"
+    echo ""
+    
+    # Smart MAAS DNS Registration Function
+    register_maas_dns() {
+        local fqdn="$1"
+        local ip="$2"
+        
+        # Skip if missing FQDN or IP
+        if [ -z "$fqdn" ] || [ -z "$ip" ] || [ "$fqdn" = "none" ]; then return; fi
+        
+        local host="${fqdn%%.*}"
+        local domain="${fqdn#*.}"
+        
+        # If no dot was provided in the hostname, fallback to the default TLD
+        if [ "$host" = "$domain" ]; then
+            domain="{{ tld if tld else 'maas' }}"
+        fi
+        
+        # Look up the domain ID in MAAS
+        local domain_id=$(maas {{ maas_user }} domains read | jq -r ".[] | select(.name==\"$domain\") | .id")
+        
+        # If the custom domain doesn't exist yet, create it and make MAAS authoritative
+        if [ -z "$domain_id" ] || [ "$domain_id" = "null" ]; then
+            echo "Domain '$domain' not found in MAAS. Creating it..."
+            domain_id=$(maas {{ maas_user }} domains create name="$domain" authoritative=true | jq -r '.id')
+        fi
+        
+        # Register the record under the resolved domain ID
+        echo "Registering $host.$domain ($ip) in MAAS DNS..."
+        maast {{ maas_user }} dnsresources create domain=$domain_id name="$host" ip_addresses=$ip
+    }
+    
+{% if pub_fqdn or int_fqdn or rgw_fqdn %}
+    register_maas_dns "{{ pub_fqdn }}" "$PUBLIC_VIP"
+    register_maas_dns "{{ int_fqdn }}" "$INTERNAL_VIP"
+    register_maas_dns "{{ rgw_fqdn }}" "$RGW_VIP"
+    
+    resolvectl flush-caches
+    
+    echo -e "\n\n${BYELLOW}-------- Waiting for MAAS DNS records to propagate locally... --------${NC}\n"
+    
+    # Compile the list of active hostnames to check
+    VALID_HOSTS=""
+    for host in "{{ pub_fqdn }}" "{{ int_fqdn }}" "{{ rgw_fqdn }}"; do
+        if [ -n "$host" ] && [ "$host" != "none" ]; then
+            VALID_HOSTS="$VALID_HOSTS $host"
+        fi
+    done
+    
+    if [ -n "$VALID_HOSTS" ]; then
+        ATTEMPTS=0
+        MAX_ATTEMPTS=12 # Timeout - 1 min
+        while true; do
+            all_resolved=true
+            
+            for host in $VALID_HOSTS; do
+                if getent hosts "$host" > /dev/null 2>&1; then
+                    echo -e "  [${BGREEN}OK${NC}] '$host' is resolved!"
+                else
+                    echo "  [..] '$host' is currently propagating..."
+                    all_resolved=false
+                fi
+            done
+            
+            # If the flag is still true, all hostnames resolved successfully -> break loop
+            if [ "$all_resolved" = true ]; then
+                echo -e "All DNS records are ready and resolving!\n"
+                break
+            fi
+            
+            ATTEMPTS=$((ATTEMPTS+1))
+            if [ $ATTEMPTS -ge $MAX_ATTEMPTS ]; then
+                echo -e "Proceeding anyway, but DNS might be lagging...\n"
+                break
+            fi
+            
+            echo "Waiting 5s before checking again (Attempt $ATTEMPTS/$MAX_ATTEMPTS)..."
+            sleep 5
+        done
+    fi
+{% else %}
+    echo "Endpoint hostnames are empty; skipping MAAS DNS registration and utilizing direct API IPs..."
+{% endif %}
+    
     # Configure the cloud
     echo -e "\n\n${BYELLOW}-------- Configuring the cloud... --------${NC}\n"
     
     LOGFILE="/tmp/sunbeam-configure.log"
-    if ! $RUN_AS_LOGIN script -q -e -f -c "sunbeam configure --accept-defaults --openrc /home/{{ sys_user }}/demo-openrc --manifest $MANIFEST_FILE" "$LOGFILE"; then
-        if grep -q "wait timed out after" "$LOGFILE"; then
-            echo -e "\n\n${BRED}Timeout detected. Waiting 60s and retrying configure once...${NC}\n"
-            sleep 60
-            $RUN_AS_LOGIN script -q -e -f -c "sunbeam configure --accept-defaults --openrc /home/{{ sys_user }}/demo-openrc --manifest $MANIFEST_FILE" /dev/null
-        else
-            echo -e "\n\n${BRED}Configure failed with a non-timeout error. Proceeding without retry.${NC}\n"
-        fi
+    
+    if run_sunbeam "sunbeam configure --accept-defaults --openrc /home/{{ sys_user }}/demo-openrc --manifest $MANIFEST_FILE" "$LOGFILE"; then
+        echo "export CONFIGURE_SUCCESS=true" >> /etc/repro-env
+        
+        echo -e "\n\n${BYELLOW}-------- Generating Admin Credentials... --------${NC}\n"
+        
+        $RUN_AS_LOGIN sunbeam openrc > /home/{{ sys_user }}/admin-openrc
+        chown {{ sys_user }}:{{ sys_user }} /home/{{ sys_user }}/admin-openrc
+    else
+        echo "export CONFIGURE_SUCCESS=false" >> /etc/repro-env
+        
+        echo -e "\n${BRED}======================================================================${NC}"
+        echo -e "${BRED}[FAILURE] Sunbeam Configure failed!${NC}"
+        echo -e "${BRED}To inspect logs:${NC} less /tmp/sunbeam-configure.log"
+        echo -e "${BRED}To rerun this step manually:${NC} 14-sunbeam-configure"
+        echo -e "${BRED}======================================================================${NC}\n"
+        exit 1
+    fi
+
+- path: /usr/local/bin/15-sunbeam-addons
+  permissions: '0755'
+  content: |
+    #!/bin/bash
+    
+    # Auto-escalate to root if run as a normal user
+    if [ "$EUID" -ne 0 ]; then
+        exec sudo "$0" "$@"
     fi
     
-    # Generate the admin novarc credentials
-    echo -e "\n\n${BYELLOW}-------- Generating Admin Credentials... --------${NC}\n"
+    source /etc/repro-env
     
-    $RUN_AS_LOGIN sunbeam openrc > /home/{{ sys_user }}/admin-openrc
-    chown {{ sys_user }}:{{ sys_user }} /home/{{ sys_user }}/admin-openrc
+    if [ "$CONFIGURE_SUCCESS" != "true" ]; then
+        echo -e "\n${BYELLOW}======================================================================${NC}"
+        echo -e "${BYELLOW}[SKIPPED] Addons script skipped because step '${NC}14-sunbeam-configure${BYELLOW}' failed.${NC}"
+        echo -e "${BYELLOW}Once step 14 passes, run addons manually with:${NC} 15-sunbeam-addons"
+        echo -e "${BYELLOW}======================================================================${NC}\n"
+        exit 1
+    fi
+    
+    echo -e "\n\n${BYELLOW}-------- Activating Optional Features... --------${NC}"
+    
+{% if pro_token %}
+    echo -e "\n-> Enabling Ubuntu Pro..."
+    run_sunbeam "sunbeam enable pro {{ pro_token }}" "/tmp/sunbeam-pro.log"
+{% endif %}
+    
+{% set deploy_vault = os_add_vault or os_add_barbican or os_add_magnum %}
+{% if deploy_vault %}
+    echo -e "\n-> Enabling Vault..."
+    run_sunbeam "sunbeam enable vault" "/tmp/sunbeam-vault.log"
+    
+    if grep -q "Root token:" /home/{{ sys_user }}/vault-keys.txt 2>/dev/null; then
+        echo "Vault already initialized. Using existing keys..."
+    else
+        echo "Initializing Vault..."
+        $RUN_AS_LOGIN sunbeam vault init 1 1 > /home/{{ sys_user }}/vault-keys.txt
+    fi
+    
+    VAULT_KEY=$(awk '/Unseal keys:/{getline; print}' /home/{{ sys_user }}/vault-keys.txt | tr -d ' ')
+    VAULT_TOKEN=$(awk '/Root token:/{print $3}' /home/{{ sys_user }}/vault-keys.txt | tr -d ' ')
+    
+    VAULT_UNIT_COUNT=$($RUN_AS_LOGIN bash -c "sunbeam vault status | grep -c 'vault/'")
+    if [ -z "$VAULT_UNIT_COUNT" ] || [ "$VAULT_UNIT_COUNT" -eq 0 ]; then
+        VAULT_UNIT_COUNT={{ cloud_ha }}
+    fi
+    
+    echo "Unsealing Vault across $VAULT_UNIT_COUNT unit(s)..."
+    for i in $(seq 1 $VAULT_UNIT_COUNT); do
+        echo "Sending unseal key to Vault unit $i..."
+        run_sunbeam "sunbeam vault unseal '$VAULT_KEY'"
+        sleep 5
+    done
+    
+    echo "Authorizing Vault..."
+    run_sunbeam "sunbeam vault authorize-charm '$VAULT_TOKEN'"
+    
+    echo "Vault unseal key saved to /home/{{ sys_user }}/vault-keys.txt (KEEP THIS SAFE!)"
+    $RUN_AS_LOGIN sunbeam vault status
+    
+    wait_for_app "vault" "openstack" "$VAULT_UNIT_COUNT"
+{% endif %}
+    
+{% if os_add_tls and deploy_vault %}
+    echo -e "\n-> Enabling TLS via Vault for API Endpoints..."
+    
+    echo "Creating OpenSSL CA configuration..."
+    cat <<EOF > /home/{{ sys_user }}/ca.conf
+    [v3_ca]
+    subjectKeyIdentifier = hash
+    authorityKeyIdentifier = keyid:always,issuer
+    basicConstraints = critical, CA:TRUE
+    keyUsage = critical, digitalSignature, cRLSign, keyCertSign
+    EOF
+    
+    echo "Generating Self-Signed Root CA for Vault..."
+    openssl req -x509 -newkey rsa:4096 -keyout /home/{{ sys_user }}/sunbeam-ca.key -out /home/{{ sys_user }}/sunbeam-ca.crt -sha256 -days 3650 -nodes -config /home/{{ sys_user }}/ca.conf -extensions v3_ca -subj "/CN=Sunbeam Local Root CA"
+    chown {{ sys_user }}:{{ sys_user }} /home/{{ sys_user }}/sunbeam-ca.* /home/{{ sys_user }}/ca.conf
+    
+    CA_B64=$(base64 -w0 /home/{{ sys_user }}/sunbeam-ca.crt)
+    run_sunbeam "sunbeam enable tls vault --ca \"$CA_B64\" --ca-chain \"$CA_B64\" --endpoint public --endpoint internal --endpoint rgw" "/tmp/sunbeam-tls.log"
+    
+    # Extract CSR from vault
+    echo "Obtaining the CSRs from Vault..."
+    $RUN_AS_LOGIN sunbeam tls vault list_outstanding_csrs > /home/{{ sys_user }}/vault_csrs.txt
+    awk -F '│' '/BEGIN CERTIFICATE REQUEST/,/END CERTIFICATE REQUEST/ {print $5}' /home/{{ sys_user }}/vault_csrs.txt | sed -e 's/^[ \t]*//' -e 's/[ \t]*$//' > /home/{{ sys_user }}/vault.csr
+    
+    # Input TLS certificates
+    if grep -q "BEGIN CERTIFICATE REQUEST" /home/{{ sys_user }}/vault.csr; then
+        echo "Signing CSR for Vault as an Intermediate CA..."
+        
+        openssl x509 -req -sha256 -days 3650 -CA /home/{{ sys_user }}/sunbeam-ca.crt -CAkey /home/{{ sys_user }}/sunbeam-ca.key -CAcreateserial -extfile /home/{{ sys_user }}/ca.conf -extensions v3_ca -in /home/{{ sys_user }}/vault.csr -out /home/{{ sys_user }}/vault.crt
+        CERT_B64=$(base64 -w0 /home/{{ sys_user }}/vault.crt)
+        
+        echo "Applying signed Intermediate CA certificates via Sunbeam..."
+        run_sunbeam "echo \"$CERT_B64\" | sunbeam tls vault unit_certs" "/tmp/sunbeam-tls-certs.log"
+        
+        echo "Updating system CA trust store..."
+        cp /home/{{ sys_user }}/sunbeam-ca.crt /usr/local/share/ca-certificates/sunbeam-ca.crt
+        update-ca-certificates
+        
+        echo "Updating admin-openrc and injecting CA bundle..."
+        $RUN_AS_LOGIN sunbeam openrc > /home/{{ sys_user }}/admin-openrc
+        chown {{ sys_user }}:{{ sys_user }} /home/{{ sys_user }}/admin-openrc
+    else
+        echo "No CSR found. Vault TLS may not be fully initialized."
+    fi
+{% elif os_add_tls %}
+    echo -e "\n-> Enabling TLS self-signed for API Endpoints..."
+    run_sunbeam "sunbeam enable tls self-signed" "/tmp/sunbeam-tls.log"
+{% endif %}
+    
+{% if os_add_barbican or os_add_magnum %}
+    echo -e "\n-> Enabling Barbican (Secrets)..."
+    run_sunbeam "sunbeam enable secrets" "/tmp/sunbeam-barbican.log"
+    wait_for_app "barbican"
+{% endif %}
+    
+{% if os_add_octavia or os_add_magnum %}
+    echo -e "\n-> Enabling Octavia (Load Balancer)..."
+{% if os_add_amphora %}
+    echo -e "\n-> Enabling snap feature gates for Octavia Amphora..."
+    snap set openstack feature.loadbalancer-amphora=true # Maybe not needed (?)
+    snap set openstack feature.microovn-sdn=true
+{% endif %}
+    run_sunbeam "sunbeam enable loadbalancer" "/tmp/sunbeam-octavia.log"
+    wait_for_app "octavia"
+{% endif %}
+    
+{% if os_add_masakari %}
+    echo -e "\n-> Enabling Masakari (Instances HA)..."
+    run_sunbeam "sunbeam enable instance-recovery" "/tmp/sunbeam-masakari.log"
+    wait_for_app "masakari"
+{% endif %}
+    
+{% if os_add_heat %}
+    echo -e "\n-> Enabling Heat (Orchestration)..."
+    run_sunbeam "sunbeam enable orchestration" "/tmp/sunbeam-heat.log"
+    wait_for_app "heat"
+{% endif %}
+    
+{% if os_add_designate %}
+    echo -e "\n-> Enabling Designate (DNS)..."
+    run_sunbeam "sunbeam enable dns 'ns1.{{ tld if tld else 'maas' }}.'" "/tmp/sunbeam-designate.log"
+    wait_for_app "designate"
+{% endif %}
+    
+{% if os_add_magnum %}
+    echo -e "\n-> Enabling Magnum (Containers as a Service)..."
+    run_sunbeam "sunbeam enable caas" "/tmp/sunbeam-magnum.log"
+{% endif %}
+    
+{% if os_add_ldap %}
+    echo -e "\n-> Enabling LDAP..."
+    run_sunbeam "sunbeam enable ldap" "/tmp/sunbeam-ldap.log"
+{% endif %}
+    
+{% if os_add_images %}
+    echo -e "\n-> Enabling Image Sync..."
+    run_sunbeam "sunbeam enable images-sync" "/tmp/sunbeam-images.log"
+{% endif %}
+    
+{% if os_add_watcher %}
+    echo -e "\n-> Enabling Watcher (Resource Optimization)..."
+    run_sunbeam "sunbeam enable resource-optimization" "/tmp/sunbeam-watcher.log"
+{% endif %}
+    
+{% if os_add_maintenance %}
+    echo -e "\n-> Enabling Watcher (Resource Optimization)..."
+    snap set openstack feature.maintenance=true
+    run_sunbeam "sunbeam enable maintenance" "/tmp/sunbeam-maintenance.log"
+{% endif %}
+    
+{% if os_add_telemetry %}
+    echo -e "\n-> Enabling Telemetry (Ceilometer/Aodh)..."
+    run_sunbeam "sunbeam enable telemetry" "/tmp/sunbeam-telemetry.log"
+{% endif %}
+    
+{% if os_add_manila %}
+    echo -e "\n-> Enabling Manila (Shared Filesystems)..."
+    snap set openstack feature.shared-filesystem=true
+    run_sunbeam "sunbeam enable shared-filesystem" "/tmp/sunbeam-manila.log"
+{% endif %}
+    
+{% if os_add_tempest %}
+    echo -e "\n-> Enabling Tempest (Validation)..."
+    run_sunbeam "sunbeam enable validation" "/tmp/sunbeam-tempest.log"
+{% endif %}
+    
+{% if os_add_cos %}
+    echo -e "\n-> Enabling Observability Stack (COS)..."
+    run_sunbeam "sunbeam enable observability embedded" "/tmp/sunbeam-cos.log"
+{% endif %}
+    
+    echo -e "\n\n${BYELLOW}-------- Listing Enabled Optional Features... --------${NC}"
+    
+    $RUN_AS_LOGIN sunbeam list-features
+    $RUN_AS_LOGIN sunbeam list-feature-gates
     
     echo -e "\n\n${BYELLOW}-------- Finished deploying Sunbeam, have fun!... --------${NC}\n"
 
 # ==========================================
-# END OF AUTOMATION SCRIPTS (00 to 14)
+# END OF AUTOMATION SCRIPTS (00 to 15)
 # ==========================================
 
 runcmd:
 - 00-generate-env
 - 01-verify-deps || exit 1
 - 02-maas-init
-- 03-maas-networking
-- 04-maas-images
+- 03-maas-networking || exit 1
+- 04-maas-images || exit 1
 - 05-lxd-setup
 - 06-vm-creation
-- 07-maas-enlist
+- 07-maas-enlist || exit 1
 - 08-maas-configure
-- 09-maas-commission
+- 09-maas-commission || exit 1
 - 10-maas-tagging
 - 11-sunbeam-prep
 - 12-sunbeam-bootstrap
 - 13-sunbeam-deploy
 - 14-sunbeam-configure
+- 15-sunbeam-addons
 

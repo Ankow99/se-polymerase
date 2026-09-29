@@ -4,7 +4,7 @@
 # se-polymerase (synth)
 # Acts as the polymerase to synthesize an isolated, terraform-free LXD 
 # reproducer environment using the host's LXD for MAAS + Juju deployments.
-# version: 7.8.0
+# version: 8.4.0
 #
 # Synthesized by: Pablo Gonzalez De Greiff @ Canonical
 # ---
@@ -917,6 +917,10 @@ echo "# Payload: $(basename "$CLOUD_INIT")" >> "$CONFIG_FILE_TMP"
 echo "# Project: $LXD_PROJECT" >> "$CONFIG_FILE_TMP"
 echo "# Date:    $(date)" >> "$CONFIG_FILE_TMP"
 echo "# ==========================================" >> "$CONFIG_FILE_TMP"
+echo "# NOTE: Setting a string value to \"\" will" >> "$CONFIG_FILE_TMP"
+echo "# fallback to the cloud-init defaults." >> "$CONFIG_FILE_TMP"
+echo "# To explicitly leave it empty, use \"none\"." >> "$CONFIG_FILE_TMP"
+echo "# ==========================================" >> "$CONFIG_FILE_TMP"
 echo "" >> "$CONFIG_FILE_TMP"
 
 # Persist deploy_id and lxd_project in YAML
@@ -1497,9 +1501,26 @@ if lxc project list | grep -q "$LXD_PROJECT"; then
     # Delete all instances inside the "$LXD_PROJECT" project first
     echo "Stopping and deleting all instances in project '$LXD_PROJECT'..."
     for inst in \$(lxc list --project "$LXD_PROJECT" --format json | jq -r '.[].name'); do
-        lxc stop -f --project "$LXD_PROJECT" "\$inst" 2>/dev/null || true
-        sleep 2 # Wait for Ceph/OSD storage locks to release
-        lxc delete -f --project "$LXD_PROJECT" "\$inst"
+        ATTEMPTS=0
+        MAX_ATTEMPTS=6
+        
+        # Loop as long as the instance still exists
+        while lxc list --project "$LXD_PROJECT" --format csv -c n 2>/dev/null | grep -q "^\${inst}\$"; do
+            if [ \$ATTEMPTS -ge \$MAX_ATTEMPTS ]; then
+                echo ""
+                echo -e "${BRED}Error: Instance '\$inst' is stuck and refused to delete.${NC}"
+                echo "Please run 'sudo snap restart lxd' to break the deadlock, then run this script again."
+                exit 1 # Abort here so the script doesn't delete itself
+            fi
+            
+            [ \$ATTEMPTS -gt 0 ] && echo "Instance busy. Retrying deletion for '\$inst' (Attempt \$((ATTEMPTS+1))/\$MAX_ATTEMPTS)..."
+            
+            lxc stop -f --project "$LXD_PROJECT" "\$inst" 2>/dev/null || true
+            sleep 2 # Wait for state changes and Ceph/OSD storage locks to release
+            lxc delete -f --project "$LXD_PROJECT" "\$inst"
+            
+            ATTEMPTS=\$((ATTEMPTS + 1))
+        done
     done
     
     sleep 2 # Buffer to let LXD's database settle before wiping volumes
@@ -1598,12 +1619,15 @@ fi
 echo ""
 
 echo -e "${BYELLOW}-> Terminating active background tracking processes...${NC}"
+echo ""
 
 if [ -f "$WORKER_PID_FILE" ]; then
     WPID=\$(cat "$WORKER_PID_FILE")
     if kill -0 "\$WPID" 2>/dev/null; then
         kill -9 "\$WPID" 2>/dev/null
         echo "Background worker process (\$WPID) forcibly terminated."
+    else
+        echo "Background worker process (\$WPID) successfully terminated."
     fi
     rm -f "$WORKER_PID_FILE"
 else
@@ -1636,8 +1660,9 @@ echo -e "${BYELLOW}-> 2. Cleanup script created:${NC} $CLEANUP_SCRIPT"
 
 # Parent Trap: If the user presses Ctrl+C or connection breaks, detach the worker and exit cleanly.
 trap '
-    [ -n "$TAIL_PID" ] && kill "$TAIL_PID" 2>/dev/null
+    [ -n "$TAIL_PID" ] && kill -9 "$TAIL_PID" 2>/dev/null
     exec 1>&3 2>&4 # Restore terminal output
+    echo -ne "\033[?25h" # Force cursor to reappear
     echo ""
     echo -e "${BYELLOW}-> Detaching... Deployment will continue in background...${NC}"
     echo ""
@@ -1788,9 +1813,15 @@ USER_TERM_HEIGHT=$(tput lines 2>/dev/null || echo 40)
                 
                 if [[ "$STATUS_CHECK" == *"status: error"* ]]; then
                     echo ""
-                    echo -e "${BRED}Error: cloud-init crashed during payload execution! Check the logs above.${NC}${CLR_EOL}"
-                    echo "Run '${CLEANUP_SCRIPT}' to clean up the environment."
-                    exit 1
+                    echo -e "${BRED}Error: cloud-init crashed during deployment! Check the logs above.${NC}${CLR_EOL}"
+                    echo ""
+                    echo -e "${BYELLOW}-------- Last 50 lines of cloud-init-output.log --------${NC}"
+                    lxc exec "$VM_NAME" --project "$LXD_PROJECT" -- bash -c "cat \$(ls -rt /var/log/cloud-init-output.log* 2>/dev/null) 2>/dev/null | tail -n 50 | sed 's/\r\$//; s/.*\r//; s/\x1b\[[0-9;?]*[A-Za-ln-z]//g'"
+                    echo -ne "${NC}"
+                    echo -e "${BYELLOW}--------------------------------------------------------${NC}"
+                    echo "Connect using 'ssh ${SSH_OPTS[*]} ${SYS_USER}@$IP' to debug what happened, and resume deployment..."
+                    echo "Or alternatively run '${CLEANUP_SCRIPT}' to clean up the environment."
+                    PHASE="DONE"
                 elif [[ "$STATUS_CHECK" == *"status: done"* ]]; then
                     echo ""
                     echo -e "${BYELLOW}cloud-init finished successfully! ${NC}${CLR_EOL}"
@@ -1817,67 +1848,89 @@ USER_TERM_HEIGHT=$(tput lines 2>/dev/null || echo 40)
         # PHASE B: JUJU WATCH
         if [ "$PHASE" == "JUJU_WATCH" ]; then
             
-            # Dynamically construct the Juju status command based on defined models
-            if [ -n "$JUJU_MODELS" ]; then
-                JUJU_CMD=""
-                for model in $JUJU_MODELS; do
-                    if [ -z "$JUJU_CMD" ]; then
-                        JUJU_CMD="juju status -m $model --color 2>/dev/null"
-                    else
-                        JUJU_CMD="$JUJU_CMD || juju status -m $model --color 2>/dev/null"
-                    fi
-                done
-                JUJU_CMD="$JUJU_CMD || juju status -m controller --color 2>/dev/null || echo 'Waiting for Juju models to initialize...'"
-            else
-                # Universal fallback if the payload doesn't define specific models
-                JUJU_CMD="juju status --color 2>/dev/null || juju status -m controller --color 2>/dev/null || echo 'Waiting for Juju models to initialize...'"
-            fi
-            
-            # Capture both status commands first
-            JUJU_OUTPUT=$(lxc exec "$VM_NAME" --project "$LXD_PROJECT" -- su - "$SYS_USER" -c "$JUJU_CMD" 2>/dev/null)
-            LOG_OUTPUT=$(lxc exec "$VM_NAME" --project "$LXD_PROJECT" -- sh -c "tail -n $CLOUD_INIT_LOG_LINES /var/log/cloud-init-output.log | sed 's/\r$//' | sed 's/.*\r//' | sed 's/\x1b\[[0-9;]*[a-zA-Z]//g'" 2>/dev/null)
-            LXC_EXIT=$?
-            CI_STATUS=$(lxc exec "$VM_NAME" --project "$LXD_PROJECT" -- cloud-init status 2>/dev/null)
-            
-            # Check if we should stop (Is cloud-init done?)
-            if [[ "$CI_STATUS" == *"status: error"* ]]; then
-                echo ""
-                echo -e "${BRED}Error: cloud-init crashed during deployment! Check the logs above.${NC}${CLR_EOL}"
-                echo "Run '${CLEANUP_SCRIPT}' to clean up the environment."
-                exit 1
-            elif [[ "$CI_STATUS" == *"status: done"* ]]; then
-                # Print the final status one last time cleanly
-                echo -e "${CURSOR_TOP}${BYELLOW}-> 5. Juju Deployment Status (Finalizing...)${NC}${CLR_EOL}"
-                echo -e "Target IP: $IP | Updated: $(date +%T)${CLR_EOL}"
-                echo -e "${BYELLOW}-------------------------------------------------------${NC}${CLR_EOL}"
-                echo -e "$JUJU_OUTPUT" | sed "s/$/${CLR_EOL}/"
-                echo -e "${CLEAR_REST}" # Clean up bottom
-                echo ""
-                echo -e "${BYELLOW}cloud-init finished successfully!${NC}"
-                PHASE="DONE"
-                break
-            fi
-            
-            # Repaint interactive UI terminal screen
-            if [ $LXC_EXIT -eq 0 ]; then
-                # Move cursor to top (0,0) -> Print Data -> Clear remaining junk at bottom
-                echo -ne "${CURSOR_TOP}"
+            RAW_DATA=$(lxc exec "$VM_NAME" --project "$LXD_PROJECT" \
+                --env SYS_USER="$SYS_USER" \
+                --env JUJU_MODELS="$JUJU_MODELS" \
+                --env LOG_LINES="$CLOUD_INIT_LOG_LINES" \
+                -- bash -c '
                 
-                # Header
-                echo -e "${BYELLOW}-> 5. Juju Deployment Status (cloud-init is running...)${NC}${CLR_EOL}"
-                echo -e "Target IP: $IP | Updated: $(date +%T)${CLR_EOL}"
+                CI_STATUS=$(cloud-init status 2>/dev/null)
                 
-                # Tail $CLOUD_INIT_LOG_LINES lines of cloud-init logs
-                echo -e "${BYELLOW}---------------- Latest cloud-init Logs ----------------${NC}${CLR_EOL}"
-                # Print logs, ensuring we wipe the end of the line for every log entry
-                if [ -n "$LOG_OUTPUT" ]; then
-                    echo -e "$LOG_OUTPUT" | sed "s/$/${CLR_EOL}/"
+                echo "---LOG_START---"
+                cat $(ls -rt /var/log/cloud-init-output.log* 2>/dev/null) 2>/dev/null | tail -n "$LOG_LINES" | sed "s/\r$//; s/.*\r//; s/\x1b\[[0-9;?]*[A-Za-ln-z]//g"
+                echo ""
+                echo "---LOG_END---"
+                
+                echo "---JUJU_START---"
+                if command -v juju >/dev/null; then
+                    JUJU_EXEC="sudo -H -u $SYS_USER"
+                    
+                    EXISTING_MODELS=$($JUJU_EXEC juju models --format=json 2>/dev/null | jq -r ".models[].name" 2>/dev/null | sed "s#.*/##")
+                    TARGET_MODEL="controller"
+                    for m in $JUJU_MODELS; do
+                        if echo "$EXISTING_MODELS" | grep -qx "$m"; then
+                            TARGET_MODEL="$m"
+                            break
+                        fi
+                    done
+                    $JUJU_EXEC juju status -m $TARGET_MODEL --color 2>/dev/null || echo "Waiting for Juju models to initialize..."
                 else
-                    echo -e "(Waiting for logs...)${CLR_EOL}"
+                    echo "Waiting for Juju to be installed..."
+                fi
+                echo "---JUJU_END---"
+                
+                echo "---CI_START---"
+                echo "$CI_STATUS"
+                echo "---CI_END---"
+            ' 2>/dev/null)
+            
+            LXC_EXIT=$?
+            
+            if [ $LXC_EXIT -eq 0 ]; then
+                LOG_OUTPUT=$(echo "$RAW_DATA" | sed -n '/^---LOG_START---/,/^---LOG_END---/{/^---LOG_START---/d;/^---LOG_END---/d;p}')
+                JUJU_OUTPUT=$(echo "$RAW_DATA" | sed -n '/^---JUJU_START---/,/^---JUJU_END---/{/^---JUJU_START---/d;/^---JUJU_END---/d;p}')
+                CI_STATUS=$(echo "$RAW_DATA" | sed -n '/^---CI_START---/,/^---CI_END---/{/^---CI_START---/d;/^---CI_END---/d;p}')
+                
+                # Check if it should stop (is cloud-init done?)
+                if [[ "$CI_STATUS" == *"status: error"* ]]; then
+                    echo ""
+                    echo -e "${BRED}Error: cloud-init crashed during deployment! Check the logs above.${NC}${CLR_EOL}"
+                    echo ""
+                    echo -e "${BYELLOW}-------- Last 50 lines of cloud-init-output.log --------${NC}"
+                    lxc exec "$VM_NAME" --project "$LXD_PROJECT" -- bash -c "cat \$(ls -rt /var/log/cloud-init-output.log* 2>/dev/null) 2>/dev/null | tail -n 50 | sed 's/\r\$//; s/.*\r//; s/\x1b\[[0-9;?]*[A-Za-ln-z]//g'"
+                    echo -ne "${NC}"
+                    echo -e "${BYELLOW}--------------------------------------------------------${NC}"
+                    echo "Connect using 'ssh ${SSH_OPTS[*]} ${SYS_USER}@$IP' to debug what happened, and resume deployment..."
+                    echo "Or alternatively run '${CLEANUP_SCRIPT}' to clean up the environment."
+                    PHASE="DONE"
+                    break
+                elif [[ "$CI_STATUS" == *"status: done"* ]]; then
+                    # Print the final status one last time cleanly
+                    echo -e "${CURSOR_TOP}${BYELLOW}-> 5. Juju Deployment Status (Finalizing...)${NC}${CLR_EOL}"
+                    echo -e "Target IP: $IP | Updated: $(date +%T)${CLR_EOL}"
+                    echo -e "${BYELLOW}-------------------------------------------------------${NC}${CLR_EOL}"
+                    echo -e "$JUJU_OUTPUT" | sed "s/$/${CLR_EOL}/"
+                    echo -ne "${CLEAR_REST}" # Clean up bottom
+                    echo ""
+                    echo -e "${BYELLOW}cloud-init finished successfully!${NC}"
+                    PHASE="DONE"
+                    break
                 fi
                 
-                # Juju watch
-                echo -e "${BYELLOW}--------------------- Juju Status ----------------------${NC}${CLR_EOL}"
+                # Header
+                UI_FRAME="${CURSOR_TOP}${BYELLOW}-> 5. Juju Deployment Status (cloud-init is running...)${NC}${CLR_EOL}\n"
+                UI_FRAME+="Target IP: $IP | Updated: $(date +%T)${CLR_EOL}\n"
+                
+                # Tail $CLOUD_INIT_LOG_LINES lines of cloud-init logs
+                UI_FRAME+="${BYELLOW}---------------- Latest cloud-init Logs ----------------${NC}${CLR_EOL}\n"
+                if [ -n "$LOG_OUTPUT" ]; then
+                    UI_FRAME+=$(echo -e "$LOG_OUTPUT" | sed "s/$/${CLR_EOL}/")
+                    UI_FRAME+="\n"
+                else
+                    UI_FRAME+="(Waiting for logs...)${CLR_EOL}\n"
+                fi
+                
+                UI_FRAME+="${BYELLOW}--------------------- Juju Status ----------------------${NC}${CLR_EOL}\n"
                 
                 # Reserve lines for cloud-init logs + header (4) + a safety buffer (2)
                 MAX_JUJU_LINES=$(( USER_TERM_HEIGHT - ( 4 + CLOUD_INIT_LOG_LINES ) - 2 ))
@@ -1888,14 +1941,17 @@ USER_TERM_HEIGHT=$(tput lines 2>/dev/null || echo 40)
                 # Print Juju output: Truncate if it exceeds available terminal lines
                 if [ "$JUJU_LINE_COUNT" -gt "$MAX_JUJU_LINES" ]; then
                     HIDDEN_LINES=$(( JUJU_LINE_COUNT - MAX_JUJU_LINES ))
-                    echo -e "$JUJU_OUTPUT" | head -n "$MAX_JUJU_LINES" | sed "s/$/${CLR_EOL}/"
-                    echo -e "... [ Output truncated by $HIDDEN_LINES lines to fit terminal ] ...${CLR_EOL}"
+                    UI_FRAME+=$(echo -e "$JUJU_OUTPUT" | head -n "$MAX_JUJU_LINES" | sed "s/$/${CLR_EOL}/")
+                    UI_FRAME+="\n... [ Output truncated by $HIDDEN_LINES lines to fit terminal ] ...${CLR_EOL}\n"
                 else
-                    echo -e "$JUJU_OUTPUT" | sed "s/$/${CLR_EOL}/"
+                    UI_FRAME+=$(echo -e "$JUJU_OUTPUT" | sed "s/$/${CLR_EOL}/")
+                    UI_FRAME+="\n"
                 fi
                 
                 # Clear whatever is left at the very bottom of the screen (in case list got shorter)
-                echo -ne "${CLEAR_REST}"
+                UI_FRAME+="${CLEAR_REST}"
+                
+                echo -ne "$UI_FRAME"
             else
                 # If SSH fails, just print a warning on top, don't wipe screen
                 echo -ne "${CURSOR_TOP}${BYELLOW}Connection lost. Reconnecting...${NC}${CLR_EOL}\r"
