@@ -175,17 +175,6 @@
 {% set os_pub_api_ip_count = meta.get("os_pub_api_ip_count") | default(custom_os_pub_api_ip_count, true) | int %}
 {% set os_int_api_ip_count = meta.get("os_int_api_ip_count") | default(custom_os_int_api_ip_count, true) | int %}
 
-{% set _raw_pub = meta.get("os_pub_api_hostname") if meta.get("os_pub_api_hostname") is not none else custom_os_pub_api_hostname %}
-{% set os_pub_api_hostname = "" if _raw_pub | string | lower in ['none', 'false', 'null', ''] else _raw_pub %}
-{% set _raw_int = meta.get("os_int_api_hostname") if meta.get("os_int_api_hostname") is not none else custom_os_int_api_hostname %}
-{% set os_int_api_hostname = "" if _raw_int | string | lower in ['none', 'false', 'null', ''] else _raw_int %}
-{% set _raw_rgw = meta.get("os_rgw_api_hostname") if meta.get("os_rgw_api_hostname") is not none else custom_os_rgw_api_hostname %}
-{% set os_rgw_api_hostname = "" if _raw_rgw | string | lower in ['none', 'false', 'null', ''] else _raw_rgw %}
-
-{% set pub_fqdn = (os_pub_api_hostname ~ '.' ~ (tld if tld else 'maas')) if (os_pub_api_hostname and '.' not in os_pub_api_hostname) else os_pub_api_hostname %}
-{% set int_fqdn = (os_int_api_hostname ~ '.' ~ (tld if tld else 'maas')) if (os_int_api_hostname and '.' not in os_int_api_hostname) else os_int_api_hostname %}
-{% set rgw_fqdn = (os_rgw_api_hostname ~ '.' ~ (tld if tld else 'maas')) if (os_rgw_api_hostname and '.' not in os_rgw_api_hostname) else os_rgw_api_hostname %}
-
 {% set os_add_vault = meta.get("os_add_vault") | default(custom_os_add_vault, true) | string | lower == "true" %}
 {% set os_add_tls = meta.get("os_add_tls") | default(custom_os_add_tls, true) | string | lower == "true" %}
 {% set os_add_barbican = meta.get("os_add_barbican") | default(custom_os_add_barbican, true) | string | lower == "true" %}
@@ -203,6 +192,22 @@
 {% set os_add_maintenance = meta.get("os_add_maintenance") | default(custom_os_add_maintenance, true) | string | lower == "true" %}
 {% set os_add_tempest = meta.get("os_add_tempest") | default(custom_os_add_tempest, true) | string | lower == "true" %}
 {% set os_add_cos = meta.get("os_add_cos") | default(custom_os_add_cos, true) | string | lower == "true" %}
+
+{% set _raw_pub = meta.get("os_pub_api_hostname") if meta.get("os_pub_api_hostname") is not none else custom_os_pub_api_hostname %}
+{% set os_pub_api_hostname = "" if _raw_pub | string | lower in ['none', 'false', 'null', ''] else _raw_pub %}
+{% set os_pub_api_hostname = custom_os_pub_api_hostname if (os_add_tls and not os_pub_api_hostname) else os_pub_api_hostname %}
+
+{% set _raw_int = meta.get("os_int_api_hostname") if meta.get("os_int_api_hostname") is not none else custom_os_int_api_hostname %}
+{% set os_int_api_hostname = "" if _raw_int | string | lower in ['none', 'false', 'null', ''] else _raw_int %}
+{% set os_int_api_hostname = custom_os_int_api_hostname if (os_add_tls and not os_int_api_hostname) else os_int_api_hostname %}
+
+{% set _raw_rgw = meta.get("os_rgw_api_hostname") if meta.get("os_rgw_api_hostname") is not none else custom_os_rgw_api_hostname %}
+{% set os_rgw_api_hostname = "" if _raw_rgw | string | lower in ['none', 'false', 'null', ''] else _raw_rgw %}
+{% set os_rgw_api_hostname = custom_os_rgw_api_hostname if (os_add_tls and not os_rgw_api_hostname) else os_rgw_api_hostname %}
+
+{% set pub_fqdn = (os_pub_api_hostname ~ '.' ~ (tld if tld else 'maas')) if (os_pub_api_hostname and '.' not in os_pub_api_hostname) else os_pub_api_hostname %}
+{% set int_fqdn = (os_int_api_hostname ~ '.' ~ (tld if tld else 'maas')) if (os_int_api_hostname and '.' not in os_int_api_hostname) else os_int_api_hostname %}
+{% set rgw_fqdn = (os_rgw_api_hostname ~ '.' ~ (tld if tld else 'maas')) if (os_rgw_api_hostname and '.' not in os_rgw_api_hostname) else os_rgw_api_hostname %}
 
 {% set os_manifest_b64 = meta.get("os_manifest_b64") %}
 
@@ -954,11 +959,15 @@ write_files:
     # Automatically create and add ssh keys to MAAS
     echo -e "\n${BYELLOW}-------- Generating SSH keys and adding them to MAAS... --------${NC}\n"
     
-    ssh-keygen -q -t rsa -N "" -f "/home/{{ sys_user }}/.ssh/id_rsa"
-    chown {{ sys_user }}:{{ sys_user }} /home/{{ sys_user }}/.ssh/id_rsa /home/{{ sys_user }}/.ssh/id_rsa.pub
-    chmod 600 /home/{{ sys_user }}/.ssh/id_rsa
-    chmod 644 /home/{{ sys_user }}/.ssh/id_rsa.pub
-    maas {{ maas_user }} sshkeys create key="$(cat /home/{{ sys_user }}/.ssh/id_rsa.pub)"
+    if [ ! -f "/home/{{ sys_user }}/.ssh/id_rsa" ]; then
+        ssh-keygen -q -t rsa -N "" -f "/home/{{ sys_user }}/.ssh/id_rsa"
+        chown {{ sys_user }}:{{ sys_user }} /home/{{ sys_user }}/.ssh/id_rsa /home/{{ sys_user }}/.ssh/id_rsa.pub
+        chmod 600 /home/{{ sys_user }}/.ssh/id_rsa
+        chmod 644 /home/{{ sys_user }}/.ssh/id_rsa.pub
+        maas {{ maas_user }} sshkeys create key="$(cat /home/{{ sys_user }}/.ssh/id_rsa.pub)"
+    else
+        echo "SSH keys already exist. Skipping generation to prevent lockout..."
+    fi
     
 {% if ssh_key %}
     maas {{ maas_user }} sshkeys create key="{{ ssh_key }}"
@@ -1158,14 +1167,18 @@ write_files:
     # Generate local LXD trust certificate
     echo -e "\n${BYELLOW}-------- Generating trust certificate for local LXD... --------${NC}\n"
     
-    openssl req -x509 -newkey rsa:2048 -keyout $LXD_KEY -out $LXD_CERT -nodes -days 3650 -subj "/CN=lxd-local"
-    lxc config trust add $LXD_CERT --name lxd-local
-    
-    # Provide certs to user context
-    $RUN_AS_LOGIN mkdir -p /home/{{ sys_user }}/snap/lxd/common/config
-    cp $LXD_CERT /home/{{ sys_user }}/snap/lxd/common/config/client.crt
-    cp $LXD_KEY /home/{{ sys_user }}/snap/lxd/common/config/client.key
-    chown -R {{ sys_user }}:{{ sys_user }} /home/{{ sys_user }}/snap/lxd/common/config
+    if [ ! -f "$LXD_CERT" ]; then
+        openssl req -x509 -newkey rsa:2048 -keyout $LXD_KEY -out $LXD_CERT -nodes -days 3650 -subj "/CN=lxd-local"
+        lxc config trust add $LXD_CERT --name lxd-local
+        
+        # Provide certs to user context
+        $RUN_AS_LOGIN mkdir -p /home/{{ sys_user }}/snap/lxd/common/config
+        cp $LXD_CERT /home/{{ sys_user }}/snap/lxd/common/config/client.crt
+        cp $LXD_KEY /home/{{ sys_user }}/snap/lxd/common/config/client.key
+        chown -R {{ sys_user }}:{{ sys_user }} /home/{{ sys_user }}/snap/lxd/common/config
+    else
+        echo "LXD trust certificate already exists. Skipping generation to preserve MAAS power controls..."
+    fi
     
 {% else %}
     
@@ -1588,7 +1601,7 @@ write_files:
         echo -e "\n${BYELLOW}-------- Generating Sunbeam manifest... --------${NC}\n"
         
         cat <<EOF > "$MANIFEST_FILE"
-{% if os_add_octavia or os_add_magnum or os_add_cos %}
+{% if os_add_octavia or os_add_magnum %}
     features:
 {% if os_add_octavia %}
       loadbalancer:
@@ -1600,33 +1613,6 @@ write_files:
           autocreate_network: true
           autocreate_securitygroups: true
 {% endif %}
-{% endif %}
-{% if os_add_cos %}
-      observability:
-        embedded:
-          software:
-            charms:
-              prometheus-k8s:
-                channel: "latest/stable"
-                storage:
-                  database: "20G"
-              loki-k8s:
-                channel: "latest/stable"
-                storage:
-                  active-index-directory: "2G"
-                  loki-chunks: "5G"
-              grafana-k8s:
-                channel: "latest/stable"
-                storage:
-                  database: "1G"
-              alertmanager-k8s:
-                channel: "latest/stable"
-                storage:
-                  data: "1G"
-              opentelemetry-collector-k8s:
-                channel: "latest/stable"
-                storage:
-                  persisted: "1G"
 {% endif %}
 {% endif %}
     core:
@@ -1683,6 +1669,13 @@ write_files:
     chown {{ sys_user }}:{{ sys_user }} "$MANIFEST_FILE"
     chmod 644 "$MANIFEST_FILE"
     cat "$MANIFEST_FILE"
+    
+{% if os_add_amphora %}
+    echo -e "\n${BYELLOW}-------- Enabling snap feature gates for Octavia Amphora... --------${NC}\n"
+    snap set openstack feature.loadbalancer-amphora=true # Maybe not needed (?)
+    snap set openstack feature.microovn-sdn=true
+    snap set openstack ovn.provider=microovn
+{% endif %}
     
     # Bootstrap the orchestration layer
     echo -e "\n${BYELLOW}-------- Bootstrapping the orchestration layer... --------${NC}\n"
@@ -1937,13 +1930,13 @@ write_files:
     
 {% if pro_token %}
     echo -e "\n${BYELLOW}-------- Enabling Ubuntu Pro... --------${NC}\n"
-    run_sunbeam "sunbeam enable pro {{ pro_token }}" "/tmp/sunbeam-pro.log"
+    run_sunbeam "sunbeam enable -m $MANIFEST_FILE pro {{ pro_token }}" "/tmp/sunbeam-pro.log"
 {% endif %}
     
 {% set deploy_vault = os_add_vault or os_add_barbican or os_add_magnum %}
 {% if deploy_vault %}
     echo -e "\n${BYELLOW}-------- Enabling Vault... --------${NC}\n"
-    run_sunbeam "sunbeam enable vault" "/tmp/sunbeam-vault.log"
+    run_sunbeam "sunbeam enable -m $MANIFEST_FILE vault" "/tmp/sunbeam-vault.log"
     
     if grep -q "Root token:" /home/{{ sys_user }}/vault-keys.txt 2>/dev/null; then
         echo "Vault already initialized. Using existing keys..."
@@ -1979,21 +1972,25 @@ write_files:
 {% if os_add_tls and deploy_vault %}
     echo -e "\n${BYELLOW}-------- Enabling TLS via Vault for API Endpoints... --------${NC}\n"
     
-    echo "Creating OpenSSL CA configuration..."
-    cat <<EOF > /home/{{ sys_user }}/ca.conf
-    [v3_ca]
-    subjectKeyIdentifier = hash
-    authorityKeyIdentifier = keyid:always,issuer
-    basicConstraints = critical, CA:TRUE
-    keyUsage = critical, digitalSignature, cRLSign, keyCertSign
-    EOF
-    
-    echo "Generating Self-Signed Root CA for Vault..."
-    openssl req -x509 -newkey rsa:4096 -keyout /home/{{ sys_user }}/sunbeam-ca.key -out /home/{{ sys_user }}/sunbeam-ca.crt -sha256 -days 3650 -nodes -config /home/{{ sys_user }}/ca.conf -extensions v3_ca -subj "/CN=Sunbeam Local Root CA"
-    chown {{ sys_user }}:{{ sys_user }} /home/{{ sys_user }}/sunbeam-ca.* /home/{{ sys_user }}/ca.conf
+    if [ ! -f "/home/{{ sys_user }}/sunbeam-ca.crt" ]; then
+        echo "Creating OpenSSL CA configuration..."
+        cat <<EOF > /home/{{ sys_user }}/ca.conf
+        [v3_ca]
+        subjectKeyIdentifier = hash
+        authorityKeyIdentifier = keyid:always,issuer
+        basicConstraints = critical, CA:TRUE
+        keyUsage = critical, digitalSignature, cRLSign, keyCertSign
+        EOF
+        
+        echo "Generating Self-Signed Root CA for Vault..."
+        openssl req -x509 -newkey rsa:4096 -keyout /home/{{ sys_user }}/sunbeam-ca.key -out /home/{{ sys_user }}/sunbeam-ca.crt -sha256 -days 3650 -nodes -config /home/{{ sys_user }}/ca.conf -extensions v3_ca -subj "/CN=Sunbeam Local Root CA"
+        chown {{ sys_user }}:{{ sys_user }} /home/{{ sys_user }}/sunbeam-ca.* /home/{{ sys_user }}/ca.conf
+    else
+        echo "Root CA already exists. Skipping generation to preserve Vault trust chain..."
+    fi
     
     CA_B64=$(base64 -w0 /home/{{ sys_user }}/sunbeam-ca.crt)
-    run_sunbeam "sunbeam enable tls vault --ca \"$CA_B64\" --ca-chain \"$CA_B64\" --endpoint public --endpoint internal --endpoint rgw" "/tmp/sunbeam-tls.log"
+    run_sunbeam "sunbeam enable -m $MANIFEST_FILE tls vault --ca \"$CA_B64\" --ca-chain \"$CA_B64\" --endpoint public --endpoint internal --endpoint rgw" "/tmp/sunbeam-tls.log"
     
     # Extract CSR from vault
     echo "Obtaining the CSRs from Vault..."
@@ -2022,89 +2019,84 @@ write_files:
     fi
 {% elif os_add_tls %}
     echo -e "\n${BYELLOW}-------- Enabling TLS self-signed for API Endpoints... --------${NC}\n"
-    run_sunbeam "sunbeam enable tls self-signed" "/tmp/sunbeam-tls.log"
+    run_sunbeam "sunbeam enable -m $MANIFEST_FILE tls self-signed" "/tmp/sunbeam-tls.log"
 {% endif %}
     
 {% if os_add_barbican or os_add_magnum %}
     echo -e "\n${BYELLOW}-------- Enabling Barbican (Secrets)... --------${NC}\n"
-    run_sunbeam "sunbeam enable secrets" "/tmp/sunbeam-barbican.log"
+    run_sunbeam "sunbeam enable -m $MANIFEST_FILE secrets" "/tmp/sunbeam-barbican.log"
     wait_for_app "barbican"
 {% endif %}
     
 {% if os_add_octavia or os_add_magnum %}
     echo -e "\n${BYELLOW}-------- Enabling Octavia (Load Balancer)... --------${NC}\n"
-{% if os_add_amphora %}
-    echo -e "\n${BYELLOW}-------- Enabling snap feature gates for Octavia Amphora... --------${NC}\n"
-    snap set openstack feature.loadbalancer-amphora=true # Maybe not needed (?)
-    snap set openstack feature.microovn-sdn=true
-{% endif %}
-    run_sunbeam "sunbeam enable loadbalancer" "/tmp/sunbeam-octavia.log"
+    run_sunbeam "sunbeam enable -m $MANIFEST_FILE loadbalancer" "/tmp/sunbeam-octavia.log"
     wait_for_app "octavia"
 {% endif %}
     
 {% if os_add_masakari %}
     echo -e "\n${BYELLOW}-------- Enabling Masakari (Instances HA)... --------${NC}\n"
-    run_sunbeam "sunbeam enable instance-recovery" "/tmp/sunbeam-masakari.log"
+    run_sunbeam "sunbeam enable -m $MANIFEST_FILE instance-recovery" "/tmp/sunbeam-masakari.log"
     wait_for_app "masakari"
 {% endif %}
     
 {% if os_add_heat %}
     echo -e "\n${BYELLOW}-------- Enabling Heat (Orchestration)... --------${NC}\n"
-    run_sunbeam "sunbeam enable orchestration" "/tmp/sunbeam-heat.log"
+    run_sunbeam "sunbeam enable -m $MANIFEST_FILE orchestration" "/tmp/sunbeam-heat.log"
     wait_for_app "heat"
 {% endif %}
     
 {% if os_add_designate %}
     echo -e "\n${BYELLOW}-------- Enabling Designate (DNS)... --------${NC}\n"
-    run_sunbeam "sunbeam enable dns 'ns1.{{ tld if tld else 'maas' }}.'" "/tmp/sunbeam-designate.log"
+    run_sunbeam "sunbeam enable -m $MANIFEST_FILE dns 'ns1.{{ tld if tld else 'maas' }}.'" "/tmp/sunbeam-designate.log"
     wait_for_app "designate"
 {% endif %}
     
 {% if os_add_magnum %}
     echo -e "\n${BYELLOW}-------- Enabling Magnum (Containers as a Service)... --------${NC}\n"
-    run_sunbeam "sunbeam enable caas" "/tmp/sunbeam-magnum.log"
+    run_sunbeam "sunbeam enable -m $MANIFEST_FILE caas" "/tmp/sunbeam-magnum.log"
 {% endif %}
     
 {% if os_add_ldap %}
     echo -e "\n${BYELLOW}-------- Enabling LDAP... --------${NC}\n"
-    run_sunbeam "sunbeam enable ldap" "/tmp/sunbeam-ldap.log"
+    run_sunbeam "sunbeam enable -m $MANIFEST_FILE ldap" "/tmp/sunbeam-ldap.log"
 {% endif %}
     
 {% if os_add_images %}
     echo -e "\n${BYELLOW}-------- Enabling Image Sync... --------${NC}\n"
-    run_sunbeam "sunbeam enable images-sync" "/tmp/sunbeam-images.log"
+    run_sunbeam "sunbeam enable -m $MANIFEST_FILE images-sync" "/tmp/sunbeam-images.log"
 {% endif %}
     
 {% if os_add_watcher %}
     echo -e "\n${BYELLOW}-------- Enabling Watcher (Resource Optimization)... --------${NC}\n"
-    run_sunbeam "sunbeam enable resource-optimization" "/tmp/sunbeam-watcher.log"
+    run_sunbeam "sunbeam enable -m $MANIFEST_FILE resource-optimization" "/tmp/sunbeam-watcher.log"
 {% endif %}
     
 {% if os_add_telemetry %}
     echo -e "\n${BYELLOW}-------- Enabling Telemetry (Ceilometer/Aodh)... --------${NC}\n"
-    run_sunbeam "sunbeam enable telemetry" "/tmp/sunbeam-telemetry.log"
+    run_sunbeam "sunbeam enable -m $MANIFEST_FILE telemetry" "/tmp/sunbeam-telemetry.log"
 {% endif %}
     
 {% if os_add_manila %}
     echo -e "\n${BYELLOW}-------- Enabling Manila (Shared Filesystems)... --------${NC}\n"
     snap set openstack feature.shared-filesystem=true
-    run_sunbeam "sunbeam enable shared-filesystem" "/tmp/sunbeam-manila.log"
+    run_sunbeam "sunbeam enable -m $MANIFEST_FILE shared-filesystem" "/tmp/sunbeam-manila.log"
 {% endif %}
     
 {% if os_add_maintenance %}
     echo -e "\n${BYELLOW}-------- Enabling Maintenance Mode... --------${NC}\n"
     snap set openstack feature.maintenance=true
-    run_sunbeam "sunbeam enable maintenance" "/tmp/sunbeam-maintenance.log"
+    run_sunbeam "sunbeam enable -m $MANIFEST_FILE maintenance" "/tmp/sunbeam-maintenance.log"
 {% endif %}
     
 {% if os_add_tempest %}
     echo -e "\n${BYELLOW}-------- Enabling Tempest (Validation)... --------${NC}\n"
-    run_sunbeam "sunbeam enable validation" "/tmp/sunbeam-tempest.log"
+    run_sunbeam "sunbeam enable -m $MANIFEST_FILE validation" "/tmp/sunbeam-tempest.log"
 {% endif %}
     
 {% if os_add_cos %}
     echo -e "\n${BYELLOW}-------- Enabling Observability Stack (COS)... --------${NC}\n"
-    run_sunbeam "sunbeam enable observability embedded" "/tmp/sunbeam-cos.log"
+    run_sunbeam "sunbeam enable -m $MANIFEST_FILE observability embedded" "/tmp/sunbeam-cos.log"
 {% endif %}
     
     echo -e "\n${BYELLOW}-------- Listing Enabled Optional Features... --------${NC}\n"
