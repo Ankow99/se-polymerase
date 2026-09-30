@@ -640,7 +640,7 @@ write_files:
   content: |
     #!/bin/bash
     
-    # Source the environment variables so it has $RUN_AS_LOGIN, $AUTO_RETRY, $BRED, etc.
+    # Source the environment variables
     if [ -f "/etc/repro-env" ]; then
         source /etc/repro-env
     else
@@ -670,7 +670,13 @@ write_files:
   content: |
     #!/bin/bash
     
-    if [ -f "/etc/repro-env" ]; then source /etc/repro-env; fi
+    # Source the environment variables
+    if [ -f "/etc/repro-env" ]; then
+        source /etc/repro-env
+    else
+        echo "Error: /etc/repro-env not found."
+        exit 1
+    fi
     
     APP="$1"
     MODEL="${2:-openstack}"
@@ -694,6 +700,51 @@ write_files:
     else
         echo -e "  [${BGREEN}OK${NC}] $APP is Active!"
     fi
+
+{% set deploy_vault = os_add_vault or os_add_barbican or os_add_magnum %}
+{% if deploy_vault %}
+- path: /usr/local/bin/unseal_vault
+  permissions: '0755'
+  content: |
+    #!/bin/bash
+    
+    # Source the environment variables
+    if [ -f "/etc/repro-env" ]; then
+        source /etc/repro-env
+    else
+        echo "Error: /etc/repro-env not found."
+        exit 1
+    fi
+    
+    echo -e "\n${BYELLOW}-------- Initializing Vault... --------${NC}"
+    
+    if grep -q "Root token:" "$VAULT_INIT" 2>/dev/null; then
+        echo "Vault already initialized. Using existing keys..."
+    else
+        echo "Initializing Vault..."
+        $RUN_AS_LOGIN sunbeam vault init 1 1 > "$VAULT_INIT"
+    fi
+    
+    VAULT_KEY=$(awk '/Unseal keys:/{getline; print}' "$VAULT_INIT" | tr -d ' ')
+    if [ -z "$VAULT_KEY" ]; then
+        echo -e "  [${BRED}!!${NC}] Failed to parse Vault unseal key from $VAULT_INIT."
+        exit 1
+    fi
+    
+    VAULT_UNIT_COUNT=$($RUN_AS_LOGIN bash -c "sunbeam vault status | grep -c 'vault/'")
+    if [ -z "$VAULT_UNIT_COUNT" ] || [ "$VAULT_UNIT_COUNT" -eq 0 ]; then
+        VAULT_UNIT_COUNT={{ cloud_ha }}
+    fi
+    
+    echo "Attempting to unseal $VAULT_UNIT_COUNT Vault unit(s)..."
+    for i in $(seq 1 $VAULT_UNIT_COUNT); do
+        echo -e "\nSending unseal key to Vault unit $i..."
+        run_sunbeam "sunbeam vault unseal '$VAULT_KEY'"
+    done
+    
+    echo -e "\nVault keys saved to '$VAULT_INIT' (KEEP THIS SAFE!)"
+    $RUN_AS_LOGIN sunbeam vault status
+{% endif %}
 
 - path: /etc/profile.d/default-editor.sh
   permissions: '0644'
@@ -774,6 +825,7 @@ write_files:
     export LXD_KEY="$LXD_KEY"
     export MANIFEST_FILE="/home/{{ sys_user }}/manifest.yaml"
     export AUTO_RETRY="{{ 'true' if auto_retry else 'false' }}"
+    export VAULT_INIT="/home/{{ sys_user }}/vault-init.txt"
     EOF
     
     # 3. Secure the state file (Only root and sys_user can read it)
@@ -1938,29 +1990,11 @@ write_files:
     echo -e "\n${BYELLOW}-------- Enabling Vault... --------${NC}\n"
     run_sunbeam "sunbeam enable -m $MANIFEST_FILE vault" "/tmp/sunbeam-vault.log"
     
-    if grep -q "Root token:" /home/{{ sys_user }}/vault-keys.txt 2>/dev/null; then
-        echo "Vault already initialized. Using existing keys..."
-    else
-        echo "Initializing Vault..."
-        $RUN_AS_LOGIN sunbeam vault init 1 1 > /home/{{ sys_user }}/vault-keys.txt
-    fi
-    
-    VAULT_KEY=$(awk '/Unseal keys:/{getline; print}' /home/{{ sys_user }}/vault-keys.txt | tr -d ' ')
-    VAULT_TOKEN=$(awk '/Root token:/{print $3}' /home/{{ sys_user }}/vault-keys.txt | tr -d ' ')
-    
-    VAULT_UNIT_COUNT=$($RUN_AS_LOGIN bash -c "sunbeam vault status | grep -c 'vault/'")
-    if [ -z "$VAULT_UNIT_COUNT" ] || [ "$VAULT_UNIT_COUNT" -eq 0 ]; then
-        VAULT_UNIT_COUNT={{ cloud_ha }}
-    fi
-    
-    echo "Unsealing Vault across $VAULT_UNIT_COUNT unit(s)..."
-    for i in $(seq 1 $VAULT_UNIT_COUNT); do
-        echo "Sending unseal key to Vault unit $i..."
-        run_sunbeam "sunbeam vault unseal '$VAULT_KEY'"
-        sleep 5
-    done
+    # Init and unseal cleanly using the helper
+    unseal_vault
     
     echo "Authorizing Vault..."
+    VAULT_TOKEN=$(awk '/Root token:/{print $3}' "$VAULT_INIT" | tr -d ' ')
     run_sunbeam "sunbeam vault authorize-charm '$VAULT_TOKEN'"
     
     echo "Vault unseal key saved to /home/{{ sys_user }}/vault-keys.txt (KEEP THIS SAFE!)"
