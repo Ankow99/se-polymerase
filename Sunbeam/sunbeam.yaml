@@ -133,6 +133,11 @@
 # VARIABLE BINDINGS
 # ==========================================
 
+{% set nested_lxd = meta.get("nested_lxd") | default(custom_nested_lxd, true) | string | lower == "true" %}
+{% set maas_snap = meta.get("maas_snap") | default(custom_maas_snap, true) | string | lower == "true" %}
+{% set update_n_upgrade = meta.get("update_n_upgrade") | default(custom_update_n_upgrade, true) | string | lower == "true" %}
+{% set auto_retry = meta.get("auto_retry") | default(custom_auto_retry, true) | string | lower == "true" %}
+
 {% set ssh_key = meta.get("ssh_key") or custom_ssh_key %}
 {% set ssh_import_id = meta.get("ssh_import_id") or custom_ssh_import_id %}
 {% set sys_user = meta.get("sys_user") or custom_sys_user %}
@@ -164,6 +169,7 @@
 {% set maas_ip_count = meta.get("maas_ip_count") | default(custom_maas_ip_count, true) | int %}
 
 {% set os_deployment = meta.get("os_deployment") or custom_os_deployment %}
+{% set os_run_demo = meta.get("os_run_demo") | default(custom_os_run_demo, true) | string | lower == "true" %}
 {% set os_neutron_bridge = meta.get("os_neutron_bridge") or custom_os_neutron_bridge %}
 {% set os_neutron_cidr = meta.get("os_neutron_cidr") or custom_os_neutron_cidr %}
 {% set os_pub_api_ip_count = meta.get("os_pub_api_ip_count") | default(custom_os_pub_api_ip_count, true) | int %}
@@ -216,36 +222,6 @@
 {% set cloud_disk = meta.get("cloud_disk") or custom_cloud_disk %}
 {% set cloud_osd_disk = meta.get("cloud_osd_disk") or custom_cloud_osd_disk %}
 {% set cloud_osd_count = meta.get("cloud_osd_count") | default(custom_cloud_osd_count, true) | int %}
-
-{% if meta.get("nested_lxd") is not none %}
-    {% set nested_lxd = (meta.get("nested_lxd") | string | lower == "true") %}
-{% else %}
-    {% set nested_lxd = (custom_nested_lxd | string | lower == "true") %}
-{% endif %}
-
-{% if meta.get("maas_snap") is not none %}
-    {% set maas_snap = (meta.get("maas_snap") | string | lower == "true") %}
-{% else %}
-    {% set maas_snap = (custom_maas_snap | string | lower == "true") %}
-{% endif %}
-
-{% if meta.get("update_n_upgrade") is not none %}
-    {% set update_n_upgrade = (meta.get("update_n_upgrade") | string | lower == "true") %}
-{% else %}
-    {% set update_n_upgrade = (custom_update_n_upgrade | string | lower == "true") %}
-{% endif %}
-
-{% if meta.get("os_run_demo") is not none %}
-    {% set os_run_demo = (meta.get("os_run_demo") | string | lower == "true") %}
-{% else %}
-    {% set os_run_demo = (custom_os_run_demo | string | lower == "true") %}
-{% endif %}
-
-{% if meta.get("auto_retry") is not none %}
-    {% set auto_retry = (meta.get("auto_retry") | string | lower == "true") %}
-{% else %}
-    {% set auto_retry = (custom_auto_retry | string | lower == "true") %}
-{% endif %}
 
 # ==========================================
 # CIDR GATEWAY AUTO-CALCULATOR
@@ -2021,8 +1997,8 @@ write_files:
     
     # Extract CSR from vault
     echo "Obtaining the CSRs from Vault..."
-    $RUN_AS_LOGIN sunbeam tls vault list_outstanding_csrs > /home/{{ sys_user }}/vault_csrs.txt
-    awk -F '│' '/BEGIN CERTIFICATE REQUEST/,/END CERTIFICATE REQUEST/ {print $5}' /home/{{ sys_user }}/vault_csrs.txt | sed -e 's/^[ \t]*//' -e 's/[ \t]*$//' > /home/{{ sys_user }}/vault.csr
+    $RUN_AS_LOGIN sunbeam tls vault list_outstanding_csrs --format yaml > /home/{{ sys_user }}/vault_csrs.yaml
+    sed -n '/-----BEGIN CERTIFICATE REQUEST-----/,/-----END CERTIFICATE REQUEST-----/p' /home/{{ sys_user }}/vault_csrs.yaml | sed 's/^[ \t]*//' | tr -d '\r' > /home/{{ sys_user }}/vault.csr
     
     # Input TLS certificates
     if grep -q "BEGIN CERTIFICATE REQUEST" /home/{{ sys_user }}/vault.csr; then
