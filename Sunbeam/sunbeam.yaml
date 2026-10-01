@@ -2009,12 +2009,12 @@ write_files:
     if [ ! -f "/home/{{ sys_user }}/sunbeam-ca.crt" ]; then
         echo "Creating OpenSSL CA configuration..."
         cat <<EOF > /home/{{ sys_user }}/ca.conf
-        [v3_ca]
-        subjectKeyIdentifier = hash
-        authorityKeyIdentifier = keyid:always,issuer
-        basicConstraints = critical, CA:TRUE
-        keyUsage = critical, digitalSignature, cRLSign, keyCertSign
-        EOF
+    [v3_ca]
+    subjectKeyIdentifier = hash
+    authorityKeyIdentifier = keyid:always,issuer
+    basicConstraints = critical, CA:TRUE
+    keyUsage = critical, digitalSignature, cRLSign, keyCertSign
+    EOF
         
         echo "Generating Self-Signed Root CA for Vault..."
         openssl req -x509 -newkey rsa:4096 -keyout /home/{{ sys_user }}/sunbeam-ca.key -out /home/{{ sys_user }}/sunbeam-ca.crt -sha256 -days 3650 -nodes -config /home/{{ sys_user }}/ca.conf -extensions v3_ca -subj "/CN=Sunbeam Local Root CA"
