@@ -1898,7 +1898,7 @@ write_files:
     
     if [ -n "$VALID_HOSTS" ]; then
         ATTEMPTS=0
-        MAX_ATTEMPTS=12 # Timeout - 1 min
+        MAX_ATTEMPTS=12 # Timeout - 2 min
         while true; do
             all_resolved=true
             
@@ -1923,8 +1923,8 @@ write_files:
                 break
             fi
             
-            echo "Waiting 5s before checking again (Attempt $ATTEMPTS/$MAX_ATTEMPTS)..."
-            sleep 5
+            echo "Waiting 10s before checking again (Attempt $ATTEMPTS/$MAX_ATTEMPTS)..."
+            sleep 10
         done
     fi
 {% else %}
