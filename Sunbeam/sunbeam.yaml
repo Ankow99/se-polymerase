@@ -708,8 +708,7 @@ write_files:
         echo -e "  [${BGREEN}OK${NC}] $APP is Active!"
     fi
 
-{% set deploy_vault = os_add_vault or os_add_barbican or os_add_magnum %}
-{% if deploy_vault %}
+# Sunbeam helper: Unseal vault - unseal_vault()
 - path: /usr/local/bin/unseal_vault
   permissions: '0755'
   content: |
@@ -751,7 +750,6 @@ write_files:
     
     echo -e "\nVault keys saved to '$VAULT_INIT' (KEEP THIS SAFE!)"
     $RUN_AS_LOGIN sunbeam vault status
-{% endif %}
 
 - path: /etc/profile.d/default-editor.sh
   permissions: '0644'
@@ -1987,6 +1985,9 @@ write_files:
         exit 1
     fi
     
+    wait_for_model "openstack-machines" || exit 1
+    wait_for_model "openstack" || exit 1
+    
     echo -e "\n${BYELLOW}-------- Activating Optional Features... --------${NC}\n"
     
 {% if pro_token %}
@@ -1994,6 +1995,7 @@ write_files:
     run_sunbeam "sunbeam enable -m $MANIFEST_FILE pro {{ pro_token }}" "/tmp/sunbeam-pro.log"
 {% endif %}
     
+{% set deploy_vault = os_add_vault or os_add_barbican or os_add_magnum %}
 {% if deploy_vault %}
     echo -e "\n${BYELLOW}-------- Enabling Vault... --------${NC}\n"
     run_sunbeam "sunbeam enable -m $MANIFEST_FILE vault" "/tmp/sunbeam-vault.log"
@@ -2053,6 +2055,8 @@ write_files:
         echo "Updating system CA trust store..."
         cp $CERTS_FOLDER/sunbeam-ca.crt /usr/local/share/ca-certificates/sunbeam-ca.crt
         update-ca-certificates
+        
+        wait_for_model "openstack"
         
         echo "Updating admin-openrc and injecting CA bundle..."
         $RUN_AS_LOGIN sunbeam openrc > /home/{{ sys_user }}/admin-openrc
@@ -2140,6 +2144,7 @@ write_files:
     rm -f $CERTS_FOLDER/amphora_answers.txt
 {% endif %}
     
+    wait_for_app "barbican"
     wait_for_app "octavia"
 {% endif %}
     
