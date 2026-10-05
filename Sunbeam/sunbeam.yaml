@@ -2080,7 +2080,9 @@ write_files:
     run_sunbeam "sunbeam enable -m $MANIFEST_FILE loadbalancer" "/tmp/sunbeam-octavia.log"
     
 {% if os_add_amphora %}
+    echo -e "\n${BYELLOW}-------- Enabling Octavia Amphora... --------${NC}\n"
     snap set openstack feature.loadbalancer-amphora=true # Maybe not needed (?)
+    run_sunbeam "sunbeam loadbalancer configure" "/tmp/sunbeam-octavia-amphora.log"
     
     echo -e "\n${BYELLOW}-------- Configuring Octavia Amphora TLS... --------${NC}\n"
     
