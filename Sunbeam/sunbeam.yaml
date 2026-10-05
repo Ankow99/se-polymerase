@@ -231,6 +231,22 @@
 {% set cloud_osd_count = meta.get("cloud_osd_count") | default(custom_cloud_osd_count, true) | int %}
 
 # ==========================================
+# ADDON DEPENDENCY CASCADING
+# ==========================================
+
+# 1. Amphora requires TLS
+{% set os_add_tls = True if os_add_amphora else os_add_tls %}
+
+# 2. Amphora and Magnum both require Octavia
+{% set os_add_octavia = True if (os_add_amphora or os_add_magnum) else os_add_octavia %}
+
+# 3. Octavia requires Barbican
+{% set os_add_barbican = True if os_add_octavia else os_add_barbican %}
+
+# 4. Barbican requires Vault
+{% set os_add_vault = True if os_add_barbican else os_add_vault %}
+
+# ==========================================
 # CIDR GATEWAY AUTO-CALCULATOR
 # ==========================================
 
@@ -1659,9 +1675,8 @@ write_files:
         echo -e "\n${BYELLOW}-------- Generating Sunbeam manifest... --------${NC}\n"
         
         cat <<EOF > "$MANIFEST_FILE"
-{% if os_add_octavia or os_add_magnum %}
-    features:
 {% if os_add_octavia %}
+    features:
       loadbalancer:
         config:
           amphora_enabled: {{ 'true' if os_add_amphora else 'false' }}
@@ -1671,7 +1686,6 @@ write_files:
           autocreate_flavor: true
           autocreate_network: true
           autocreate_securitygroups: true
-{% endif %}
 {% endif %}
 {% endif %}
     core:
@@ -1995,8 +2009,7 @@ write_files:
     run_sunbeam "sunbeam enable -m $MANIFEST_FILE pro {{ pro_token }}" "/tmp/sunbeam-pro.log"
 {% endif %}
     
-{% set deploy_vault = os_add_vault or os_add_barbican or os_add_magnum %}
-{% if deploy_vault %}
+{% if os_add_vault %}
     echo -e "\n${BYELLOW}-------- Enabling Vault... --------${NC}\n"
     run_sunbeam "sunbeam enable -m $MANIFEST_FILE vault" "/tmp/sunbeam-vault.log"
     
@@ -2013,7 +2026,7 @@ write_files:
     wait_for_app "vault" "openstack" "$VAULT_UNIT_COUNT"
 {% endif %}
     
-{% if os_add_tls and deploy_vault %}
+{% if os_add_tls and os_add_vault %}
     echo -e "\n${BYELLOW}-------- Enabling TLS via Vault for API Endpoints... --------${NC}\n"
     
     if [ ! -f "/home/{{ sys_user }}/sunbeam-ca.crt" ]; then
@@ -2069,13 +2082,13 @@ write_files:
     run_sunbeam "sunbeam enable -m $MANIFEST_FILE tls self-signed" "/tmp/sunbeam-tls.log"
 {% endif %}
     
-{% if os_add_barbican or os_add_magnum %}
+{% if os_add_barbican %}
     echo -e "\n${BYELLOW}-------- Enabling Barbican (Secrets)... --------${NC}\n"
     run_sunbeam "sunbeam enable -m $MANIFEST_FILE secrets" "/tmp/sunbeam-barbican.log"
     wait_for_app "barbican"
 {% endif %}
     
-{% if os_add_octavia or os_add_magnum %}
+{% if os_add_octavia %}
     echo -e "\n${BYELLOW}-------- Enabling Octavia (Load Balancer)... --------${NC}\n"
     run_sunbeam "sunbeam enable -m $MANIFEST_FILE loadbalancer" "/tmp/sunbeam-octavia.log"
     
