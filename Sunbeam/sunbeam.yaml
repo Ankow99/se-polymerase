@@ -2137,7 +2137,7 @@ write_files:
     # 9. Apply Security Group Fix for MicroOVN
     echo "Patching Amphora security group for OVN compatibility..."
     $RUN_AS_LOGIN openstack security group rule create --protocol tcp --dst-port 9443 --ingress lb-mgmt-sec-grp
-
+    
     # 10. Cleanup
     echo "Cleaning up Amphora TLS artifacts..."
     rm -f $CERTS_FOLDER/amphora_csrs.yaml
