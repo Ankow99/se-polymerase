@@ -386,6 +386,7 @@ snap:
 {% endif %}
 {% if sunbeam_revision %}
   - snap install openstack --revision={{ sunbeam_revision }}
+  - snap switch openstack --channel={{ sunbeam_channel }}
 {% else %}
   - snap install openstack --channel={{ sunbeam_channel }}
 {% endif %}
