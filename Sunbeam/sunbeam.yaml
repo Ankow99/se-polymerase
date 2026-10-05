@@ -3,7 +3,7 @@
 
 # ---
 # sunbeam transcript: Automated scalable cloud-init install of Sunbeam using MAAS
-# version: 11.4.1
+# version: 11.5.0
 #
 # Synthesized by: Pablo Gonzalez De Greiff @ Canonical
 # ---
@@ -35,6 +35,7 @@
 {% set custom_lxd_channel = "5.21/stable" %}        # PROMPT:LXD Channel
 {% set custom_maas_channel = "3.7/stable" %}        # PROMPT:MAAS Channel
 {% set custom_sunbeam_channel = "2024.1/stable" %}  # PROMPT:Sunbeam Channel
+{% set custom_sunbeam_revision = "" %}              # PROMPT:Sunbeam Revision (Optional)
 
 # --- LXD Settings ---
 {% set custom_lxd_project = "default" %}
@@ -151,6 +152,7 @@
 {% set lxd_channel = meta.get("lxd_channel") or custom_lxd_channel %}
 {% set maas_channel = meta.get("maas_channel") or custom_maas_channel %}
 {% set sunbeam_channel = meta.get("sunbeam_channel") or custom_sunbeam_channel %}
+{% set sunbeam_revision = meta.get("sunbeam_revision") or custom_sunbeam_revision %}
 
 {% set lxd_project = meta.get("lxd_project") or custom_lxd_project %}
 {% set lxd_pool = meta.get("lxd_pool") or custom_lxd_pool %}
@@ -361,11 +363,16 @@ apt:
 
 snap:
   commands:
+  - snap install yq
   - snap install lxd --channel={{ lxd_channel }}
 {% if maas_snap %}
   - snap install maas --channel={{ maas_channel }}
 {% endif %}
+{% if sunbeam_revision %}
+  - snap install openstack --revision={{ sunbeam_revision }}
+{% else %}
   - snap install openstack --channel={{ sunbeam_channel }}
+{% endif %}
 
 package_update: {{ 'true' if update_n_upgrade else 'false' }}
 package_upgrade: {{ 'true' if update_n_upgrade else 'false' }}
@@ -589,7 +596,7 @@ write_files:
             ;;
     esac
 
-# Sunbeam function to simplify automated usage - run_sunbeam "command" [logfile]
+# Sunbeam helper: Sunbeam function to simplify automated usage - run_sunbeam "command" [logfile]
 - path: /usr/local/bin/run_sunbeam
   permissions: '0755'
   content: |
@@ -825,6 +832,7 @@ write_files:
     export LXD_KEY="$LXD_KEY"
     export MANIFEST_FILE="/home/{{ sys_user }}/manifest.yaml"
     export AUTO_RETRY="{{ 'true' if auto_retry else 'false' }}"
+    export CERTS_FOLDER="$CERTS_FOLDER"
     export VAULT_INIT="/home/{{ sys_user }}/vault-init.txt"
     EOF
     
@@ -928,7 +936,7 @@ write_files:
     # Verify critical dependencies
     echo -e "\n${BYELLOW}-------- Verifying dependencies... --------${NC}\n"
     
-    for cmd in lxc jq maas sunbeam; do
+    for cmd in lxc jq yq maas sunbeam; do
         if ! command -v $cmd >/dev/null 2>&1; then
             echo "CRITICAL ERROR: Required command '$cmd' not found."
             echo "Snap/apt package installation likely failed due to a network error."
@@ -1660,6 +1668,7 @@ write_files:
         config:
           amphora_enabled: {{ 'true' if os_add_amphora else 'false' }}
 {% if os_add_amphora %}
+          amp_image_tag: octavia-amphora
           autocreate_image: true
           autocreate_flavor: true
           autocreate_network: true
@@ -1724,7 +1733,7 @@ write_files:
     
 {% if os_add_amphora %}
     echo -e "\n${BYELLOW}-------- Enabling snap feature gates for Octavia Amphora... --------${NC}\n"
-    snap set openstack feature.loadbalancer-amphora=true # Maybe not needed (?)
+    
     snap set openstack feature.microovn-sdn=true
     snap set openstack ovn.provider=microovn
 {% endif %}
@@ -1898,7 +1907,7 @@ write_files:
     
     if [ -n "$VALID_HOSTS" ]; then
         ATTEMPTS=0
-        MAX_ATTEMPTS=12 # Timeout - 2 min
+        MAX_ATTEMPTS=12 # Timeout - 1 min
         while true; do
             all_resolved=true
             
@@ -1923,8 +1932,8 @@ write_files:
                 break
             fi
             
-            echo "Waiting 10s before checking again (Attempt $ATTEMPTS/$MAX_ATTEMPTS)..."
-            sleep 10
+            echo "Waiting 5s before checking again (Attempt $ATTEMPTS/$MAX_ATTEMPTS)..."
+            sleep 5
         done
     fi
 {% else %}
@@ -1985,7 +1994,6 @@ write_files:
     run_sunbeam "sunbeam enable -m $MANIFEST_FILE pro {{ pro_token }}" "/tmp/sunbeam-pro.log"
 {% endif %}
     
-{% set deploy_vault = os_add_vault or os_add_barbican or os_add_magnum %}
 {% if deploy_vault %}
     echo -e "\n${BYELLOW}-------- Enabling Vault... --------${NC}\n"
     run_sunbeam "sunbeam enable -m $MANIFEST_FILE vault" "/tmp/sunbeam-vault.log"
@@ -2008,7 +2016,7 @@ write_files:
     
     if [ ! -f "/home/{{ sys_user }}/sunbeam-ca.crt" ]; then
         echo "Creating OpenSSL CA configuration..."
-        cat <<EOF > /home/{{ sys_user }}/ca.conf
+        cat <<EOF > $CERTS_FOLDER/ca.conf
     [v3_ca]
     subjectKeyIdentifier = hash
     authorityKeyIdentifier = keyid:always,issuer
@@ -2017,32 +2025,33 @@ write_files:
     EOF
         
         echo "Generating Self-Signed Root CA for Vault..."
-        openssl req -x509 -newkey rsa:4096 -keyout /home/{{ sys_user }}/sunbeam-ca.key -out /home/{{ sys_user }}/sunbeam-ca.crt -sha256 -days 3650 -nodes -config /home/{{ sys_user }}/ca.conf -extensions v3_ca -subj "/CN=Sunbeam Local Root CA"
-        chown {{ sys_user }}:{{ sys_user }} /home/{{ sys_user }}/sunbeam-ca.* /home/{{ sys_user }}/ca.conf
+        openssl req -x509 -newkey rsa:4096 -keyout $CERTS_FOLDER/sunbeam-ca.key -out $CERTS_FOLDER/sunbeam-ca.crt -sha256 -days 3650 -nodes -config $CERTS_FOLDER/ca.conf -extensions v3_ca -subj "/CN=Sunbeam Local Root CA"
+        chown {{ sys_user }}:{{ sys_user }} $CERTS_FOLDER/sunbeam-ca.* $CERTS_FOLDER/ca.conf
     else
         echo "Root CA already exists. Skipping generation to preserve Vault trust chain..."
     fi
     
-    CA_B64=$(base64 -w0 /home/{{ sys_user }}/sunbeam-ca.crt)
+    CA_B64=$(base64 -w0 $CERTS_FOLDER/sunbeam-ca.crt)
     run_sunbeam "sunbeam enable -m $MANIFEST_FILE tls vault --ca \"$CA_B64\" --ca-chain \"$CA_B64\" --endpoint public --endpoint internal --endpoint rgw" "/tmp/sunbeam-tls.log"
     
     # Extract CSR from vault
     echo "Obtaining the CSRs from Vault..."
-    $RUN_AS_LOGIN sunbeam tls vault list_outstanding_csrs --format yaml > /home/{{ sys_user }}/vault_csrs.yaml
-    sed -n '/-----BEGIN CERTIFICATE REQUEST-----/,/-----END CERTIFICATE REQUEST-----/p' /home/{{ sys_user }}/vault_csrs.yaml | sed 's/^[ \t]*//' | tr -d '\r' > /home/{{ sys_user }}/vault.csr
+    $RUN_AS_LOGIN sunbeam tls vault list_outstanding_csrs --format yaml > $CERTS_FOLDER/vault_csrs.yaml
+    sed -n '/-----BEGIN CERTIFICATE REQUEST-----/,/-----END CERTIFICATE REQUEST-----/p' $CERTS_FOLDER/vault_csrs.yaml | sed 's/^[ \t]*//' | tr -d '\r' > $CERTS_FOLDER/vault.csr
+    rm -f $CERTS_FOLDER/vault_csrs.yaml
     
     # Input TLS certificates
-    if grep -q "BEGIN CERTIFICATE REQUEST" /home/{{ sys_user }}/vault.csr; then
+    if grep -q "BEGIN CERTIFICATE REQUEST" $CERTS_FOLDER/vault.csr; then
         echo "Signing CSR for Vault as an Intermediate CA..."
         
-        openssl x509 -req -sha256 -days 3650 -CA /home/{{ sys_user }}/sunbeam-ca.crt -CAkey /home/{{ sys_user }}/sunbeam-ca.key -CAcreateserial -extfile /home/{{ sys_user }}/ca.conf -extensions v3_ca -in /home/{{ sys_user }}/vault.csr -out /home/{{ sys_user }}/vault.crt
-        CERT_B64=$(base64 -w0 /home/{{ sys_user }}/vault.crt)
+        openssl x509 -req -sha256 -days 3650 -CA $CERTS_FOLDER/sunbeam-ca.crt -CAkey $CERTS_FOLDER/sunbeam-ca.key -CAcreateserial -extfile $CERTS_FOLDER/ca.conf -extensions v3_ca -in $CERTS_FOLDER/vault.csr -out $CERTS_FOLDER/vault.crt
+        CERT_B64=$(base64 -w0 $CERTS_FOLDER/vault.crt)
         
         echo "Applying signed Intermediate CA certificates via Sunbeam..."
         run_sunbeam "echo \"$CERT_B64\" | sunbeam tls vault unit_certs" "/tmp/sunbeam-tls-certs.log"
         
         echo "Updating system CA trust store..."
-        cp /home/{{ sys_user }}/sunbeam-ca.crt /usr/local/share/ca-certificates/sunbeam-ca.crt
+        cp $CERTS_FOLDER/sunbeam-ca.crt /usr/local/share/ca-certificates/sunbeam-ca.crt
         update-ca-certificates
         
         echo "Updating admin-openrc and injecting CA bundle..."
@@ -2065,6 +2074,72 @@ write_files:
 {% if os_add_octavia or os_add_magnum %}
     echo -e "\n${BYELLOW}-------- Enabling Octavia (Load Balancer)... --------${NC}\n"
     run_sunbeam "sunbeam enable -m $MANIFEST_FILE loadbalancer" "/tmp/sunbeam-octavia.log"
+    
+{% if os_add_amphora %}
+    snap set openstack feature.loadbalancer-amphora=true # Maybe not needed (?)
+    
+    echo -e "\n${BYELLOW}-------- Configuring Octavia Amphora TLS... --------${NC}\n"
+    
+    # 2. Wait for Vault to generate BOTH Amphora CSRs
+    for i in {1..12}; do
+        $RUN_AS_LOGIN sunbeam loadbalancer list_outstanding_csrs --format yaml > $CERTS_FOLDER/amphora_csrs.yaml
+        if [ "$($RUN_AS_LOGIN yq 'length' $CERTS_FOLDER/amphora_csrs.yaml 2>/dev/null)" -eq 2 ]; then
+            break
+        fi
+        echo "Amphora CSRs not ready yet, waiting 5s..."
+        sleep 5
+    done
+    
+    # 3. Extract the CSRs cleanly using yq
+    $RUN_AS_LOGIN yq -r '.[] | select(.endpoint == "amphora-controller-cert") | .csr' $CERTS_FOLDER/amphora_csrs.yaml > $CERTS_FOLDER/amphora-controller.csr
+    $RUN_AS_LOGIN yq -r '.[] | select(.endpoint == "amphora-issuing-ca") | .csr' $CERTS_FOLDER/amphora_csrs.yaml > $CERTS_FOLDER/amphora-issuing-ca.csr
+    
+    # 4. Sign the Controller Leaf Certificate
+    openssl x509 -req -sha256 -days 3650 -CA $CERTS_FOLDER/sunbeam-ca.crt -CAkey $CERTS_FOLDER/sunbeam-ca.key -CAcreateserial -in $CERTS_FOLDER/amphora-controller.csr -out $CERTS_FOLDER/amphora-controller.crt
+    
+    # 5. Sign the Issuing CA Certificate
+    openssl x509 -req -sha256 -days 3650 -CA $CERTS_FOLDER/sunbeam-ca.crt -CAkey $CERTS_FOLDER/sunbeam-ca.key -CAcreateserial -extfile $CERTS_FOLDER/ca.conf -extensions v3_ca -in $CERTS_FOLDER/amphora-issuing-ca.csr -out $CERTS_FOLDER/amphora-issuing-ca.crt
+    
+    chown {{ sys_user }}:{{ sys_user }} $CERTS_FOLDER/*.crt $CERTS_FOLDER/*.srl
+    
+    # 6. Generate Base64 Strings
+    CONTROLLER_B64=$(base64 -w0 $CERTS_FOLDER/amphora-controller.crt)
+    ISSUING_CA_B64=$(base64 -w0 $CERTS_FOLDER/amphora-issuing-ca.crt)
+    ROOT_CA_B64=$(base64 -w0 $CERTS_FOLDER/sunbeam-ca.crt)
+    
+    # 7. Dynamically generate the input file for the interactive prompt based on the YAML order
+    > /home/{{ sys_user }}/amphora_answers.txt
+    ENDPOINT_1=$($RUN_AS_LOGIN yq -r '.[0].endpoint' $CERTS_FOLDER/amphora_csrs.yaml)
+    ENDPOINT_2=$($RUN_AS_LOGIN yq -r '.[1].endpoint' $CERTS_FOLDER/amphora_csrs.yaml)
+    
+    for ENDPOINT in "$ENDPOINT_1" "$ENDPOINT_2"; do
+        if [ "$ENDPOINT" == "amphora-controller-cert" ]; then
+            echo "$CONTROLLER_B64" >> $CERTS_FOLDER/amphora_answers.txt
+            echo "$ROOT_CA_B64" >> $CERTS_FOLDER/amphora_answers.txt
+            echo "" >> /home/{{ sys_user }}/amphora_answers.txt # Blank line for empty CA chain
+        elif [ "$ENDPOINT" == "amphora-issuing-ca" ]; then
+            echo "$ISSUING_CA_B64" >> $CERTS_FOLDER/amphora_answers.txt
+            echo "$ROOT_CA_B64" >> $CERTS_FOLDER/amphora_answers.txt
+            echo "" >> /home/{{ sys_user }}/amphora_answers.txt # Blank line for empty CA chain
+        fi
+    done
+    
+    chown {{ sys_user }}:{{ sys_user }} $CERTS_FOLDER/amphora_answers.txt
+    
+    # 8. Feed the answers into the Sunbeam prompt automatically
+    echo "Providing signed certificates to Octavia..."
+    run_sunbeam "sunbeam loadbalancer provide_certificates < $CERTS_FOLDER/amphora_answers.txt" "/tmp/sunbeam-amphora-certs.log"
+    
+    # 9. Apply Security Group Fix for MicroOVN
+    echo "Patching Amphora security group for OVN compatibility..."
+    $RUN_AS_LOGIN openstack security group rule create --protocol tcp --dst-port 9443 --ingress lb-mgmt-sec-grp
+
+    # 10. Cleanup
+    echo "Cleaning up Amphora TLS artifacts..."
+    rm -f $CERTS_FOLDER/amphora_csrs.yaml
+    rm -f $CERTS_FOLDER/amphora_answers.txt
+{% endif %}
+    
     wait_for_app "octavia"
 {% endif %}
     
