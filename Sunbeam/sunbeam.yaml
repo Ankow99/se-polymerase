@@ -2030,7 +2030,8 @@ write_files:
 {% if os_add_tls and os_add_vault %}
     echo -e "\n${BYELLOW}-------- Enabling TLS via Vault for API Endpoints... --------${NC}\n"
     
-    if [ ! -f "/home/{{ sys_user }}/sunbeam-ca.crt" ]; then
+    mkdir -p "$CERTS_FOLDER"
+    if [ ! -f "$CERTS_FOLDER/sunbeam-ca.crt" ]; then
         echo "Creating OpenSSL CA configuration..."
         cat <<EOF > $CERTS_FOLDER/ca.conf
     [v3_ca]
@@ -2140,23 +2141,23 @@ write_files:
             if [ "$ENDPOINT" == "amphora-controller-cert" ]; then
                 echo "$CONTROLLER_B64" >> $CERTS_FOLDER/amphora_answers.txt
                 echo "$ROOT_CA_B64" >> $CERTS_FOLDER/amphora_answers.txt
-                echo "" >> /home/{{ sys_user }}/amphora_answers.txt # Blank line for empty CA chain
+                echo "" >> $CERTS_FOLDER/amphora_answers.txt # Blank line for empty CA chain
             elif [ "$ENDPOINT" == "amphora-issuing-ca" ]; then
                 echo "$ISSUING_CA_B64" >> $CERTS_FOLDER/amphora_answers.txt
                 echo "$ROOT_CA_B64" >> $CERTS_FOLDER/amphora_answers.txt
-                echo "" >> /home/{{ sys_user }}/amphora_answers.txt # Blank line for empty CA chain
+                echo "" >> $CERTS_FOLDER/amphora_answers.txt # Blank line for empty CA chain
             fi
         done
         
-        chown {{ sys_user }}:{{ sys_user }} $CERTS_FOLDER/amphora_answers.txt
+        chown -R {{ sys_user }}:{{ sys_user }} "$CERTS_FOLDER"
         
         # 8. Feed the answers into the Sunbeam prompt automatically
         echo "Providing signed certificates to Octavia..."
         run_sunbeam "sunbeam loadbalancer provide_certificates < $CERTS_FOLDER/amphora_answers.txt" "/tmp/sunbeam-amphora-certs.log"
         
         # 9. Apply Security Group Fix for MicroOVN
-        echo "Patching Amphora security group for OVN compatibility..."
-        $RUN_AS_LOGIN openstack security group rule create --protocol tcp --dst-port 9443 --ingress lb-mgmt-sec-grp
+        # echo "Patching Amphora security group for OVN compatibility..."
+        # $RUN_AS_LOGIN openstack security group rule create --protocol tcp --dst-port 9443 --ingress lb-mgmt-sec-grp
         
         # 10. Cleanup
         echo "Cleaning up Amphora TLS artifacts..."
