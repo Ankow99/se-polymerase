@@ -3,7 +3,7 @@
 
 # ---
 # sunbeam transcript: Automated scalable cloud-init install of Sunbeam using MAAS
-# version: 11.5.0
+# version: 12.0.0
 #
 # Synthesized by: Pablo Gonzalez De Greiff @ Canonical
 # ---
@@ -745,7 +745,7 @@ write_files:
         echo "Vault already initialized. Using existing keys..."
     else
         echo "Initializing Vault..."
-        $RUN_AS_LOGIN sunbeam vault init 1 1 > "$VAULT_INIT"
+        $RUN_AS_LOGIN bash -c "sunbeam vault init 1 1 > '$VAULT_INIT'"
     fi
     
     VAULT_KEY=$(awk '/Unseal keys:/{getline; print}' "$VAULT_INIT" | tr -d ' ')
@@ -2020,7 +2020,7 @@ write_files:
         VAULT_TOKEN=$(awk '/Root token:/{print $3}' "$VAULT_INIT" | tr -d ' ')
         run_sunbeam "sunbeam vault authorize-charm '$VAULT_TOKEN'"
         
-        echo "Vault unseal key saved to /home/{{ sys_user }}/vault-keys.txt (KEEP THIS SAFE!)"
+        echo "Vault unseal key saved to '$VAULT_INIT' (KEEP THIS SAFE!)"
         $RUN_AS_LOGIN sunbeam vault status
         
         wait_for_app "vault" "openstack" "$VAULT_UNIT_COUNT"
@@ -2052,7 +2052,7 @@ write_files:
     if run_sunbeam "sunbeam enable -m $MANIFEST_FILE tls vault --ca \"$CA_B64\" --ca-chain \"$CA_B64\" --endpoint public --endpoint internal --endpoint rgw" "/tmp/sunbeam-tls.log"; then
         # Extract CSR from vault
         echo "Obtaining the CSRs from Vault..."
-        $RUN_AS_LOGIN sunbeam tls vault list_outstanding_csrs --format yaml > $CERTS_FOLDER/vault_csrs.yaml
+        $RUN_AS_LOGIN bash -c "sunbeam tls vault list_outstanding_csrs --format yaml > $CERTS_FOLDER/vault_csrs.yaml"
         sed -n '/-----BEGIN CERTIFICATE REQUEST-----/,/-----END CERTIFICATE REQUEST-----/p' $CERTS_FOLDER/vault_csrs.yaml | sed 's/^[ \t]*//' | tr -d '\r' > $CERTS_FOLDER/vault.csr
         rm -f $CERTS_FOLDER/vault_csrs.yaml
         
@@ -2100,6 +2100,8 @@ write_files:
         
 {% if os_add_amphora %}
         echo -e "\n${BYELLOW}-------- Enabling Octavia Amphora... --------${NC}\n"
+        
+        # 1. Configure Amphora
         snap set openstack feature.loadbalancer-amphora=true # Maybe not needed (?)
         run_sunbeam "sunbeam loadbalancer configure" "/tmp/sunbeam-octavia-amphora.log"
         
@@ -2107,17 +2109,26 @@ write_files:
         
         # 2. Wait for Vault to generate BOTH Amphora CSRs
         for i in {1..12}; do
-            $RUN_AS_LOGIN sunbeam loadbalancer list_outstanding_csrs --format yaml > $CERTS_FOLDER/amphora_csrs.yaml
-            if [ "$($RUN_AS_LOGIN yq 'length' $CERTS_FOLDER/amphora_csrs.yaml 2>/dev/null)" -eq 2 ]; then
-                break
+            $RUN_AS_LOGIN bash -c "sunbeam loadbalancer list_outstanding_csrs --format yaml > $CERTS_FOLDER/amphora_csrs.yaml"
+            
+            if [ -s "$CERTS_FOLDER/amphora_csrs.yaml" ]; then
+                CSR_COUNT=$($RUN_AS_LOGIN yq 'length' $CERTS_FOLDER/amphora_csrs.yaml)
+                
+                if [ "$CSR_COUNT" = "2" ]; then
+                    echo "Both Amphora CSRs generated successfully."
+                    break
+                fi
+            else
+                CSR_COUNT=0
             fi
-            echo "Amphora CSRs not ready yet, waiting 5s..."
+            
+            echo "Amphora CSRs not ready yet (Found $CSR_COUNT/2), waiting 5s..."
             sleep 5
         done
         
         # 3. Extract the CSRs cleanly using yq
-        $RUN_AS_LOGIN yq -r '.[] | select(.endpoint == "amphora-controller-cert") | .csr' $CERTS_FOLDER/amphora_csrs.yaml > $CERTS_FOLDER/amphora-controller.csr
-        $RUN_AS_LOGIN yq -r '.[] | select(.endpoint == "amphora-issuing-ca") | .csr' $CERTS_FOLDER/amphora_csrs.yaml > $CERTS_FOLDER/amphora-issuing-ca.csr
+        $RUN_AS_LOGIN bash -c "yq -r '.[] | select(.endpoint == \"amphora-controller-cert\") | .csr' $CERTS_FOLDER/amphora_csrs.yaml > $CERTS_FOLDER/amphora-controller.csr"
+        $RUN_AS_LOGIN bash -c "yq -r '.[] | select(.endpoint == \"amphora-issuing-ca\") | .csr' $CERTS_FOLDER/amphora_csrs.yaml > $CERTS_FOLDER/amphora-issuing-ca.csr"
         
         # 4. Sign the Controller Leaf Certificate
         openssl x509 -req -sha256 -days 3650 -CA $CERTS_FOLDER/sunbeam-ca.crt -CAkey $CERTS_FOLDER/sunbeam-ca.key -CAcreateserial -in $CERTS_FOLDER/amphora-controller.csr -out $CERTS_FOLDER/amphora-controller.crt
@@ -2133,7 +2144,7 @@ write_files:
         ROOT_CA_B64=$(base64 -w0 $CERTS_FOLDER/sunbeam-ca.crt)
         
         # 7. Dynamically generate the input file for the interactive prompt based on the YAML order
-        > /home/{{ sys_user }}/amphora_answers.txt
+        > $CERTS_FOLDER/amphora_answers.txt
         ENDPOINT_1=$($RUN_AS_LOGIN yq -r '.[0].endpoint' $CERTS_FOLDER/amphora_csrs.yaml)
         ENDPOINT_2=$($RUN_AS_LOGIN yq -r '.[1].endpoint' $CERTS_FOLDER/amphora_csrs.yaml)
         
