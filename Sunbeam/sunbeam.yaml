@@ -2032,6 +2032,8 @@ write_files:
     echo -e "\n${BYELLOW}-------- Enabling TLS via Vault for API Endpoints... --------${NC}\n"
     
     mkdir -p "$CERTS_FOLDER"
+    chown {{ sys_user }}:{{ sys_user }} "$CERTS_FOLDER"
+    
     if [ ! -f "$CERTS_FOLDER/sunbeam-ca.crt" ]; then
         echo "Creating OpenSSL CA configuration..."
         cat <<EOF > $CERTS_FOLDER/ca.conf
@@ -2104,79 +2106,80 @@ write_files:
         
         # 1. Configure Amphora
         snap set openstack feature.loadbalancer-amphora=true # Maybe not needed (?)
-        run_sunbeam "sunbeam loadbalancer configure" "/tmp/sunbeam-octavia-amphora.log"
-        
-        echo -e "\n${BYELLOW}-------- Configuring Octavia Amphora TLS... --------${NC}\n"
-        
-        # 2. Wait for Vault to generate BOTH Amphora CSRs
-        for i in {1..12}; do
-            $RUN_AS_LOGIN bash -c "sunbeam loadbalancer list_outstanding_csrs --format yaml > $CERTS_FOLDER/amphora_csrs.yaml"
+        if run_sunbeam "sunbeam loadbalancer configure" "/tmp/sunbeam-octavia-amphora.log"; then
             
-            if [ -s "$CERTS_FOLDER/amphora_csrs.yaml" ]; then
-                CSR_COUNT=$($RUN_AS_LOGIN yq 'length' $CERTS_FOLDER/amphora_csrs.yaml)
+            echo -e "\n${BYELLOW}-------- Configuring Octavia Amphora TLS... --------${NC}\n"
+            
+            # 2. Wait for Vault to generate BOTH Amphora CSRs
+            for i in {1..12}; do
+                $RUN_AS_LOGIN bash -c "sunbeam loadbalancer list_outstanding_csrs --format yaml > $CERTS_FOLDER/amphora_csrs.yaml"
                 
-                if [ "$CSR_COUNT" = "2" ]; then
-                    echo "Both Amphora CSRs generated successfully."
-                    break
+                if [ -s "$CERTS_FOLDER/amphora_csrs.yaml" ]; then
+                    CSR_COUNT=$($RUN_AS_LOGIN yq 'length' $CERTS_FOLDER/amphora_csrs.yaml)
+                    
+                    if [ "$CSR_COUNT" = "2" ]; then
+                        echo "Both Amphora CSRs generated successfully."
+                        break
+                    fi
+                else
+                    CSR_COUNT=0
                 fi
-            else
-                CSR_COUNT=0
-            fi
+                
+                echo "Amphora CSRs not ready yet (Found $CSR_COUNT/2), waiting 5s..."
+                sleep 5
+            done
             
-            echo "Amphora CSRs not ready yet (Found $CSR_COUNT/2), waiting 5s..."
-            sleep 5
-        done
-        
-        # 3. Extract the CSRs cleanly using yq
-        $RUN_AS_LOGIN bash -c "yq -r '.[] | select(.endpoint == \"amphora-controller-cert\") | .csr' $CERTS_FOLDER/amphora_csrs.yaml > $CERTS_FOLDER/amphora-controller.csr"
-        $RUN_AS_LOGIN bash -c "yq -r '.[] | select(.endpoint == \"amphora-issuing-ca\") | .csr' $CERTS_FOLDER/amphora_csrs.yaml > $CERTS_FOLDER/amphora-issuing-ca.csr"
-        
-        # 4. Sign the Controller Leaf Certificate
-        openssl x509 -req -sha256 -days 3650 -CA $CERTS_FOLDER/sunbeam-ca.crt -CAkey $CERTS_FOLDER/sunbeam-ca.key -CAcreateserial -in $CERTS_FOLDER/amphora-controller.csr -out $CERTS_FOLDER/amphora-controller.crt
-        
-        # 5. Sign the Issuing CA Certificate
-        openssl x509 -req -sha256 -days 3650 -CA $CERTS_FOLDER/sunbeam-ca.crt -CAkey $CERTS_FOLDER/sunbeam-ca.key -CAcreateserial -extfile $CERTS_FOLDER/ca.conf -extensions v3_ca -in $CERTS_FOLDER/amphora-issuing-ca.csr -out $CERTS_FOLDER/amphora-issuing-ca.crt
-        
-        chown {{ sys_user }}:{{ sys_user }} $CERTS_FOLDER/*.crt $CERTS_FOLDER/*.srl
-        
-        # 6. Generate Base64 Strings
-        CONTROLLER_B64=$(base64 -w0 $CERTS_FOLDER/amphora-controller.crt)
-        ISSUING_CA_B64=$(base64 -w0 $CERTS_FOLDER/amphora-issuing-ca.crt)
-        ROOT_CA_B64=$(base64 -w0 $CERTS_FOLDER/sunbeam-ca.crt)
-        
-        # 7. Dynamically generate the input file for the interactive prompt based on the YAML order
-        > $CERTS_FOLDER/amphora_answers.txt
-        ENDPOINT_1=$($RUN_AS_LOGIN yq -r '.[0].endpoint' $CERTS_FOLDER/amphora_csrs.yaml)
-        ENDPOINT_2=$($RUN_AS_LOGIN yq -r '.[1].endpoint' $CERTS_FOLDER/amphora_csrs.yaml)
-        
-        for ENDPOINT in "$ENDPOINT_1" "$ENDPOINT_2"; do
-            if [ "$ENDPOINT" == "amphora-controller-cert" ]; then
-                echo "$CONTROLLER_B64" >> $CERTS_FOLDER/amphora_answers.txt
-                echo "$ROOT_CA_B64" >> $CERTS_FOLDER/amphora_answers.txt
-                echo "" >> $CERTS_FOLDER/amphora_answers.txt # Blank line for empty CA chain
-            elif [ "$ENDPOINT" == "amphora-issuing-ca" ]; then
-                echo "$ISSUING_CA_B64" >> $CERTS_FOLDER/amphora_answers.txt
-                echo "$ROOT_CA_B64" >> $CERTS_FOLDER/amphora_answers.txt
-                echo "" >> $CERTS_FOLDER/amphora_answers.txt # Blank line for empty CA chain
-            fi
-        done
-        
-        chown -R {{ sys_user }}:{{ sys_user }} "$CERTS_FOLDER"
-        
-        # 8. Feed the answers into the Sunbeam prompt automatically
-        echo "Providing signed certificates to Octavia..."
-        run_sunbeam "sunbeam loadbalancer provide_certificates < $CERTS_FOLDER/amphora_answers.txt" "/tmp/sunbeam-amphora-certs.log"
-        
-        # 9. Apply Security Group Fix for MicroOVN
-        # echo "Patching Amphora security group for OVN compatibility..."
-        # $RUN_AS_LOGIN openstack security group rule create --protocol tcp --dst-port 9443 --ingress lb-mgmt-sec-grp
-        
-        # 10. Cleanup
-        echo "Cleaning up Amphora TLS artifacts..."
-        rm -f $CERTS_FOLDER/amphora_csrs.yaml
-        rm -f $CERTS_FOLDER/amphora_answers.txt
-        
-        wait_for_app "octavia"
+            # 3. Extract the CSRs cleanly using yq
+            $RUN_AS_LOGIN bash -c "yq -r '.[] | select(.endpoint == \"amphora-controller-cert\") | .csr' $CERTS_FOLDER/amphora_csrs.yaml > $CERTS_FOLDER/amphora-controller.csr"
+            $RUN_AS_LOGIN bash -c "yq -r '.[] | select(.endpoint == \"amphora-issuing-ca\") | .csr' $CERTS_FOLDER/amphora_csrs.yaml > $CERTS_FOLDER/amphora-issuing-ca.csr"
+            
+            # 4. Sign the Controller Leaf Certificate
+            openssl x509 -req -sha256 -days 3650 -CA $CERTS_FOLDER/sunbeam-ca.crt -CAkey $CERTS_FOLDER/sunbeam-ca.key -CAcreateserial -in $CERTS_FOLDER/amphora-controller.csr -out $CERTS_FOLDER/amphora-controller.crt
+            
+            # 5. Sign the Issuing CA Certificate
+            openssl x509 -req -sha256 -days 3650 -CA $CERTS_FOLDER/sunbeam-ca.crt -CAkey $CERTS_FOLDER/sunbeam-ca.key -CAcreateserial -extfile $CERTS_FOLDER/ca.conf -extensions v3_ca -in $CERTS_FOLDER/amphora-issuing-ca.csr -out $CERTS_FOLDER/amphora-issuing-ca.crt
+            
+            chown {{ sys_user }}:{{ sys_user }} $CERTS_FOLDER/*.crt $CERTS_FOLDER/*.srl
+            
+            # 6. Generate Base64 Strings
+            CONTROLLER_B64=$(base64 -w0 $CERTS_FOLDER/amphora-controller.crt)
+            ISSUING_CA_B64=$(base64 -w0 $CERTS_FOLDER/amphora-issuing-ca.crt)
+            ROOT_CA_B64=$(base64 -w0 $CERTS_FOLDER/sunbeam-ca.crt)
+            
+            # 7. Dynamically generate the input file for the interactive prompt based on the YAML order
+            > $CERTS_FOLDER/amphora_answers.txt
+            ENDPOINT_1=$($RUN_AS_LOGIN yq -r '.[0].endpoint' $CERTS_FOLDER/amphora_csrs.yaml)
+            ENDPOINT_2=$($RUN_AS_LOGIN yq -r '.[1].endpoint' $CERTS_FOLDER/amphora_csrs.yaml)
+            
+            for ENDPOINT in "$ENDPOINT_1" "$ENDPOINT_2"; do
+                if [ "$ENDPOINT" == "amphora-controller-cert" ]; then
+                    echo "$CONTROLLER_B64" >> $CERTS_FOLDER/amphora_answers.txt
+                    echo "$ROOT_CA_B64" >> $CERTS_FOLDER/amphora_answers.txt
+                    echo "" >> $CERTS_FOLDER/amphora_answers.txt # Blank line for empty CA chain
+                elif [ "$ENDPOINT" == "amphora-issuing-ca" ]; then
+                    echo "$ISSUING_CA_B64" >> $CERTS_FOLDER/amphora_answers.txt
+                    echo "$ROOT_CA_B64" >> $CERTS_FOLDER/amphora_answers.txt
+                    echo "" >> $CERTS_FOLDER/amphora_answers.txt # Blank line for empty CA chain
+                fi
+            done
+            
+            chown -R {{ sys_user }}:{{ sys_user }} "$CERTS_FOLDER"
+            
+            # 8. Feed the answers into the Sunbeam prompt automatically
+            echo "Providing signed certificates to Octavia..."
+            run_sunbeam "sunbeam loadbalancer provide_certificates < $CERTS_FOLDER/amphora_answers.txt" "/tmp/sunbeam-amphora-certs.log"
+            
+            # 9. Apply Security Group Fix for MicroOVN
+            # echo "Patching Amphora security group for OVN compatibility..."
+            # $RUN_AS_LOGIN openstack security group rule create --protocol tcp --dst-port 9443 --ingress lb-mgmt-sec-grp
+            
+            # 10. Cleanup
+            echo "Cleaning up Amphora TLS artifacts..."
+            rm -f $CERTS_FOLDER/amphora_csrs.yaml
+            rm -f $CERTS_FOLDER/amphora_answers.txt
+            
+            wait_for_app "octavia"
+        fi
 {% endif %}
     fi
 {% endif %}
