@@ -2007,12 +2007,12 @@ SYS_USER="${SYS_USER:-ubuntu}"
                     echo ""
                     echo -e "${BRED}Error: cloud-init crashed during deployment! Check the logs above.${NC}${CLR_EOL}"
                     echo ""
-                    echo -e "${BRED}------------ Last 50 lines of cloud-init-output.log ------------${NC}"
+                    echo -e "${BRED}------------- Last 50 lines of cloud-init-output.log -------------${NC}"
                     echo ""
                     lxc exec "$VM_NAME" --project "$LXD_PROJECT" -- bash -c "cat \$(ls -rt /var/log/cloud-init-output.log* 2>/dev/null) 2>/dev/null | tail -n 50 | sed 's/\r\$//; s/.*\r//; s/\x1b\[[0-9;?]*[A-Za-ln-z]//g'"
                     echo -ne "${NC}"
                     echo ""
-                    echo -e "${BRED}----------------------------------------------------------------${NC}"
+                    echo -e "${BRED}------------------------------------------------------------------${NC}"
                     echo ""
                     echo "Connect using 'ssh ${SSH_OPTS[*]} ${SYS_USER}@$IP' to debug what happened, and resume deployment..."
                     echo "Or alternatively run '${CLEANUP_SCRIPT}' to clean up the environment."
@@ -2022,7 +2022,7 @@ SYS_USER="${SYS_USER:-ubuntu}"
                     # Print the final status one last time cleanly
                     echo -e "${CURSOR_TOP}${BYELLOW}-> 5. Juju Deployment Status (Finalizing...)${NC}${CLR_EOL}"
                     echo -e "Target IP: $IP | Updated: $(date +%T)${CLR_EOL}"
-                    echo -e "${BYELLOW}---------------------------------------------------------------${NC}${CLR_EOL}"
+                    echo -e "${BYELLOW}------------------------------------------------------------------${NC}${CLR_EOL}"
                     echo -e "$JUJU_OUTPUT" | sed "s/$/${CLR_EOL}/"
                     echo -ne "${CLEAR_REST}" # Clean up bottom
                     echo ""
@@ -2050,7 +2050,7 @@ SYS_USER="${SYS_USER:-ubuntu}"
                     
                     UI_FRAME+="${BYELLOW}${PADDING} ${RAW_STEP} ${PADDING}${NC}${CLR_EOL}\n"
                 else
-                    UI_FRAME+="${BYELLOW}------------------- Latest $CLOUD_INIT_LOG_LINES cloud-init Logs -------------------${NC}${CLR_EOL}\n"
+                    UI_FRAME+="${BYELLOW}-------------------- Latest $CLOUD_INIT_LOG_LINES cloud-init Logs --------------------${NC}${CLR_EOL}\n"
                 fi
                 
                 # Tail $CLOUD_INIT_LOG_LINES lines of cloud-init logs
@@ -2061,7 +2061,7 @@ SYS_USER="${SYS_USER:-ubuntu}"
                     UI_FRAME+="(Waiting for logs...)${CLR_EOL}\n"
                 fi
                 
-                UI_FRAME+="${BYELLOW}------------------------- Juju Status --------------------------${NC}${CLR_EOL}\n"
+                UI_FRAME+="${BYELLOW}-------------------------- Juju Status ---------------------------${NC}${CLR_EOL}\n"
                 
                 # Reserve lines for cloud-init logs + header (4) + a safety buffer (2)
                 MAX_JUJU_LINES=$(( USER_TERM_HEIGHT - ( 4 + CLOUD_INIT_LOG_LINES ) - 2 ))
