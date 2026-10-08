@@ -1934,7 +1934,7 @@ SYS_USER="${SYS_USER:-ubuntu}"
                     echo ""
                     echo -e "${BYELLOW}cloud-init finished successfully! ${NC}${CLR_EOL}"
                     PHASE="DONE"
-                elif [ -n "$JUJU_TRIGGER_MSG" ] && lxc exec "$VM_NAME" --project "$LXD_PROJECT" -- grep -Fq -- "$JUJU_TRIGGER_MSG" /var/log/cloud-init-output.log 2>/dev/null; then
+                elif [ -n "$JUJU_TRIGGER_MSG" ] && lxc exec "$VM_NAME" --project "$LXD_PROJECT" -- grep -Fq -- "$JUJU_TRIGGER_MSG" /var/log/cloud-init-output.log* 2>/dev/null; then
                     echo ""
                     echo -e "${BYELLOW}Juju Deployment Trigger Detected. Switching to Watch Mode...${NC}${CLR_EOL}"
                     sleep 2
@@ -1955,6 +1955,14 @@ SYS_USER="${SYS_USER:-ubuntu}"
         
         # PHASE B: JUJU WATCH
         if [ "$PHASE" == "JUJU_WATCH" ]; then
+            
+            # Catch the cluster inventory trigger if it fires during the Juju watch phase
+            if [ "$CLUSTER_TRIGGER_FIRED" != "true" ] && [ -n "$CLUSTER_TRIGGER_MSG" ]; then
+                if lxc exec "$VM_NAME" --project "$LXD_PROJECT" -- grep -Fq -- "$CLUSTER_TRIGGER_MSG" /var/log/cloud-init-output.log* 2>/dev/null; then
+                    print_cluster_inventory "nodes" "quiet"
+                    CLUSTER_TRIGGER_FIRED="true"
+                fi
+            fi
             
             # shellcheck disable=SC2016
             RAW_DATA=$(lxc exec "$VM_NAME" --project "$LXD_PROJECT" \
