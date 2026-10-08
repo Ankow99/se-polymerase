@@ -183,7 +183,9 @@ emergency_rollback() {
             fi
             
             # Safely remove project directory if it's completely empty
-            [ -n "$PROJECT_DIR" ] && [ -d "$PROJECT_DIR" ] && rmdir "$PROJECT_DIR" 2>/dev/null || true
+            if [ -n "$PROJECT_DIR" ] && [ -d "$PROJECT_DIR" ]; then
+                rmdir "$PROJECT_DIR" 2>/dev/null || true
+            fi
         fi
         
         # Prevent double-execution if multiple exit signals are caught
@@ -227,6 +229,88 @@ confirm_or_abort() {
         echo ""
         echo -e "${BRED}Action aborted by user. Exiting.${NC}"
         exit 1
+    fi
+}
+
+print_cluster_inventory() {
+    local target="${1:-all}"     # "primary", "nodes", or "all"
+    local quiet_mode="$2"        # "quiet" or empty
+    local inventory_table=""
+    local primary_vm_table=""
+    
+    # Grabs the top 3 header lines, then searches for the Primary VM name, captures all its lines (even multi-IP), and stops after its closing border
+    if [ "$target" = "primary" ] || [ "$target" = "all" ]; then
+        primary_vm_table=$(lxc list --project "$LXD_PROJECT" -c ns4 | awk -F'|' -v vm="$VM_NAME" '
+        NR<=3 { print $0; next }
+        {
+            n=$2; gsub(/^[ \t]+|[ \t]+$/, "", n)
+            if (n == vm) { capture=1; print $0; next }
+            if (capture) {
+                print $0
+                if ($0 ~ /^\+---/) capture=0
+                next
+            }
+        }')
+    fi
+    
+    # Fetch the rest of the data only once
+    if [ "$target" = "nodes" ] || [ "$target" = "all" ]; then
+        if grep -q "custom_maas_" "$CLOUD_INIT" 2>/dev/null && lxc exec "$VM_NAME" --project "$LXD_PROJECT" -- bash -c "command -v maas" >/dev/null 2>&1; then
+            
+            # Resolve the MAAS user profile name dynamically from the host script
+            local local_maas_user="${MAAS_USER:-$(get_default maas_user)}"
+            local_maas_user="${local_maas_user:-admin}"
+            
+            inventory_table=$(lxc exec "$VM_NAME" --project "$LXD_PROJECT" -- bash -c "maast $local_maas_user machines read")
+            
+            # Fallback if MAAS API fails or returns empty
+            if [ -z "$inventory_table" ]; then
+                # Smart AWK filter: Skips the VM row AND its trailing separator, handling multi-line IP rows correctly
+                inventory_table=$(lxc list --project "$LXD_PROJECT" -c ns4 | awk -F'|' -v vm="$VM_NAME" '{ n=$2; gsub(/^[ \t]+|[ \t]+$/, "", n); if (n == vm) { skip=1; next } if (skip) { if ($0 ~ /^\+---/) skip=0; next } print $0 }')
+                inventory_table=$'\n'"$inventory_table"
+            fi
+        else
+            inventory_table=$(lxc list --project "$LXD_PROJECT" -c ns4 | awk -F'|' -v vm="$VM_NAME" '{ n=$2; gsub(/^[ \t]+|[ \t]+$/, "", n); if (n == vm) { skip=1; next } if (skip) { if ($0 ~ /^\+---/) skip=0; next } print $0 }')
+            inventory_table=$'\n'"$inventory_table"
+        fi
+    fi
+    
+    generate_output() {
+        local part="$1"
+        if [ "$part" = "primary" ] || [ "$part" = "all" ]; then
+            echo "[ SSH Access - Primary VM ]"
+            echo "  ssh ${SSH_OPTS[*]} ${SYS_USER}@${IP}"
+            echo ""
+            echo "$primary_vm_table"
+            echo ""
+        fi
+        if [ "$part" = "nodes" ] || [ "$part" = "all" ]; then
+            echo "[ SSH Access - Cluster Nodes ]"
+            echo "  ssh ${SSH_OPTS[*]} ubuntu@<NODE_IP>"
+            echo "$inventory_table"
+            echo ""
+        fi
+    }
+    
+    if [ -n "$ACCESS_FILE" ]; then        
+        # Primary section
+        if [ "$target" = "primary" ] || [ "$target" = "all" ]; then
+            if ! grep -q "\[ SSH Access - Primary VM \]" "$ACCESS_FILE" 2>/dev/null; then
+                generate_output "primary" >> "$ACCESS_FILE"
+            fi
+        fi
+        
+        # Nodes section
+        if [ "$target" = "nodes" ] || [ "$target" = "all" ]; then
+            if ! grep -q "\[ SSH Access - Cluster Nodes \]" "$ACCESS_FILE" 2>/dev/null; then
+                generate_output "nodes" >> "$ACCESS_FILE"
+            fi
+        fi
+    fi
+    
+    # Print Colored Version to Standard Output (Unless 'quiet' is requested)
+    if [ "$quiet_mode" != "quiet" ]; then
+        generate_output "$target"
     fi
 }
 
@@ -744,7 +828,7 @@ HORIZON_LOCAL_PORT=$(( 55000 + PORT_OFFSET ))
 # ==========================================
 
 # Architecture resolution
-if [ "$CLI_NESTED_LXD" = "true" ] || [ "${CONFIG_PROVIDED_nested_lxd}" = "true" ]; then
+if [ "$CLI_NESTED_LXD" = "true" ] || [ "${CONFIG_PROVIDED_nested_lxd:-}" = "true" ]; then
     echo -e "${BYELLOW}-> Using nested LXD architecture${NC} - ${BRED}WARNING: DEGRADED PERFORMANCE IF NOT RUNNING IN BARE METAL${NC}"
     echo ""
     LXC_OPTIONAL_ARGS+=("-c" "user.nested_lxd=true")
@@ -758,7 +842,7 @@ else
 fi
 
 # Deb/Snap resolution
-if [ "$CLI_MAAS_SNAP" = "false" ] || [ "${CONFIG_PROVIDED_maas_snap}" = "false" ]; then
+if [ "$CLI_MAAS_SNAP" = "false" ] || [ "${CONFIG_PROVIDED_maas_snap:-}" = "false" ]; then
     echo -e "${BYELLOW}-> Using deb MAAS packages instead of snap${NC}"
     echo ""
     LXC_OPTIONAL_ARGS+=("-c" "user.maas_snap=false")
@@ -875,6 +959,7 @@ VM_NAME=$(get_default "vm_name")
 IMAGE=$(get_default "vm_image")
 
 # Obtain Juju watch variables
+CLUSTER_TRIGGER_MSG=$(get_default "cluster_trigger")
 JUJU_TRIGGER_MSG=$(get_default "juju_trigger")
 JUJU_MODELS=$(get_default "juju_models")
 
@@ -910,18 +995,20 @@ CONFIG_FILE_TMP="${CONFIG_FILE}.tmp"
 WORKER_PID_FILE="$PROJECT_DIR/.worker-${LXD_PROJECT}.pid"
 
 # Initialize configuration file to a temporary file (Prevents overwrite if using the same file as input -c)
-echo "# ==========================================" > "$CONFIG_FILE_TMP"
-echo "# Polymerase ${PRETTY_REPRO} deployment configuration" >> "$CONFIG_FILE_TMP"
-echo "# ==========================================" >> "$CONFIG_FILE_TMP"
-echo "# Payload: $(basename "$CLOUD_INIT")" >> "$CONFIG_FILE_TMP"
-echo "# Project: $LXD_PROJECT" >> "$CONFIG_FILE_TMP"
-echo "# Date:    $(date)" >> "$CONFIG_FILE_TMP"
-echo "# ==========================================" >> "$CONFIG_FILE_TMP"
-echo "# NOTE: Setting a string value to \"\" will" >> "$CONFIG_FILE_TMP"
-echo "# fallback to the cloud-init defaults." >> "$CONFIG_FILE_TMP"
-echo "# To explicitly leave it empty, use \"none\"." >> "$CONFIG_FILE_TMP"
-echo "# ==========================================" >> "$CONFIG_FILE_TMP"
-echo "" >> "$CONFIG_FILE_TMP"
+{
+    echo "# =========================================="
+    echo "# Polymerase ${PRETTY_REPRO} deployment configuration"
+    echo "# =========================================="
+    echo "# Payload: $(basename "$CLOUD_INIT")"
+    echo "# Project: $LXD_PROJECT"
+    echo "# Date:    $(date)"
+    echo "# =========================================="
+    echo "# NOTE: Setting a string value to \"\" will"
+    echo "# fallback to the cloud-init defaults."
+    echo "# To explicitly leave it empty, use \"none\"."
+    echo "# =========================================="
+    echo ""
+} > "$CONFIG_FILE_TMP"
 
 # Persist deploy_id and lxd_project in YAML
 echo "deploy_id: \"$DEPLOY_ID\"" >> "$CONFIG_FILE_TMP"
@@ -946,7 +1033,9 @@ if lxc project list 2>/dev/null | grep -q " $LXD_PROJECT "; then
         rm -f "$CONFIG_FILE_TMP" 2>/dev/null || true
         
         # Safely remove project directory if it's completely empty
-        [ -n "$PROJECT_DIR" ] && [ -d "$PROJECT_DIR" ] && rmdir "$PROJECT_DIR" 2>/dev/null || true
+        if [ -n "$PROJECT_DIR" ] && [ -d "$PROJECT_DIR" ]; then
+            rmdir "$PROJECT_DIR" 2>/dev/null || true
+        fi
         
         # Disable the rollback so it exits completely silently
         CLEANUP_HANDOVER=true
@@ -1674,6 +1763,7 @@ trap '
 
 # Capture terminal height before forking so the headless worker knows how to size the UI
 USER_TERM_HEIGHT=$(tput lines 2>/dev/null || echo 40)
+SYS_USER="${SYS_USER:-ubuntu}"
 
 # Fork remaining logic into a subshell so it can safely run headless
 (
@@ -1770,6 +1860,9 @@ USER_TERM_HEIGHT=$(tput lines 2>/dev/null || echo 40)
         echo -e "${BYELLOW}-> 4. Skipping MAAS Dashboard... (no MAAS detected)${NC}"
     fi
     
+    # Write the Primary VM info to the access file
+    print_cluster_inventory "primary" "quiet"
+    
     # ==========================================
     # LOG TAILING + JUJU STATUS
     # ==========================================
@@ -1779,8 +1872,8 @@ USER_TERM_HEIGHT=$(tput lines 2>/dev/null || echo 40)
     echo -e "${BYELLOW}-> 5. Connecting to live cloud-init logs... (will switch to Juju status)${NC}"
     echo ""
     
-    SYS_USER="${SYS_USER:-ubuntu}"
     PHASE="LOG_TAIL" # Phase options: LOG_TAIL, JUJU_WATCH, DONE
+    CLUSTER_TRIGGER_FIRED=false
     CURSOR_TOP='\033[H'
     CLEAR_REST='\033[J'
     CLR_EOL=$'\033[K'
@@ -1797,16 +1890,28 @@ USER_TERM_HEIGHT=$(tput lines 2>/dev/null || echo 40)
         # PHASE A: LOG TAILING
         if [ "$PHASE" == "LOG_TAIL" ]; then
             
-            # Build the sed (unbuffered -u) command dynamically based on whether a Juju trigger exists, quit 'q' if we see the Trigger Message OR "finished at"
-            if [ -n "$JUJU_TRIGGER_MSG" ]; then
-                lxc exec "$VM_NAME" --project "$LXD_PROJECT" -- sh -c "tail -n +1 -f /var/log/cloud-init-output.log 2>/dev/null | sed -u '/$JUJU_TRIGGER_MSG/ q; /finished at/ q'"
-            else
-                lxc exec "$VM_NAME" --project "$LXD_PROJECT" -- sh -c "tail -n +1 -f /var/log/cloud-init-output.log 2>/dev/null | sed -u '/finished at/ q'"
-            fi
+            # Stream the logs natively through bash so it can parse multiple triggers simultaneously line-by-line
+            lxc exec "$VM_NAME" --project "$LXD_PROJECT" -- tail -n +1 -f /var/log/cloud-init-output.log 2>/dev/null | while IFS= read -r line; do
+                echo "$line"
+                
+                # Check for the cluster inventory trigger
+                if [ "$CLUSTER_TRIGGER_FIRED" != "true" ] && [ -n "$CLUSTER_TRIGGER_MSG" ] && [[ "$line" == *"$CLUSTER_TRIGGER_MSG"* ]]; then
+                    print_cluster_inventory "nodes" "quiet"
+                    CLUSTER_TRIGGER_FIRED="true"
+                fi
+                
+                # Check for the Juju trigger or cloud-init finish
+                if [ -n "$JUJU_TRIGGER_MSG" ] && [[ "$line" == *"$JUJU_TRIGGER_MSG"* ]]; then
+                    exit 0 # Quitting the pipe stops the tail command cleanly
+                elif [[ "$line" == *"finished at"* ]]; then
+                    exit 0
+                fi
+            done
             
-            EXIT_CODE=$?
+            # Grab the exit code of 'lxc exec' (the first command in the pipeline)
+            EXIT_CODE=${PIPESTATUS[0]}
             
-            if [ $EXIT_CODE -eq 0 ]; then
+            if [ "$EXIT_CODE" -eq 0 ] || [ "$EXIT_CODE" -eq 141 ]; then
                 # Success! The 'sed' command found the Juju model deploy start and quit cleanly.
                 sleep 2
                 STATUS_CHECK=$(lxc exec "$VM_NAME" --project "$LXD_PROJECT" -- cloud-init status 2>/dev/null)
@@ -1834,7 +1939,7 @@ USER_TERM_HEIGHT=$(tput lines 2>/dev/null || echo 40)
                 else
                     sleep 2
                 fi
-            elif [ $EXIT_CODE -eq 255 ]; then
+            elif [ "$EXIT_CODE" -eq 255 ]; then
                 # 255 = SSH died (Connection Refused / Network Down / Rebooting)
                 echo -ne "${BYELLOW}Connection lost (Rebooting?) retrying...${NC}${CLR_EOL}\r"
                 sleep 3
@@ -1848,6 +1953,7 @@ USER_TERM_HEIGHT=$(tput lines 2>/dev/null || echo 40)
         # PHASE B: JUJU WATCH
         if [ "$PHASE" == "JUJU_WATCH" ]; then
             
+            # shellcheck disable=SC2016
             RAW_DATA=$(lxc exec "$VM_NAME" --project "$LXD_PROJECT" \
                 --env SYS_USER="$SYS_USER" \
                 --env JUJU_MODELS="$JUJU_MODELS" \
@@ -1855,6 +1961,10 @@ USER_TERM_HEIGHT=$(tput lines 2>/dev/null || echo 40)
                 -- bash -c '
                 
                 CI_STATUS=$(cloud-init status 2>/dev/null)
+                
+                echo "---STEP_START---"
+                cat $(ls -rt /var/log/cloud-init-output.log* 2>/dev/null) 2>/dev/null | sed "s/\r$//; s/\x1b\[[0-9;?]*[A-Za-ln-z]//g" | grep -E -- "-------- .* --------" | tail -n 1
+                echo "---STEP_END---"
                 
                 echo "---LOG_START---"
                 cat $(ls -rt /var/log/cloud-init-output.log* 2>/dev/null) 2>/dev/null | tail -n "$LOG_LINES" | sed "s/\r$//; s/.*\r//; s/\x1b\[[0-9;?]*[A-Za-ln-z]//g"
@@ -1887,6 +1997,7 @@ USER_TERM_HEIGHT=$(tput lines 2>/dev/null || echo 40)
             LXC_EXIT=$?
             
             if [ $LXC_EXIT -eq 0 ]; then
+                STEP_OUTPUT=$(echo "$RAW_DATA" | sed -n '/^---STEP_START---/,/^---STEP_END---/{/^---STEP_START---/d;/^---STEP_END---/d;p}')
                 LOG_OUTPUT=$(echo "$RAW_DATA" | sed -n '/^---LOG_START---/,/^---LOG_END---/{/^---LOG_START---/d;/^---LOG_END---/d;p}')
                 JUJU_OUTPUT=$(echo "$RAW_DATA" | sed -n '/^---JUJU_START---/,/^---JUJU_END---/{/^---JUJU_START---/d;/^---JUJU_END---/d;p}')
                 CI_STATUS=$(echo "$RAW_DATA" | sed -n '/^---CI_START---/,/^---CI_END---/{/^---CI_START---/d;/^---CI_END---/d;p}')
@@ -1896,10 +2007,13 @@ USER_TERM_HEIGHT=$(tput lines 2>/dev/null || echo 40)
                     echo ""
                     echo -e "${BRED}Error: cloud-init crashed during deployment! Check the logs above.${NC}${CLR_EOL}"
                     echo ""
-                    echo -e "${BYELLOW}-------- Last 50 lines of cloud-init-output.log --------${NC}"
+                    echo -e "${BRED}------------ Last 50 lines of cloud-init-output.log ------------${NC}"
+                    echo ""
                     lxc exec "$VM_NAME" --project "$LXD_PROJECT" -- bash -c "cat \$(ls -rt /var/log/cloud-init-output.log* 2>/dev/null) 2>/dev/null | tail -n 50 | sed 's/\r\$//; s/.*\r//; s/\x1b\[[0-9;?]*[A-Za-ln-z]//g'"
                     echo -ne "${NC}"
-                    echo -e "${BYELLOW}--------------------------------------------------------${NC}"
+                    echo ""
+                    echo -e "${BRED}----------------------------------------------------------------${NC}"
+                    echo ""
                     echo "Connect using 'ssh ${SSH_OPTS[*]} ${SYS_USER}@$IP' to debug what happened, and resume deployment..."
                     echo "Or alternatively run '${CLEANUP_SCRIPT}' to clean up the environment."
                     PHASE="DONE"
@@ -1908,7 +2022,7 @@ USER_TERM_HEIGHT=$(tput lines 2>/dev/null || echo 40)
                     # Print the final status one last time cleanly
                     echo -e "${CURSOR_TOP}${BYELLOW}-> 5. Juju Deployment Status (Finalizing...)${NC}${CLR_EOL}"
                     echo -e "Target IP: $IP | Updated: $(date +%T)${CLR_EOL}"
-                    echo -e "${BYELLOW}-------------------------------------------------------${NC}${CLR_EOL}"
+                    echo -e "${BYELLOW}---------------------------------------------------------------${NC}${CLR_EOL}"
                     echo -e "$JUJU_OUTPUT" | sed "s/$/${CLR_EOL}/"
                     echo -ne "${CLEAR_REST}" # Clean up bottom
                     echo ""
@@ -1921,8 +2035,25 @@ USER_TERM_HEIGHT=$(tput lines 2>/dev/null || echo 40)
                 UI_FRAME="${CURSOR_TOP}${BYELLOW}-> 5. Juju Deployment Status (cloud-init is running...)${NC}${CLR_EOL}\n"
                 UI_FRAME+="Target IP: $IP | Updated: $(date +%T)${CLR_EOL}\n"
                 
+                # Dynamic Step Header
+                if [ -n "$STEP_OUTPUT" ]; then
+                    # Extract the core message without the existing dashes (fixed regex)
+                    RAW_STEP=$(echo "$STEP_OUTPUT" | sed -E 's/.*-+ (.*) -+.*/\1/' | xargs)
+                    
+                    # Calculate padding to match the default header width (~66 characters)
+                    TEXT_LEN=${#RAW_STEP}
+                    PAD_LEN=$(( (66 - TEXT_LEN - 2) / 2 ))
+                    [ "$PAD_LEN" -lt 8 ] && PAD_LEN=8 # Guarantee at least 8 dashes per side
+                    
+                    # Generate dynamic dash padding
+                    PADDING=$(printf '%*s' "$PAD_LEN" '' | tr ' ' '-')
+                    
+                    UI_FRAME+="${BYELLOW}${PADDING} ${RAW_STEP} ${PADDING}${NC}${CLR_EOL}\n"
+                else
+                    UI_FRAME+="${BYELLOW}------------------- Latest $CLOUD_INIT_LOG_LINES cloud-init Logs -------------------${NC}${CLR_EOL}\n"
+                fi
+                
                 # Tail $CLOUD_INIT_LOG_LINES lines of cloud-init logs
-                UI_FRAME+="${BYELLOW}---------------- Latest cloud-init Logs ----------------${NC}${CLR_EOL}\n"
                 if [ -n "$LOG_OUTPUT" ]; then
                     UI_FRAME+=$(echo -e "$LOG_OUTPUT" | sed "s/$/${CLR_EOL}/")
                     UI_FRAME+="\n"
@@ -1930,7 +2061,7 @@ USER_TERM_HEIGHT=$(tput lines 2>/dev/null || echo 40)
                     UI_FRAME+="(Waiting for logs...)${CLR_EOL}\n"
                 fi
                 
-                UI_FRAME+="${BYELLOW}--------------------- Juju Status ----------------------${NC}${CLR_EOL}\n"
+                UI_FRAME+="${BYELLOW}------------------------- Juju Status --------------------------${NC}${CLR_EOL}\n"
                 
                 # Reserve lines for cloud-init logs + header (4) + a safety buffer (2)
                 MAX_JUJU_LINES=$(( USER_TERM_HEIGHT - ( 4 + CLOUD_INIT_LOG_LINES ) - 2 ))
@@ -2139,38 +2270,18 @@ except Exception:
     # CLUSTER IP INVENTORY
     # ==========================================
     
-    # Wait a brief moment to ensure all Juju nodes have flushed their final IPs to LXD
-    sleep 3
-    
-    # Generate the LXD cluster inventory list (Name, State, IPv4)
-    CLUSTER_LIST=$(lxc list --project "$LXD_PROJECT" -c ns4)
-    
-    # Append to the access file (no color codes)
-    {
-        echo "=========================================="
-        echo " Cluster Instances & IPs"
-        echo "=========================================="
-        echo ""
-        echo "To access any node, run:"
-        echo "  ssh ${SSH_OPTS[*]} ${SYS_USER}@<IP_ADDRESS>"
-        echo ""
-        echo "$CLUSTER_LIST"
-        echo ""
-    } >> "$ACCESS_FILE"
-    
-    # Print natively
+    # Print final live status to terminal
     echo ""
     echo -e "${BYELLOW}==========================================${NC}"
-    echo -e "${BYELLOW} Cluster Instances & IPs${NC}"
+    echo -e "${BYELLOW} Cluster Instances & Access Info${NC}"
     echo -e "${BYELLOW}==========================================${NC}"
     echo ""
-    echo "To access any node, run:"
-    echo "  ssh ${SSH_OPTS[*]} ${SYS_USER}@<IP_ADDRESS>"
-    echo ""
-    echo "$CLUSTER_LIST"
+    print_cluster_inventory "all"
     
     # Kill the tail process
-    [ -n "$TAIL_PID" ] && kill "$TAIL_PID" 2>/dev/null || true
+    if [ -n "$TAIL_PID" ]; then
+        kill "$TAIL_PID" 2>/dev/null || true
+    fi
     
     # Write the connection string directly to the log out in case the terminal detached
     {
@@ -2188,7 +2299,9 @@ wait $WORKER_PID
 WORKER_EXIT_CODE=$?
 
 # Kill the tail process (fails silently since the worker already did it)
-[ -n "$TAIL_PID" ] && kill "$TAIL_PID" 2>/dev/null
+if [ -n "$TAIL_PID" ]; then
+    kill "$TAIL_PID" 2>/dev/null || true
+fi
 
 # Clean up PID file if worker finished naturally
 rm -f "$WORKER_PID_FILE" 2>/dev/null

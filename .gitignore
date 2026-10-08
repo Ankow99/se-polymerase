@@ -1,5 +1,5 @@
-# Ignore generated se-polymerase deployment directories (8-char hex DEPLOY_ID)
-*/[0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f]/
+# Ignore generated se-polymerase deployment directories
+*/*/
 
 # Fallback explicit ignore for generated artifacts if they leak out of a folder
 destroy-*.sh
@@ -8,7 +8,7 @@ config-*.yaml.tmp
 access-*.txt
 log-*.log
 .cert-*
+.worker-*.pid
 
 # Ignore custom folders and files
 credentials
-source/

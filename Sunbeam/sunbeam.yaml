@@ -112,6 +112,7 @@
 {% set custom_cloud_osd_count = 4 %}                # PROMPT:Number of OSDs per Cloud Node
 
 # Juju watch trigger message and models (space separated, order matters)
+{% set custom_cluster_trigger = "-------- Configuring the cloud... --------" %}
 {% set custom_juju_trigger = "-------- Bootstrapping the orchestration layer... --------" %}
 {% set custom_juju_models = "observability openstack openstack-machines openstack-infra" %}
 
@@ -1180,7 +1181,7 @@ write_files:
     maas {{ maas_user }} boot-resources import
     
     # Wait for MAAS boot images to be ready
-    echo -e "\n${BYELLOW}-------- Waiting for all MAAS boot images to sync... --------${NC}\n"
+    echo -e "\n\n${BYELLOW}-------- Waiting for all MAAS boot images to sync... --------${NC}\n"
     
     ATTEMPTS=0
     MAX_ATTEMPTS=60 # Timeout - 30 min
