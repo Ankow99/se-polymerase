@@ -285,10 +285,12 @@ print_cluster_inventory() {
             echo ""
         fi
         if [ "$part" = "nodes" ] || [ "$part" = "all" ]; then
-            echo "[ SSH Access - Cluster Nodes ]"
-            echo "  ssh ${SSH_OPTS[*]} ubuntu@<NODE_IP>"
-            echo "$inventory_table"
-            echo ""
+            if echo "$inventory_table" | grep -E '\|' | grep -vE '\|[[:space:]]*(NAME|HOSTNAME)[[:space:]]*\|' >/dev/null 2>&1; then
+                echo "[ SSH Access - Cluster Nodes ]"
+                echo "  ssh ${SSH_OPTS[*]} ubuntu@<NODE_IP>"
+                echo "$inventory_table"
+                echo ""
+            fi
         fi
     }
     
@@ -1891,7 +1893,7 @@ SYS_USER="${SYS_USER:-ubuntu}"
         if [ "$PHASE" == "LOG_TAIL" ]; then
             
             # Stream the logs natively through bash so it can parse multiple triggers simultaneously line-by-line
-            lxc exec "$VM_NAME" --project "$LXD_PROJECT" -- tail -n +1 -f /var/log/cloud-init-output.log 2>/dev/null | while IFS= read -r line; do
+            while IFS= read -r line; do
                 echo "$line"
                 
                 # Check for the cluster inventory trigger
@@ -1902,16 +1904,17 @@ SYS_USER="${SYS_USER:-ubuntu}"
                 
                 # Check for the Juju trigger or cloud-init finish
                 if [ -n "$JUJU_TRIGGER_MSG" ] && [[ "$line" == *"$JUJU_TRIGGER_MSG"* ]]; then
-                    exit 0 # Quitting the pipe stops the tail command cleanly
+                    PHASE="JUJU_WATCH"
+                    lxc exec "$VM_NAME" --project "$LXD_PROJECT" -- pkill -f "tail.*cloud-init" 2>/dev/null || true
+                    break
                 elif [[ "$line" == *"finished at"* ]]; then
-                    exit 0
+                    PHASE="DONE"
+                    lxc exec "$VM_NAME" --project "$LXD_PROJECT" -- pkill -f "tail.*cloud-init" 2>/dev/null || true
+                    break
                 fi
-            done
+            done < <(lxc exec "$VM_NAME" --project "$LXD_PROJECT" -- tail -n +1 -f /var/log/cloud-init-output.log 2>/dev/null)
             
-            # Grab the exit code of 'lxc exec' (the first command in the pipeline)
-            EXIT_CODE=${PIPESTATUS[0]}
-            
-            if [ "$EXIT_CODE" -eq 0 ] || [ "$EXIT_CODE" -eq 141 ]; then
+            if [ "$PHASE" == "DONE" ] || [ "$PHASE" == "JUJU_WATCH" ]; then
                 # Success! The 'sed' command found the Juju model deploy start and quit cleanly.
                 sleep 2
                 STATUS_CHECK=$(lxc exec "$VM_NAME" --project "$LXD_PROJECT" -- cloud-init status 2>/dev/null)
@@ -1930,26 +1933,25 @@ SYS_USER="${SYS_USER:-ubuntu}"
                     echo "Connect using 'ssh ${SSH_OPTS[*]} ${SYS_USER}@$IP' to debug what happened, and resume deployment..."
                     echo "Or alternatively run '${CLEANUP_SCRIPT}' to clean up the environment."
                     PHASE="DONE"
-                elif [[ "$STATUS_CHECK" == *"status: done"* ]]; then
+                elif [ "$PHASE" == "DONE" ]; then
                     echo ""
                     echo -e "${BYELLOW}cloud-init finished successfully! ${NC}${CLR_EOL}"
-                    PHASE="DONE"
-                elif [ -n "$JUJU_TRIGGER_MSG" ] && lxc exec "$VM_NAME" --project "$LXD_PROJECT" -- grep -Fq -- "$JUJU_TRIGGER_MSG" /var/log/cloud-init-output.log* 2>/dev/null; then
+                elif [ "$PHASE" == "JUJU_WATCH" ]; then
                     echo ""
                     echo -e "${BYELLOW}Juju Deployment Trigger Detected. Switching to Watch Mode...${NC}${CLR_EOL}"
-                    sleep 2
-                    PHASE="JUJU_WATCH"
+                fi
+            else
+                # If PHASE didn't change, the tail command died naturally (connection dropped or file not created yet)
+                TEST_CONN=$(lxc exec "$VM_NAME" --project "$LXD_PROJECT" -- echo "ok" 2>/dev/null)
+                if [ "$TEST_CONN" != "ok" ]; then
+                    # SSH died (Connection Refused / Network Down / Rebooting)
+                    echo -ne "${BYELLOW}Connection lost (Rebooting?) retrying...${NC}${CLR_EOL}\r"
+                    sleep 3
                 else
+                    # Other errors (file not found yet, etc)
+                    echo -ne "${BYELLOW}Waiting for log file creation...${NC}${CLR_EOL}\r"
                     sleep 2
                 fi
-            elif [ "$EXIT_CODE" -eq 255 ]; then
-                # 255 = SSH died (Connection Refused / Network Down / Rebooting)
-                echo -ne "${BYELLOW}Connection lost (Rebooting?) retrying...${NC}${CLR_EOL}\r"
-                sleep 3
-            else
-                # Other errors (file not found yet, etc)
-                echo -ne "${BYELLOW}Waiting for log file creation...${NC}${CLR_EOL}\r"
-                sleep 2
             fi
         fi
         
