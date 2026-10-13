@@ -1,0 +1,86 @@
+# ==========================================
+# Polymerase Sunbeam example deployment configuration
+# ==========================================
+# Payload: sunbeam.yaml
+# ==========================================
+# ABOUT THIS FILE:
+#   This is a sample configuration containing the default values. You can edit 
+#   this file and pass it to the synth script using the '-c' flag to bypass 
+#   interactive prompts.
+# 
+# NOTE ON AUTO-GENERATION:
+#   You do not need to build these manually! Whenever you run a deployment 
+#   normally, the script automatically generates and saves a configuration file 
+#   containing your exact interactive choices so you can easily replicate the run.
+#
+# SYNTAX RULES:
+#   Setting a value to "" will fall back to the cloud-init defaults.
+#   To explicitly leave a variable empty, use the exact string "none".
+# ==========================================
+
+deploy_id: ""
+lxd_project: ""
+nested_lxd: "false"
+maas_snap: "true"
+update_n_upgrade: "True"
+auto_retry: "True"
+vm_image: "ubuntu:24.04"
+sys_user: "ubuntu"
+password: "ubuntu"
+pro_token: ""
+hostname: ""
+tld: "sunbeam"
+timezone: "America/New_York"
+lxd_channel: "5.21/stable"
+maas_channel: "3.7/stable"
+sunbeam_channel: "2024.1/stable"
+sunbeam_revision: ""
+lxd_pool: "default"
+maas_user: "admin"
+maas_password: "admin"
+maas_email: "admin@email.com"
+maas_images: "noble"
+maas_space: "sunspace"
+maas_dns: "8.8.8.8"
+maas_ip_count: "30"
+os_deployment: "sunbeam"
+os_run_demo: "True"
+os_pub_api_ip_count: "50"
+os_int_api_ip_count: "50"
+os_pub_api_hostname: "public"
+os_int_api_hostname: "internal"
+os_rgw_api_hostname: "rgw"
+os_add_vault: "False"
+os_add_tls: "False"
+os_add_barbican: "False"
+os_add_octavia: "False"
+os_add_amphora: "False"
+os_add_masakari: "False"
+os_add_heat: "False"
+os_add_designate: "False"
+os_add_magnum: "False"
+os_add_ldap: "False"
+os_add_images: "False"
+os_add_watcher: "False"
+os_add_telemetry: "False"
+os_add_manila: "False"
+os_add_maintenance: "False"
+os_add_tempest: "False"
+os_add_cos: "False"
+maas_cpu: "4"
+maas_ram: "8GiB"
+maas_disk: "30GiB"
+juju_ha: "1"
+juju_cpu: "3"
+juju_ram: "6GiB"
+juju_disk: "30GiB"
+sunbeam_ha: "1"
+sunbeam_cpu: "3"
+sunbeam_ram: "6GiB"
+sunbeam_disk: "30GiB"
+cloud_ha: "1"
+cloud_cpu: "12"
+cloud_ram: "40GiB"
+cloud_disk: "100GiB"
+cloud_osd_disk: "30GiB"
+cloud_osd_count: "4"
