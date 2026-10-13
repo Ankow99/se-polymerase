@@ -718,10 +718,15 @@ while [[ $# -gt 0 ]]; do
             shift 1
             ;;
         -i|--id)
-            echo -e "${BYELLOW}-> Importing SSH keys from user ID:${NC} $2"
-            echo ""
-            LXC_OPTIONAL_ARGS+=("-c" "user.ssh_import_id=$2")
-            shift 2
+            if [[ -n "$2" && "$2" != -* ]]; then
+                echo -e "${BYELLOW}-> Importing SSH keys from user ID:${NC} $2"
+                echo ""
+                LXC_OPTIONAL_ARGS+=("-c" "user.ssh_import_id=$2")
+                shift 2
+            else
+                echo -e "${BRED}Error: $1 requires a user ID argument.${NC}"
+                exit 1
+            fi
             ;;
         -I|--isolate-images)
             echo -e "${BYELLOW}-> Isolating LXD images per project${NC}"
@@ -730,16 +735,26 @@ while [[ $# -gt 0 ]]; do
             shift 1
             ;;
         -c|--config)
-            INPUT_CONFIG_FILE="$2"
-            echo -e "${BYELLOW}-> Loading configuration from:${NC} $INPUT_CONFIG_FILE"
-            echo ""
-            shift 2
+            if [[ -n "$2" && "$2" != -* ]]; then
+                INPUT_CONFIG_FILE="$2"
+                echo -e "${BYELLOW}-> Loading configuration from:${NC} $INPUT_CONFIG_FILE"
+                echo ""
+                shift 2
+            else
+                echo -e "${BRED}Error: $1 requires a file path argument.${NC}"
+                exit 1
+            fi
             ;;
         -m|--manifest)
-            CUSTOM_MANIFEST_FILE="$2"
-            echo -e "${BYELLOW}-> Using custom Sunbeam manifest:${NC} $CUSTOM_MANIFEST_FILE"
-            echo ""
-            shift 2
+            if [[ -n "$2" && "$2" != -* ]]; then
+                CUSTOM_MANIFEST_FILE="$2"
+                echo -e "${BYELLOW}-> Using custom Sunbeam manifest:${NC} $CUSTOM_MANIFEST_FILE"
+                echo ""
+                shift 2
+            else
+                echo -e "${BRED}Error: $1 requires a file path argument.${NC}"
+                exit 1
+            fi
             ;;
         -*)
             echo -e "${BRED}Error: Unknown flag '${NC}${1}${BRED}'${NC}"
