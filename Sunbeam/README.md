@@ -105,6 +105,25 @@ Deploy using a custom Sunbeam manifest file to override the default cloud genera
 ./synth Sunbeam/sunbeam.yaml -m custom-manifest.yaml
 ```
 
+### Configuration Files and "Dry Runs"
+Every time you execute `synth` interactively, it automatically records your answers and generates a reusable YAML configuration file (e.g., `config-[PROJECT].yaml`). You can pass this file to the `-c` flag in future runs to perfectly replicate a specific environment without having to manually answer the prompts again.
+
+#### How to perform a "Dry Run" (Generate a config without deploying):
+If you want to build a configuration file to review, share, or edit *before* actually spinning up any resources, you can use `synth` as a configuration generator:
+
+1. Run `synth` interactively (do **not** use the `-y` flag):
+   ```bash
+   ./synth Sunbeam/sunbeam.yaml
+   ```
+2. Answer all the prompts to configure your environment.
+3. At the final resource confirmation prompt (`Proceed with deployment using these resources and networks? [y/N]:`), answer `n` to abort.
+4. The script will catch the abort and ask: `Keep generated config file 'config-[PROJECT].yaml' for your next run? [y/N]:`. Answer `y`.
+
+You now have a fully populated configuration file inside the generated deployment directory that you can safely tweak and deploy later using:
+```bash
+./synth Sunbeam/sunbeam.yaml -y -c Sunbeam/[DEPLOY_ID]/config-[PROJECT].yaml
+```
+
 ## Access and Cleanup
 Because the deployment is executed in the background, you can detach your terminal at any time. Monitor the live progress by tailing the log file stored in the deployment directory:
 ```bash
