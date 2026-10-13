@@ -3,7 +3,7 @@
 
 # ---
 # devstack transcript: Automated cloud-init install of DevStack OpenStack
-# version: 3.0.0
+# version: 4.0.0
 #
 # Synthesized by: Pablo Gonzalez De Greiff @ Canonical
 # ---
@@ -58,19 +58,21 @@
 # ==========================================
 
 {% if cloud_name == "lxd" %}
-  {% set meta = {} %}
-  {% for key, value in ds.config.items() %}
-    {% if key.startswith("user_") %}
-      {% set _ = meta.__setitem__(key[5:], value) %}
-    {% endif %}
-  {% endfor %}
+    {% set meta = {} %}
+    {% for key, value in ds.config.items() %}
+        {% if key.startswith("user_") %}
+            {% set _ = meta.__setitem__(key[5:], value) %}
+        {% endif %}
+    {% endfor %}
 {% else %}
-  {% set meta = ds.meta_data.get("meta") if ds.meta_data.get("meta") else {} %}
+    {% set meta = ds.meta_data.get("meta") if ds.meta_data.get("meta") else {} %}
 {% endif %}
 
 # ==========================================
 # VARIABLE BINDINGS
 # ==========================================
+
+{% set update_n_upgrade = meta.get("update_n_upgrade") | default(custom_update_n_upgrade, true) | string | lower == "true" %}
 
 {% set vm_image = meta.get("vm_image") or custom_vm_image %}
 {% set ssh_key = meta.get("ssh_key") or custom_ssh_key %}
@@ -90,53 +92,13 @@
 {% set devstack_release = meta.get("devstack_release") or custom_devstack_release %}
 {% set devstack_password = meta.get("devstack_password") or custom_devstack_password %}
 
-{% if meta.get("update_n_upgrade") is not none %}
-  {% set update_n_upgrade = (meta.get("update_n_upgrade") | string | lower == "true") %}
-{% else %}
-  {% set update_n_upgrade = (custom_update_n_upgrade | string | lower == "true") %}
-{% endif %}
-
-{% if meta.get("enable_swift") is not none %}
-  {% set enable_swift = (meta.get("enable_swift") | string | lower == "true") %}
-{% else %}
-  {% set enable_swift = (custom_enable_swift | string | lower == "true") %}
-{% endif %}
-
-{% if meta.get("enable_skyline") is not none %}
-  {% set enable_skyline = (meta.get("enable_skyline") | string | lower == "true") %}
-{% else %}
-  {% set enable_skyline = (custom_enable_skyline | string | lower == "true") %}
-{% endif %}
-
-{% if meta.get("enable_masakari") is not none %}
-  {% set enable_masakari = (meta.get("enable_masakari") | string | lower == "true") %}
-{% else %}
-  {% set enable_masakari = (custom_enable_masakari | string | lower == "true") %}
-{% endif %}
-
-{% if meta.get("enable_heat") is not none %}
-  {% set enable_heat = (meta.get("enable_heat") | string | lower == "true") %}
-{% else %}
-  {% set enable_heat = (custom_enable_heat | string | lower == "true") %}
-{% endif %}
-
-{% if meta.get("enable_designate") is not none %}
-  {% set enable_designate = (meta.get("enable_designate") | string | lower == "true") %}
-{% else %}
-  {% set enable_designate = (custom_enable_designate | string | lower == "true") %}
-{% endif %}
-
-{% if meta.get("enable_octavia") is not none %}
-  {% set enable_octavia = (meta.get("enable_octavia") | string | lower == "true") %}
-{% else %}
-  {% set enable_octavia = (custom_enable_octavia | string | lower == "true") %}
-{% endif %}
-
-{% if meta.get("enable_barbican") is not none %}
-  {% set enable_barbican = (meta.get("enable_barbican") | string | lower == "true") %}
-{% else %}
-  {% set enable_barbican = (custom_enable_barbican | string | lower == "true") %}
-{% endif %}
+{% set enable_swift = meta.get("enable_swift") | default(custom_enable_swift, true) | string | lower == "true" %}
+{% set enable_skyline = meta.get("enable_skyline") | default(custom_enable_skyline, true) | string | lower == "true" %}
+{% set enable_masakari = meta.get("enable_masakari") | default(custom_enable_masakari, true) | string | lower == "true" %}
+{% set enable_heat = meta.get("enable_heat") | default(custom_enable_heat, true) | string | lower == "true" %}
+{% set enable_designate = meta.get("enable_designate") | default(custom_enable_designate, true) | string | lower == "true" %}
+{% set enable_octavia = meta.get("enable_octavia") | default(custom_enable_octavia, true) | string | lower == "true" %}
+{% set enable_barbican = meta.get("enable_barbican") | default(custom_enable_barbican, true) | string | lower == "true" %}
 
 # ==========================================
 # STANDARD CLOUD-INIT EXECUTION
@@ -155,7 +117,9 @@ hostname: {{ base_name }}
 users:
   - name: stack
     lock_passwd: False
-    sudo: ["ALL=(ALL) NOPASSWD:ALL\nDefaults:stack !requiretty"]
+    sudo:
+      - ALL=(ALL) NOPASSWD:ALL
+      - "Defaults:stack !requiretty"
     groups: kvm
     shell: /bin/bash
     homedir: /opt/stack
@@ -205,7 +169,7 @@ write_files:
 - path: /etc/profile.d/devstack-login.sh
   permissions: '0644'
   content: |
-    if [ "$USER" = "{{ sys_user }}" ] || [ "$USER" = "stack" ]; then
+    if [[ $- == *i* ]] && { [ "$USER" = "{{ sys_user }}" ] || [ "$USER" = "stack" ] || [ "$USER" = "root" ]; }; then
         if [ -f "/opt/stack/devstack/openrc" ]; then
             source /opt/stack/devstack/openrc admin admin
         fi
@@ -250,7 +214,7 @@ write_files:
     BGREEN='\033[1;32m'
     NC='\033[0m'
     
-    echo -e "\n\n${BYELLOW}-------- Generating Runtime Environment... --------${NC}\n"
+    echo -e "\n${BYELLOW}-------- Generating Runtime Environment... --------${NC}\n"
     
     # 1. Calculate Runtime Variables
     IP_ADDRESS=$(hostname -I | awk '{print $1}')
@@ -287,14 +251,14 @@ write_files:
     source /etc/repro-env
     
     # Verify critical dependencies
-    echo -e "\n\n${BYELLOW}-------- Verifying dependencies... --------${NC}\n"
+    echo -e "\n${BYELLOW}-------- Verifying dependencies... --------${NC}\n"
     
     for cmd in jq; do
-      if ! command -v $cmd >/dev/null 2>&1; then
-        echo "CRITICAL ERROR: Required command '$cmd' not found."
-        echo "Snap/apt package installation likely failed due to a network error."
-        exit 1
-      fi
+        if ! command -v $cmd >/dev/null 2>&1; then
+            echo "CRITICAL ERROR: Required command '$cmd' not found."
+            echo "Snap/apt package installation likely failed due to a network error."
+            exit 1
+        fi
     done
     echo "All dependencies verified successfully!"
 
@@ -311,7 +275,7 @@ write_files:
     source /etc/repro-env
     
     # Clone devstack repo
-    echo -e "\n\n${BYELLOW}-------- Cloning DevStack Repository... --------${NC}\n"
+    echo -e "\n${BYELLOW}-------- Cloning DevStack Repository... --------${NC}\n"
     
     chmod +x /opt/stack
     
@@ -324,6 +288,8 @@ write_files:
     DATABASE_PASSWORD={{ devstack_password }}
     RABBIT_PASSWORD={{ devstack_password }}
     SERVICE_PASSWORD={{ devstack_password }}
+    # Network Binding
+    HOST_IP=$IP_ADDRESS
     # Base Git Repository
     GIT_BASE=https://opendev.org
     # Logging Configuration
@@ -399,14 +365,17 @@ write_files:
     source /etc/repro-env
     
     # Install devstack
-    echo -e "\n\n${BYELLOW}-------- Installing DevStack... --------${NC}\n"
+    echo -e "\n${BYELLOW}-------- Installing DevStack... --------${NC}\n"
     
-    su -l stack -c '~/devstack/stack.sh'
+    if ! su -l stack -c '~/devstack/stack.sh'; then
+        echo -e "${BRED}[FATAL] DevStack Installation Failed. Aborting.${NC}\n"
+        exit 1
+    fi
     
     cp /opt/stack/devstack/openrc /home/{{ sys_user }}/openrc
     chown {{ sys_user }}:{{ sys_user }} /home/{{ sys_user }}/openrc
     
-    echo -e "\n\n${BYELLOW}-------- Finished deploying DevStack, have fun!... --------${NC}\n"
+    echo -e "\n${BYELLOW}-------- Finished deploying DevStack, have fun!... --------${NC}\n"
 
 # ==========================================
 # END OF AUTOMATION SCRIPTS (00 to 03)

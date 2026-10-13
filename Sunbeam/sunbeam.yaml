@@ -3,7 +3,7 @@
 
 # ---
 # sunbeam transcript: Automated scalable cloud-init install of Sunbeam using MAAS
-# version: 12.0.0
+# version: 12.1.0
 #
 # Synthesized by: Pablo Gonzalez De Greiff @ Canonical
 # ---
@@ -1010,9 +1010,16 @@ write_files:
     echo -e "\n${BYELLOW}-------- Waiting for MAAS API to be ready... --------${NC}\n"
     
     sleep 30
+    ATTEMPTS=0
+    MAX_ATTEMPTS=10 # Timeout - 5 min
     until maas login {{ maas_user }} 'http://localhost:5240/MAAS/' $(maas apikey --username {{ maas_user }}) > /dev/null 2>&1; do
-        echo "MAAS is not ready yet (502). Retrying in 30 seconds..."
+        if [ $ATTEMPTS -ge $MAX_ATTEMPTS ]; then
+            echo -e "${BRED}[FATAL] Timeout waiting for MAAS API to become ready. Aborting.${NC}\n"
+            exit 1
+        fi
+        echo "MAAS is not ready yet (502). Retrying in 30 seconds (Attempt $ATTEMPTS/$MAX_ATTEMPTS)..."
         sleep 30
+        ATTEMPTS=$((ATTEMPTS+1))
     done
     
     # Grab API key and login as admin
@@ -1355,12 +1362,17 @@ write_files:
         for HOST in {{ nodes_hostnames }}; do
             # Fetch the dynamic MAC to identify the machine in MAAS
             MAC=$(lxc config get $HOST volatile.eth0.hwaddr)
+            if [ -z "$MAC" ]; then
+                echo "  [..] Waiting for LXD to assign MAC address to '$HOST'..."
+                all_enlisted=false
+                continue
+            fi
             SYSTEM_ID=$(maas {{ maas_user }} machines read mac_address=$MAC | jq -r '.[0].system_id')
             status=$(maas {{ maas_user }} machines read mac_address=$MAC | jq -r '.[0].status_name')
             
             if [ "$SYSTEM_ID" != "null" ] && [ "$status" = "New" ]; then
                 echo -e "  [${BGREEN}OK${NC}] '$HOST' was enlisted with ID '$SYSTEM_ID'!"
-           elif [[ "$status" == *"Failed"* ]]; then
+            elif [[ "$status" == *"Failed"* ]]; then
                 # Automatically retry testing on failure
                 echo -e "  [${BYELLOW}!!${NC}] '$HOST' is currently '$status'... Retrying!"
                 maast {{ maas_user }} machine test $SYSTEM_ID

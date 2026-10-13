@@ -3,7 +3,7 @@
 
 # ---
 # snapcraft transcript: Automated cloud-init install of a dedicated Snapcraft VM for Snap building
-# version: 2.0.0
+# version: 3.0.0
 #
 # Synthesized by: Pablo Gonzalez De Greiff @ Canonical
 # ---
@@ -54,19 +54,21 @@
 # ==========================================
 
 {% if cloud_name == "lxd" %}
-  {% set meta = {} %}
-  {% for key, value in ds.config.items() %}
-    {% if key.startswith("user_") %}
-      {% set _ = meta.__setitem__(key[5:], value) %}
-    {% endif %}
-  {% endfor %}
+    {% set meta = {} %}
+    {% for key, value in ds.config.items() %}
+        {% if key.startswith("user_") %}
+            {% set _ = meta.__setitem__(key[5:], value) %}
+        {% endif %}
+    {% endfor %}
 {% else %}
-  {% set meta = ds.meta_data.get("meta") if ds.meta_data.get("meta") else {} %}
+    {% set meta = ds.meta_data.get("meta") if ds.meta_data.get("meta") else {} %}
 {% endif %}
 
 # ==========================================
 # VARIABLE BINDINGS
 # ==========================================
+
+{% set update_n_upgrade = meta.get("update_n_upgrade") | default(custom_update_n_upgrade, true) | string | lower == "true" %}
 
 {% set vm_image = meta.get("vm_image") or custom_vm_image %}
 {% set ssh_key = meta.get("ssh_key") or custom_ssh_key %}
@@ -87,12 +89,6 @@
 {% set lxd_pool = meta.get("lxd_pool") or custom_lxd_pool %}
 {% set lxd_bridge = meta.get("lxd_bridge") or custom_lxd_bridge %}
 {% set lxd_cidr = meta.get("lxd_cidr") or custom_lxd_cidr %}
-
-{% if meta.get("update_n_upgrade") is not none %}
-  {% set update_n_upgrade = (meta.get("update_n_upgrade") | string | lower == "true") %}
-{% else %}
-  {% set update_n_upgrade = (custom_update_n_upgrade | string | lower == "true") %}
-{% endif %}
 
 # ==========================================
 # STANDARD CLOUD-INIT EXECUTION
@@ -160,7 +156,7 @@ write_files:
 - path: /etc/profile.d/auto-login.sh
   permissions: '0644'
   content: |
-    if [ "$USER" = "{{ sys_user }}" ]; then        
+    if [ "$USER" = "{{ sys_user }}" ] || [ "$USER" = "root" ]; then
         if [ -f "/etc/repro-env" ]; then
             source /etc/repro-env
         fi
@@ -196,7 +192,7 @@ write_files:
     BGREEN='\033[1;32m'
     NC='\033[0m'
     
-    echo -e "\n\n${BYELLOW}-------- Generating Runtime Environment... --------${NC}\n"
+    echo -e "\n${BYELLOW}-------- Generating Runtime Environment... --------${NC}\n"
     
     # 1. Calculate Runtime Variables
     IP_ADDRESS=$(hostname -I | awk '{print $1}')
@@ -233,14 +229,14 @@ write_files:
     source /etc/repro-env
     
     # Verify critical dependencies
-    echo -e "\n\n${BYELLOW}-------- Verifying dependencies... --------${NC}\n"
+    echo -e "\n${BYELLOW}-------- Verifying dependencies... --------${NC}\n"
     
     for cmd in lxc jq snapcraft; do
-      if ! command -v $cmd >/dev/null 2>&1; then
-        echo "CRITICAL ERROR: Required command '$cmd' not found."
-        echo "Snap/apt package installation likely failed due to a network error."
-        exit 1
-      fi
+        if ! command -v $cmd >/dev/null 2>&1; then
+            echo "CRITICAL ERROR: Required command '$cmd' not found."
+            echo "Snap/apt package installation likely failed due to a network error."
+            exit 1
+        fi
     done
     echo "All dependencies verified successfully!"
 
@@ -257,7 +253,7 @@ write_files:
     source /etc/repro-env
     
     # Create Snapcraft credentials file
-    echo -e "\n\n${BYELLOW}-------- Creating Snapcraft Credentials File... --------${NC}\n"
+    echo -e "\n${BYELLOW}-------- Creating Snapcraft Credentials File... --------${NC}\n"
     
 {% if snapcraft_creds_b64 %}
     echo "{{ snapcraft_creds_b64 }}" > /home/{{ sys_user }}/.snapcraft-credentials
@@ -269,16 +265,16 @@ write_files:
     chmod 0600 /home/{{ sys_user }}/.snapcraft-credentials
     
     # Add Snapcraft credentials file to bashrc
-    echo -e "\n\n${BYELLOW}-------- Adding Snapcraft Credentials File to bashrc... --------${NC}\n"
+    echo -e "\n${BYELLOW}-------- Adding Snapcraft Credentials File to bashrc... --------${NC}\n"
     
     echo 'export SNAPCRAFT_STORE_CREDENTIALS=$(cat $HOME/.snapcraft-credentials)' >> /home/{{ sys_user }}/.bashrc
     
     # Initialize LXD
-    echo -e "\n\n${BYELLOW}-------- Initialize LXD... --------${NC}\n"
+    echo -e "\n${BYELLOW}-------- Initialize LXD... --------${NC}\n"
     
     lxd init --auto
     
-    echo -e "\n\n${BYELLOW}-------- Finished deploying Snapcraft, have fun!... --------${NC}\n"
+    echo -e "\n${BYELLOW}-------- Finished deploying Snapcraft, have fun!... --------${NC}\n"
 
 # ==========================================
 # END OF AUTOMATION SCRIPTS (00 to 02)

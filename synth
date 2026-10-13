@@ -4,7 +4,7 @@
 # se-polymerase (synth)
 # Acts as the polymerase to synthesize an isolated, terraform-free LXD 
 # reproducer environment using the host's LXD for MAAS + Juju deployments.
-# version: 8.4.0
+# version: 8.5.0
 #
 # Synthesized by: Pablo Gonzalez De Greiff @ Canonical
 # ---
@@ -170,8 +170,12 @@ emergency_rollback() {
             if [ -n "$CONFIG_FILE" ] && [ -f "$CONFIG_FILE" ] && [ "$CONFIG_FILE" != "$INPUT_CONFIG_FILE" ]; then
                 echo -ne "${BYELLOW}-> Keep generated config file '$(basename "$CONFIG_FILE")' for your next run? [y/N]: ${NC}"
                 
-                # Catch the input directly from the terminal (tty) even during a trap
-                read -r keep_conf </dev/tty || keep_conf="n"
+                # Catch the input directly from the terminal (tty) only if a TTY exists
+                if [ -t 0 ] || [ -c /dev/tty ]; then
+                    read -r keep_conf </dev/tty || keep_conf="n"
+                else
+                    keep_conf="n"
+                fi
                 
                 if [[ "$keep_conf" =~ ^[Yy]$ ]]; then
                     echo -e "-> Kept configuration file at: ${CONFIG_FILE}"
@@ -530,7 +534,7 @@ create_dynamic_bridge() {
 import ipaddress, sys
 try:
     net = ipaddress.IPv4Network('$bridge_cidr', strict=False)
-    if net.prefixlen >= 31:
+    if net.prefixlen >= 30:
         print('TOO_SMALL')
         sys.exit(0)
     print(f'{list(net.hosts())[0]} {net.prefixlen}')
@@ -539,7 +543,7 @@ except Exception:
 ")"
             if [ "$gw_ip" = "TOO_SMALL" ]; then
                 echo ""
-                echo -e "${BRED}Error: CIDR '${NC}${bridge_cidr}${BRED}' is too small for a bridge subnet. Must be /30 or larger. Please try again...${NC}"
+                echo -e "${BRED}Error: CIDR '${NC}${bridge_cidr}${BRED}' is too small for a bridge subnet. Must be /29 or larger. Please try again...${NC}"
                 echo ""
                 if [ "$ACCEPT_DEFAULTS" = true ]; then
                     exit 1
@@ -604,7 +608,7 @@ except Exception:
 import ipaddress, sys
 try:
     net = ipaddress.IPv4Network('$bridge_cidr', strict=False)
-    if net.prefixlen >= 31:
+    if net.prefixlen >= 30:
         print('ERROR')
         sys.exit(0)
     hosts = list(net.hosts())
@@ -895,13 +899,13 @@ else
                 SSH_ID="$user_input"
             else
                 echo ""
-                confirm_or_abort "Generate a new 4096-bit RSA SSH key pair at ~/.ssh/id_rsa?"
+                confirm_or_abort "Generate a new Ed25519 SSH key pair at ~/.ssh/id_ed25519?"
                 
                 mkdir -p ~/.ssh
                 chmod 700 ~/.ssh
                 
-                if ssh-keygen -t rsa -b 4096 -f ~/.ssh/id_rsa -N ""; then
-                    SSH_ID=~/.ssh/id_rsa
+                if ssh-keygen -t ed25519 -f ~/.ssh/id_ed25519 -N ""; then
+                    SSH_ID=~/.ssh/id_ed25519
                     echo ""
                 else
                     echo ""
@@ -1086,7 +1090,7 @@ for var in $(compgen -e | grep "^CONFIG_PROVIDED_"); do
     val="${!var}"
     
     # Check if we already processed it through the prompt loops
-    if [[ ! " ${PROCESSED_KEYS[*]} " == *" $key "* ]]; then
+    if [[ ! " ${PROCESSED_KEYS[*]} " =~ ( |^)${key}( |$) ]]; then
         echo "${key}: \"${val}\"" >> "$CONFIG_FILE_TMP"
         LXC_OPTIONAL_ARGS+=("-c" "user.${key}=${val}")
         export "$(echo "$key" | tr '[:lower:]' '[:upper:]')"="$val"
@@ -1203,7 +1207,7 @@ HOST_CPU=$(nproc 2>/dev/null || echo 0)
 # Convert Kb to GiB and round to nearest whole number
 HOST_RAM=$(awk '/MemTotal/ {printf "%.0f", $2/1024/1024}' /proc/meminfo 2>/dev/null || echo 0)
 # Fetch available disk space on root (/) in GiB
-HOST_DISK=$(df -k / | awk 'NR==2 {printf "%.0f", $4/1024/1024}' 2>/dev/null || echo 0)
+HOST_DISK=$(df -kP / | awk 'NR==2 {printf "%.0f", $4/1024/1024}' 2>/dev/null || echo 0)
 
 # Evaluate Constraints
 WARNINGS=""

@@ -3,7 +3,7 @@
 
 # ---
 # lxd transcript: Automated scalable cloud-init install of LXD
-# version: 3.0.0
+# version: 4.0.0
 #
 # Synthesized by: Pablo Gonzalez De Greiff @ Canonical
 # ---
@@ -58,19 +58,22 @@
 # ==========================================
 
 {% if cloud_name == "lxd" %}
-  {% set meta = {} %}
-  {% for key, value in ds.config.items() %}
-    {% if key.startswith("user_") %}
-      {% set _ = meta.__setitem__(key[5:], value) %}
-    {% endif %}
-  {% endfor %}
+    {% set meta = {} %}
+    {% for key, value in ds.config.items() %}
+        {% if key.startswith("user_") %}
+            {% set _ = meta.__setitem__(key[5:], value) %}
+        {% endif %}
+    {% endfor %}
 {% else %}
-  {% set meta = ds.meta_data.get("meta") if ds.meta_data.get("meta") else {} %}
+    {% set meta = ds.meta_data.get("meta") if ds.meta_data.get("meta") else {} %}
 {% endif %}
 
 # ==========================================
 # VARIABLE BINDINGS
 # ==========================================
+
+{% set nested_lxd = meta.get("nested_lxd") | default(custom_nested_lxd, true) | string | lower == "true" %}
+{% set update_n_upgrade = meta.get("update_n_upgrade") | default(custom_update_n_upgrade, true) | string | lower == "true" %}
 
 {% set vm_image = meta.get("vm_image") or custom_vm_image %}
 {% set ssh_key = meta.get("ssh_key") or custom_ssh_key %}
@@ -97,18 +100,6 @@
 {% set node_disk = meta.get("node_disk") or custom_node_disk %}
 {% set node_image = meta.get("node_image") or custom_node_image %}
 
-{% if meta.get("nested_lxd") is not none %}
-  {% set nested_lxd = (meta.get("nested_lxd") | string | lower == "true") %}
-{% else %}
-  {% set nested_lxd = (custom_nested_lxd | string | lower == "true") %}
-{% endif %}
-
-{% if meta.get("update_n_upgrade") is not none %}
-  {% set update_n_upgrade = (meta.get("update_n_upgrade") | string | lower == "true") %}
-{% else %}
-  {% set update_n_upgrade = (custom_update_n_upgrade | string | lower == "true") %}
-{% endif %}
-
 # ==========================================
 # CIDR GATEWAY AUTO-CALCULATOR
 # ==========================================
@@ -131,10 +122,10 @@
 
 # 1. Generate Nodes
 {% for i in range(1, node_ha + 1) %}
-  {% set _ = hostnames_list.append("node-" ~ i) %}
-  {% set _ = cpus_list.append(node_cpu) %}
-  {% set _ = rams_list.append(node_ram) %}
-  {% set _ = disks_list.append(node_disk) %}
+    {% set _ = hostnames_list.append("node-" ~ i) %}
+    {% set _ = cpus_list.append(node_cpu) %}
+    {% set _ = rams_list.append(node_ram) %}
+    {% set _ = disks_list.append(node_disk) %}
 {% endfor %}
 
 # Compile final strings
@@ -150,8 +141,8 @@
 # Dynamic Nested Storage Calculation
 {% set ns = namespace(total_storage=0) %}
 {% for disk in nodes_disks.split(' ') %}
-  {% set disk_val = disk | replace('GiB', '') | replace('GB', '') | int %}
-  {% set ns.total_storage = ns.total_storage + disk_val %}
+    {% set disk_val = disk | replace('GiB', '') | replace('GB', '') | int %}
+    {% set ns.total_storage = ns.total_storage + disk_val %}
 {% endfor %}
 
 # Add a 10GB buffer
@@ -264,7 +255,7 @@ write_files:
 - path: /etc/profile.d/lxd-login.sh
   permissions: '0644'
   content: |
-    if [ "$USER" = "{{ sys_user }}" ]; then
+    if [ "$USER" = "{{ sys_user }}" ] || [ "$USER" = "root" ]; then
         IS_NESTED_LXD="{{ 'true' if nested_lxd else 'false' }}"
         LXD_PROJECT="{{ lxd_project }}"
         
@@ -328,7 +319,7 @@ write_files:
     BGREEN='\033[1;32m'
     NC='\033[0m'
     
-    echo -e "\n\n${BYELLOW}-------- Generating Runtime Environment... --------${NC}\n"
+    echo -e "\n${BYELLOW}-------- Generating Runtime Environment... --------${NC}\n"
     
     # 1. Calculate Runtime Variables
     IP_ADDRESS=$(hostname -I | awk '{print $1}')
@@ -379,14 +370,14 @@ write_files:
     source /etc/repro-env
     
     # Verify critical dependencies
-    echo -e "\n\n${BYELLOW}-------- Verifying dependencies... --------${NC}\n"
+    echo -e "\n${BYELLOW}-------- Verifying dependencies... --------${NC}\n"
     
     for cmd in lxc jq; do
-      if ! command -v $cmd >/dev/null 2>&1; then
-        echo "CRITICAL ERROR: Required command '$cmd' not found."
-        echo "Snap/apt package installation likely failed due to a network error."
-        exit 1
-      fi
+        if ! command -v $cmd >/dev/null 2>&1; then
+            echo "CRITICAL ERROR: Required command '$cmd' not found."
+            echo "Snap/apt package installation likely failed due to a network error."
+            exit 1
+        fi
     done
     echo "All dependencies verified successfully!"
 
@@ -405,7 +396,7 @@ write_files:
 {% if nested_lxd %}
     
     # Generate local LXD trust certificate
-    echo -e "\n\n${BYELLOW}-------- Generating trust certificate for local LXD... --------${NC}\n"
+    echo -e "\n${BYELLOW}-------- Generating trust certificate for local LXD... --------${NC}\n"
     
     openssl req -x509 -newkey rsa:2048 -keyout $LXD_KEY -out $LXD_CERT -nodes -days 3650 -subj "/CN=lxd-local"
     lxc config trust add $LXD_CERT --name lxd-local
@@ -419,7 +410,7 @@ write_files:
 {% else %}
     
     # Setup external LXD client certificates and remote connection
-    echo -e "\n\n${BYELLOW}-------- Configuring remote LXD connection... --------${NC}\n"
+    echo -e "\n${BYELLOW}-------- Configuring remote LXD connection... --------${NC}\n"
     
     lxc remote add host-lxd https://$LXD_ADDR --accept-certificate
     lxc remote switch host-lxd
@@ -437,7 +428,7 @@ write_files:
 {% if lxd_project != "default" %}
     
     # Switch to LXD project
-    echo -e "\n\n${BYELLOW}-------- Switching to LXD '{{ lxd_project }}' project... --------${NC}\n"
+    echo -e "\n${BYELLOW}-------- Switching to LXD '{{ lxd_project }}' project... --------${NC}\n"
     
     lxc project switch {{ lxd_project }}
     
@@ -474,17 +465,17 @@ write_files:
     EOF_CLOUD_INIT
     
     # Create VMs directly via LXD
-    echo -e "\n\n${BYELLOW}-------- Creating VMs in LXD... --------${NC}\n"
+    echo -e "\n${BYELLOW}-------- Creating VMs in LXD... --------${NC}\n"
     
     i=1
     for HOST in {{ nodes_hostnames }}; do
-      CPU=$(echo "{{ nodes_cpus }}" | cut -d' ' -f$i)
-      RAM=$(echo "{{ nodes_rams }}" | cut -d' ' -f$i)
-      DISK=$(echo "{{ nodes_disks }}" | cut -d' ' -f$i)
-      
-      lxc init "{{ node_image }}" "$HOST" --vm -c limits.cpu="$CPU" -c limits.memory="$RAM" -d root,size="$DISK" -c cloud-init.user-data="$(cat /tmp/userdata.yaml)"
-      
-      i=$((i + 1))
+        CPU=$(echo "{{ nodes_cpus }}" | cut -d' ' -f$i)
+        RAM=$(echo "{{ nodes_rams }}" | cut -d' ' -f$i)
+        DISK=$(echo "{{ nodes_disks }}" | cut -d' ' -f$i)
+        
+        lxc init "{{ node_image }}" "$HOST" --vm -c limits.cpu="$CPU" -c limits.memory="$RAM" -d root,size="$DISK" -c cloud-init.user-data="$(cat /tmp/userdata.yaml)"
+        
+        i=$((i + 1))
     done
 
 - path: /usr/local/bin/04-vm-start
@@ -500,12 +491,12 @@ write_files:
     source /etc/repro-env
     
     # Start VMs
-    echo -e "\n\n${BYELLOW}-------- Starting VMs... --------${NC}\n"
+    echo -e "\n${BYELLOW}-------- Starting VMs... --------${NC}\n"
     for HOST in {{ nodes_hostnames }}; do
-      lxc start $HOST
+        lxc start $HOST
     done
     
-    echo -e "\n\n${BYELLOW}-------- Finished deploying LXD, have fun!... --------${NC}\n"
+    echo -e "\n${BYELLOW}-------- Finished deploying LXD, have fun!... --------${NC}\n"
 
 # ==========================================
 # END OF AUTOMATION SCRIPTS (00 to 04)
