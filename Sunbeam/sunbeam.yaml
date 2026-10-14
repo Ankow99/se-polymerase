@@ -2181,7 +2181,7 @@ write_files:
             echo "Providing signed certificates to Octavia..."
             run_sunbeam "sunbeam loadbalancer provide_certificates < $CERTS_FOLDER/amphora_answers.txt" "/tmp/sunbeam-amphora-certs.log"
             
-            # 9. Apply Security Group Fix for MicroOVN
+            # Apply Security Group Fix for MicroOVN
             # echo "Patching Amphora security group for OVN compatibility..."
             # $RUN_AS_LOGIN openstack security group rule create --protocol tcp --dst-port 9443 --ingress lb-mgmt-sec-grp
             
@@ -2200,6 +2200,9 @@ write_files:
     echo -e "\n${BYELLOW}-------- Enabling Masakari (Instances HA)... --------${NC}\n"
     if run_sunbeam "sunbeam enable -m $MANIFEST_FILE instance-recovery" "/tmp/sunbeam-masakari.log"; then
         wait_for_app "masakari"
+        
+        echo "Applying workaround for MicroOVN bug LP#2147411..."
+        $RUN_AS_LOGIN juju exec -m openstack-machines -a openstack-hypervisor "sudo snap disconnect openstack-network-agents:ovn-chassis microovn:ovn-chassis; sudo snap disconnect openstack-hypervisor:ovn-chassis microovn:ovn-chassis; sudo snap connect openstack-network-agents:ovn-chassis microovn:ovn-chassis; sudo snap connect openstack-hypervisor:ovn-chassis microovn:ovn-chassis"
     fi
 {% endif %}
     
