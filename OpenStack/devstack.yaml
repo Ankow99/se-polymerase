@@ -117,9 +117,7 @@ hostname: {{ base_name }}
 users:
   - name: stack
     lock_passwd: False
-    sudo:
-      - ALL=(ALL) NOPASSWD:ALL
-      - "Defaults:stack !requiretty"
+    sudo: ["ALL=(ALL) NOPASSWD:ALL\nDefaults:stack !requiretty"]
     groups: kvm
     shell: /bin/bash
     homedir: /opt/stack
