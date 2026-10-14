@@ -1933,7 +1933,7 @@ write_files:
     
     if [ -n "$VALID_HOSTS" ]; then
         ATTEMPTS=0
-        MAX_ATTEMPTS=12 # Timeout - 1 min
+        MAX_ATTEMPTS=24 # Timeout - 2 min
         while true; do
             all_resolved=true
             
