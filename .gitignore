@@ -1,5 +1,8 @@
 # Ignore generated se-polymerase deployment directories
 */*/
+# Exception for templates folder and its contents
+!*/templates/
+!*/templates/**
 
 # Fallback explicit ignore for generated artifacts if they leak out of a folder
 destroy-*.sh
