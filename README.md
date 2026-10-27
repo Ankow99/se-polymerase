@@ -1,4 +1,4 @@
-# se-polymerase 🧬
+# Polymerase 🧬
 
 Polymerase is a zero-state, Terraform-free reproducer repository designed for reproducing client environments. It houses the "Transcripts" (labs), parameterised Jinja2 `cloud-init.yaml` templates for complex OpenStack, Kubernetes, and MAAS + Juju cloud deployments.
 
