@@ -141,6 +141,23 @@ emergency_rollback() {
                 lxc project delete "$LXD_PROJECT"
             fi
             
+            # Clean up injected DNS record only if the primary bridge is a shared host network
+            if [ "$PRIMARY_BRIDGE_CREATED" = false ] && [ -n "$PRIMARY_BRIDGE" ] && [ -n "$VM_NAME" ] && [ -n "$PRIMARY_STATIC_IP" ]; then
+                TARGET_RECORD="host-record=${VM_NAME}.lxd,${PRIMARY_STATIC_IP}"
+                CURRENT_DNSMASQ=$(lxc network get "$PRIMARY_BRIDGE" raw.dnsmasq 2>/dev/null || true)
+                
+                if echo "$CURRENT_DNSMASQ" | grep -qF "$TARGET_RECORD"; then
+                    echo "-> Cleaning up specific DNS record on shared Primary Bridge: $PRIMARY_BRIDGE"
+                    NEW_DNSMASQ=$(echo "$CURRENT_DNSMASQ" | grep -vF "$TARGET_RECORD")
+                    
+                    if [ -z "$NEW_DNSMASQ" ]; then
+                        lxc network unset "$PRIMARY_BRIDGE" raw.dnsmasq 2>/dev/null || true
+                    else
+                        lxc network set "$PRIMARY_BRIDGE" raw.dnsmasq="$NEW_DNSMASQ" 2>/dev/null || true
+                    fi
+                fi
+            fi
+            
             if [ ${#CREATED_BRIDGES[@]} -gt 0 ]; then
                 for br in "${CREATED_BRIDGES[@]}"; do
                     echo "-> Deleting orphaned dynamic bridge: $br"
@@ -626,6 +643,11 @@ except Exception:
         PRIMARY_GW_IP="$gw"
         PRIMARY_MASK="$mask"
         PRIMARY_STATIC_IP="$stat"
+        
+        # If this bridge was dynamically created, flip the global flag
+        if [[ " ${CREATED_BRIDGES[*]} " == *" $bridge_name "* ]]; then
+            PRIMARY_BRIDGE_CREATED=true
+        fi
     fi
 }
 
@@ -1071,6 +1093,7 @@ fi
 
 CREATED_BRIDGES=()
 PRIMARY_BRIDGE=""
+PRIMARY_BRIDGE_CREATED=false
 
 # Scan cloud-init for any Jinja variable that has a PROMPT: tag
 while read -r line; do
@@ -1439,8 +1462,16 @@ EOF
     # Inject static net config and 
     LXC_OPTIONAL_ARGS+=("-c" "cloud-init.network-config=$STATIC_NET")
     
-    # Force LXD dnsmasq to resolve the orchestrator's static IP for the rest of the cluster
-    lxc network set "$PRIMARY_BRIDGE" raw.dnsmasq="host-record=${VM_NAME}.lxd,${PRIMARY_STATIC_IP}"
+    # Force LXD dnsmasq to resolve the orchestrator's static IP for the rest of the cluster safely
+    TARGET_RECORD="host-record=${VM_NAME}.lxd,${PRIMARY_STATIC_IP}"
+    CURRENT_DNSMASQ=$(lxc network get "$PRIMARY_BRIDGE" raw.dnsmasq 2>/dev/null || true)
+    
+    if [ -z "$CURRENT_DNSMASQ" ]; then
+        lxc network set "$PRIMARY_BRIDGE" raw.dnsmasq="$TARGET_RECORD"
+    elif ! echo "$CURRENT_DNSMASQ" | grep -qF "$TARGET_RECORD"; then
+        # Append the new record on a new line to preserve existing configurations
+        lxc network set "$PRIMARY_BRIDGE" raw.dnsmasq="${CURRENT_DNSMASQ}"$'\n'"${TARGET_RECORD}"
+    fi
 fi
 
 # Attach to primary bridge
@@ -1673,6 +1704,28 @@ EOF
 fi
 
 # 2. Dynamic Bridge Cleanup
+# Only perform the DNS cleanup if the primary bridge is a shared host network
+if [ "$PRIMARY_BRIDGE_CREATED" = false ] && [ -n "$PRIMARY_BRIDGE" ]; then
+    cat << EOF >> "$CLEANUP_SCRIPT"
+echo -e "${BYELLOW}-> Cleaning up DNS records on shared Primary Bridge:${NC} $PRIMARY_BRIDGE"
+if lxc network show "$PRIMARY_BRIDGE" 2>/dev/null; then
+    TARGET_RECORD="host-record=${VM_NAME}.lxd,${PRIMARY_STATIC_IP}"
+    CURRENT_DNSMASQ=\$(lxc network get "$PRIMARY_BRIDGE" raw.dnsmasq 2>/dev/null || true)
+    
+    if echo "\$CURRENT_DNSMASQ" | grep -qF "\$TARGET_RECORD"; then
+        NEW_DNSMASQ=\$(echo "\$CURRENT_DNSMASQ" | grep -vF "\$TARGET_RECORD")
+        
+        if [ -z "\$NEW_DNSMASQ" ]; then
+            lxc network unset "$PRIMARY_BRIDGE" raw.dnsmasq 2>/dev/null || true
+        else
+            lxc network set "$PRIMARY_BRIDGE" raw.dnsmasq="\$NEW_DNSMASQ" 2>/dev/null || true
+        fi
+    fi
+fi
+echo ""
+EOF
+fi
+
 if [ ${#CREATED_BRIDGES[@]} -gt 0 ]; then
     for br in "${CREATED_BRIDGES[@]}"; do
         cat << EOF >> "$CLEANUP_SCRIPT"
