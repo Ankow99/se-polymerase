@@ -1432,12 +1432,15 @@ network:
         - to: default
           via: $PRIMARY_GW_IP
       nameservers:
-        addresses: [${PRIMARY_STATIC_IP}, ${MAAS_DNS}]
-        search: [${TLD}, maas]
+        addresses: [${PRIMARY_GW_IP}, ${PRIMARY_STATIC_IP}, ${MAAS_DNS}]
+        search: [lxd, ${TLD}, maas]
 EOF
     
     # Inject static net config and 
     LXC_OPTIONAL_ARGS+=("-c" "cloud-init.network-config=$STATIC_NET")
+    
+    # Force LXD dnsmasq to resolve the orchestrator's static IP for the rest of the cluster
+    lxc network set "$PRIMARY_BRIDGE" raw.dnsmasq="host-record=${VM_NAME}.lxd,${PRIMARY_STATIC_IP}"
 fi
 
 # Attach to primary bridge
@@ -1586,8 +1589,6 @@ if ! lxc launch "$IMAGE" "$VM_NAME" --vm --project "$LXD_PROJECT" \
     echo -e "${BRED}Error: Failed to launch VM. Exiting.${NC}"
     exit 1
 fi
-
-lxc config set "$VM_NAME" --project "$LXD_PROJECT"
 
 # ==========================================
 # CLEANUP SCRIPT
