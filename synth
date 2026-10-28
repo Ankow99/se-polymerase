@@ -1513,13 +1513,13 @@ if [ -n "$SSH_CLIENT" ] || [ -n "$SSH_TTY" ] || [ -n "$SSH_CONNECTION" ]; then
     echo -e "${BYELLOW}  Remote SSH Session Detected!${NC}"
     echo "  To watch the deployment live from the LXD UI, open a new terminal tab on your host and run:"
     echo ""
-    echo -e "${BYELLOW}  Run:${NC} ssh -N -L 8444:localhost:8443 ${REMOTE_USER}@${SERVER_IP_STR}"
+    echo -e "${BYELLOW}  Run:${NC} ssh -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null -N -L 8444:localhost:8443 ${REMOTE_USER}@${SERVER_IP_STR}"
     echo -e "${BYELLOW}  URL:${NC} https://localhost:8444/ui/project/${LXD_PROJECT}/instances"
     echo ""
 
     # Append to access file
     {
-        echo "  Tunnel:   ssh -N -L 8444:localhost:8443 ${REMOTE_USER}@${SERVER_IP_STR}"
+        echo "  Tunnel:   ssh -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null -N -L 8444:localhost:8443 ${REMOTE_USER}@${SERVER_IP_STR}"
         echo "  URL:      https://localhost:8444/ui/project/${LXD_PROJECT}/instances"
         echo ""
     } >> "$ACCESS_FILE"
@@ -1849,13 +1849,13 @@ SYS_USER="${SYS_USER:-ubuntu}"
             echo -e "${BYELLOW}  Remote SSH Session Detected!${NC}"
             echo "  To access the MAAS dashboard (once ready) locally, open a new terminal tab on your host and run:"
             echo ""
-            echo -e "${BYELLOW}  Run:${NC} ssh -N -L ${MAAS_LOCAL_PORT}:${IP}:5240 ${REMOTE_USER}@${SERVER_IP_STR}"
+            echo -e "${BYELLOW}  Run:${NC} ssh -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null -N -L ${MAAS_LOCAL_PORT}:${IP}:5240 ${REMOTE_USER}@${SERVER_IP_STR}"
             echo -e "${BYELLOW}  URL:${NC} http://localhost:${MAAS_LOCAL_PORT}/MAAS/"
             echo ""
             
             # Append to access file
             {
-                echo "  Tunnel:   ssh -N -L ${MAAS_LOCAL_PORT}:${IP}:5240 ${REMOTE_USER}@${SERVER_IP_STR}"
+                echo "  Tunnel:   ssh -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null -N -L ${MAAS_LOCAL_PORT}:${IP}:5240 ${REMOTE_USER}@${SERVER_IP_STR}"
                 echo "  URL:      http://localhost:${MAAS_LOCAL_PORT}/MAAS/"
                 echo ""
             } >> "$ACCESS_FILE"
@@ -2262,13 +2262,13 @@ except Exception:
                 echo -e "${BYELLOW}  Remote SSH Session Detected!${NC}"
                 echo "  To access the Horizon dashboard locally, open a new terminal tab on your host and run:"
                 echo ""
-                echo -e "${BYELLOW}  Run:${NC} ssh -N -L ${HORIZON_LOCAL_PORT}:${HORIZON_IP}:${HORIZON_PORT} ${REMOTE_USER}@${SERVER_IP_STR}"
+                echo -e "${BYELLOW}  Run:${NC} ssh -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null -N -L ${HORIZON_LOCAL_PORT}:${HORIZON_IP}:${HORIZON_PORT} ${REMOTE_USER}@${SERVER_IP_STR}"
                 echo -e "${BYELLOW}  URL:${NC} http://localhost:${HORIZON_LOCAL_PORT}${HORIZON_PATH}"
                 echo ""
                 
                 # Append to access file
                 {
-                    echo "  Tunnel:   ssh -N -L ${HORIZON_LOCAL_PORT}:${HORIZON_IP}:${HORIZON_PORT} ${REMOTE_USER}@${SERVER_IP_STR}"
+                    echo "  Tunnel:   ssh -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null -N -L ${HORIZON_LOCAL_PORT}:${HORIZON_IP}:${HORIZON_PORT} ${REMOTE_USER}@${SERVER_IP_STR}"
                     echo "  URL:      http://localhost:${HORIZON_LOCAL_PORT}${HORIZON_PATH}"
                     echo ""
                 } >> "$ACCESS_FILE"
