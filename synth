@@ -4,7 +4,7 @@
 # se-polymerase (synth)
 # Acts as the polymerase to synthesize an isolated, terraform-free LXD 
 # reproducer environment using the host's LXD for MAAS + Juju deployments.
-# version: 8.5.0
+# version: 9.1.0
 #
 # Synthesized by: Pablo Gonzalez De Greiff @ Canonical
 # ---
@@ -16,6 +16,9 @@ exec 3>&1 4>&2
 
 # Unified unique deployment ID (Can be changed to case number - 8 numbers) (Inherit from parent if forked)
 DEPLOY_ID="${DEPLOY_ID:-$(openssl rand -hex 4)}"
+
+# Host system LXD snap track (independent from payload configs)
+HOST_LXD_CHANNEL="5.21/stable"
 
 # Arrays to hold dynamic configuration
 LXC_OPTIONAL_ARGS=()
@@ -185,6 +188,7 @@ emergency_rollback() {
             
             # Ask to keep the generated config file if it wasn't a pre-existing input config file
             if [ -n "$CONFIG_FILE" ] && [ -f "$CONFIG_FILE" ] && [ "$CONFIG_FILE" != "$INPUT_CONFIG_FILE" ]; then
+                echo ""
                 echo -ne "${BYELLOW}-> Keep generated config file '$(basename "$CONFIG_FILE")' for your next run? [y/N]: ${NC}"
                 
                 # Catch the input directly from the terminal (tty) only if a TTY exists
@@ -359,6 +363,7 @@ ask_var() {
         echo -e "  ${BYELLOW}${prompt_text} [${NC}from config${BYELLOW}]: ${NC}${user_input}"
     elif [ "$ACCEPT_DEFAULTS" = true ]; then
         user_input="$default_val"
+        echo -e "  ${BYELLOW}${prompt_text} [${NC}auto-accepted${BYELLOW}]: ${NC}${user_input}"
     else
         echo -ne "  ${BYELLOW}${prompt_text} [${NC}${default_val}${BYELLOW}]: ${NC}"
         read -r user_input </dev/tty
@@ -652,53 +657,6 @@ except Exception:
 }
 
 # ==========================================
-# INITIAL DEPENDENCY CHECK
-# ==========================================
-
-# Check for dependencies
-for cmd in jq openssl python3 lxc ssh base64 awk sed; do
-    if ! command -v "$cmd" &> /dev/null; then
-        echo ""
-        echo -e "${BRED}Error: '${NC}${cmd}${BRED}' is not installed. Please install it.${NC}"
-        exit 1
-    fi
-done
-
-# Check for LXD initialization
-if ! lxc storage list --format json | jq -e 'length > 0' > /dev/null 2>&1; then
-    echo ""
-    echo -e "${BYELLOW}-> LXD appears uninitialized. Running auto-initialization...${NC}"
-    
-    # Auto-initialize with default loop-backed storage and default network
-    if ! lxd init --auto; then
-        echo ""
-        echo -e "${BRED}Error: Failed to auto-initialize LXD. Please run '${NC}lxd init --auto${BRED}' manually and try again.${NC}"
-        exit 1
-    fi
-    echo ""
-    echo -e "  LXD initialized successfully."
-fi
-
-# Ensure it is listening on 8443 even if it was previously initialized
-CURRENT_ADDR=$(lxc config get core.https_address)
-
-# Check if it's either empty OR doesn't end in :8443
-if [[ "$CURRENT_ADDR" != *":8443" ]]; then
-    echo ""
-    if [ -z "$CURRENT_ADDR" ]; then
-        echo -e "${BYELLOW}-> LXD is not listening on the network. Configuring to port 8443...${NC}"
-    else
-        echo -e "${BYELLOW}-> LXD is listening on '${NC}${CURRENT_ADDR}${BYELLOW}' instead of port 8443. Reconfiguring...${NC}"
-    fi
-    
-    # Override to listen on all interfaces on port 8443
-    if ! lxc config set core.https_address ":8443"; then
-         echo -e "${BRED}Error: Failed to configure LXD port. You may need to run this command manually or check your lxd group permissions.${NC}"
-         exit 1
-    fi
-fi
-
-# ==========================================
 # FUNCTION PARAMETERS
 # ==========================================
 
@@ -726,7 +684,7 @@ while [[ $# -gt 0 ]]; do
             show_help
             ;;
         -y|--yes)
-            echo -e "${BYELLOW}-> Accepting all default template values${NC}"
+            echo -e "${BYELLOW}-> Accepting all default template values (-y)${NC}"
             echo ""
             ACCEPT_DEFAULTS=true
             shift 1
@@ -751,7 +709,7 @@ while [[ $# -gt 0 ]]; do
             fi
             ;;
         -I|--isolate-images)
-            echo -e "${BYELLOW}-> Isolating LXD images per project${NC}"
+            echo -e "${BYELLOW}-> Isolating LXD images per project (-I)${NC}"
             echo ""
             SHARED_IMAGES=false
             shift 1
@@ -867,18 +825,128 @@ MAAS_LOCAL_PORT=$(( 50000 + PORT_OFFSET ))
 HORIZON_LOCAL_PORT=$(( 55000 + PORT_OFFSET ))
 
 # ==========================================
+# INITIAL DEPENDENCY CHECK
+# ==========================================
+
+# Determine if sudo is needed
+SUDO_CMD=""
+[ "$EUID" -ne 0 ] && SUDO_CMD="sudo"
+
+# Check for missing apt packages
+MISSING_APT=()
+for cmd in jq openssl python3 ssh base64 awk sed; do
+    if ! command -v "$cmd" &> /dev/null; then
+        MISSING_APT+=("$cmd")
+    fi
+done
+
+# Check if LVM2 is installed for the lvm-thin backend
+if ! command -v lvm &> /dev/null; then
+    MISSING_APT+=("lvm2")
+fi
+
+# Check if LXD is missing or uninitialized
+NEEDS_LXD_SNAP=false
+NEEDS_LXD_INIT=false
+
+if ! snap list lxd &> /dev/null; then
+    NEEDS_LXD_SNAP=true
+    NEEDS_LXD_INIT=true
+elif ! lxc storage list --format json | jq -e 'length > 0' > /dev/null 2>&1; then
+    NEEDS_LXD_INIT=true
+fi
+
+# If anything is missing or uninitialized, handle it explicitly
+if [ ${#MISSING_APT[@]} -gt 0 ] || [ "$NEEDS_LXD_SNAP" = true ] || [ "$NEEDS_LXD_INIT" = true ]; then
+    echo -e "${BYELLOW}-> Environment Setup Required${NC}"
+    echo ""
+    [ ${#MISSING_APT[@]} -gt 0 ] && echo -e "Missing packages: ${BRED}${MISSING_APT[*]}${NC}"
+    [ "$NEEDS_LXD_SNAP" = true ] && echo -e "Missing snap: ${BRED}lxd${NC}"
+    [ "$NEEDS_LXD_INIT" = true ] && echo -e "Status: ${BYELLOW}LXD requires initialization${NC}"
+    echo ""
+    
+    confirm_or_abort "Would you like to automatically install dependencies and initialize LXD with LVM-Thin?"
+    echo ""
+    
+    # 1. Install APT dependencies
+    if [ ${#MISSING_APT[@]} -gt 0 ]; then
+        echo -e "${BYELLOW}-> Installing missing dependencies...${NC}"
+        echo ""
+        $SUDO_CMD apt-get update >/dev/null 2>&1
+        $SUDO_CMD apt-get install -y "${MISSING_APT[@]}"
+        echo ""
+    fi
+    
+    # 2. Install LXD snap if missing
+    if [ "$NEEDS_LXD_SNAP" = true ]; then
+        echo -e "${BYELLOW}-> Installing LXD snap:${NC} ${HOST_LXD_CHANNEL}"
+        echo ""
+        $SUDO_CMD snap install lxd --channel="${HOST_LXD_CHANNEL}"
+        echo ""
+    fi
+    
+    # 3. Initialize LXD with LVM
+    if [ "$NEEDS_LXD_INIT" = true ]; then
+        echo -e "${BYELLOW}-> Initializing LXD with LVM-Thin storage...${NC}"
+        echo ""
+        
+        # Calculate 95% of available disk space on / (in GiB)
+        FREE_SPACE_GIB=$($SUDO_CMD df -BG / | awk 'NR==2 {print $4}' | sed -E 's/[^0-9]//g')
+        LOOP_SIZE=$(( FREE_SPACE_GIB * 95 / 100 ))
+        
+        if [ "$LOOP_SIZE" -lt 10 ]; then
+            echo -e "${BRED}Error: Less than '10 GiB' of free space available to allocate to LXD!${NC}"
+            exit 1
+        fi
+        
+        echo -e "Allocating '${LOOP_SIZE} GiB' sparse loop device for LVM pool..."
+        
+        # Sleep to ensure the snap daemon is fully ready after fresh install
+        sleep 3
+        
+        # Initialize LXD with LVM
+        if ! $SUDO_CMD lxd init --auto --storage-backend=lvm --storage-create-loop=${LOOP_SIZE}; then
+            echo ""
+            echo -e "${BRED}Error: Failed to auto-initialize LXD. Please run '${NC}lxd init --auto --storage-backend=lvm${BRED}' manually and try again.${NC}"
+            exit 1
+        fi
+        echo -e "LXD initialized successfully."
+        echo ""
+    fi
+fi
+
+# Ensure it is listening on 8443 even if it was previously initialized
+CURRENT_ADDR=$(lxc config get core.https_address)
+
+# Check if it's either empty OR doesn't end in :8443
+if [[ "$CURRENT_ADDR" != *":8443" ]]; then
+    if [ -z "$CURRENT_ADDR" ]; then
+        echo -e "${BYELLOW}-> LXD is not listening on the network. Configuring to port 8443...${NC}"
+    else
+        echo -e "${BYELLOW}-> LXD is listening on '${NC}${CURRENT_ADDR}${BYELLOW}' instead of port 8443. Reconfiguring...${NC}"
+    fi
+    
+    # Override to listen on all interfaces on port 8443
+    if ! lxc config set core.https_address ":8443"; then
+         echo -e "${BRED}Error: Failed to configure LXD port. You may need to run this command manually or check your lxd group permissions.${NC}"
+         exit 1
+    fi
+    echo ""
+fi
+
+# ==========================================
 # EARLY ARCHITECTURE & SSH RESOLUTION
 # ==========================================
 
 # Architecture resolution
 if [ "$CLI_NESTED_LXD" = "true" ] || [ "${CONFIG_PROVIDED_nested_lxd:-}" = "true" ]; then
-    echo -e "${BYELLOW}-> Using nested LXD architecture${NC} - ${BRED}WARNING: DEGRADED PERFORMANCE IF NOT RUNNING IN BARE METAL${NC}"
+    echo -e "${BYELLOW}-> Using nested LXD architecture (-n)${NC} - ${BRED}WARNING: DEGRADED PERFORMANCE IF NOT RUNNING IN BARE METAL${NC}"
     echo ""
     LXC_OPTIONAL_ARGS+=("-c" "user.nested_lxd=true")
     NESTED=true
     DEFERRED_CONFIG+=("nested_lxd: \"true\"")
 else
-    echo -e "${BYELLOW}-> Using default non-nested LXD architecture.${NC}"
+    echo -e "${BYELLOW}-> Using default non-nested LXD architecture${NC}"
     echo ""
     LXC_OPTIONAL_ARGS+=("-c" "user.nested_lxd=false")
     DEFERRED_CONFIG+=("nested_lxd: \"false\"")
@@ -886,7 +954,7 @@ fi
 
 # Deb/Snap resolution
 if [ "$CLI_MAAS_SNAP" = "false" ] || [ "${CONFIG_PROVIDED_maas_snap:-}" = "false" ]; then
-    echo -e "${BYELLOW}-> Using deb MAAS packages instead of snap${NC}"
+    echo -e "${BYELLOW}-> Using deb MAAS packages instead of snap (-d)${NC}"
     echo ""
     LXC_OPTIONAL_ARGS+=("-c" "user.maas_snap=false")
     DEFERRED_CONFIG+=("maas_snap: \"false\"")
@@ -926,8 +994,14 @@ else
     if [ -z "$SSH_ID" ] && [ -z "$PUB_KEY" ]; then
         # Only prompt for a local key if no user ID was provided
         if [[ ! " ${LXC_OPTIONAL_ARGS[*]} " == *"user.ssh_import_id"* ]] && [ -z "${CONFIG_PROVIDED_ssh_import_id}" ]; then
-            echo -ne "No SSH identity found, enter path to private key [or press Enter to auto-generate]: "
-            read -r user_input </dev/tty
+            if [ "$ACCEPT_DEFAULTS" = true ]; then
+                echo -e "${BYELLOW}-> Auto-generating new Ed25519 SSH key pair...${NC}"
+                echo ""
+                user_input=""
+            else
+                echo -ne "No SSH identity found, enter path to private key [or press Enter to auto-generate]: "
+                read -r user_input </dev/tty
+            fi
             
             if [ -n "$user_input" ]; then
                 # User provided a custom path, safely expand tilde (~) to $HOME if the user typed it
@@ -935,9 +1009,7 @@ else
                 user_input="${user_input/#\~/$HOME}"
                 SSH_ID="$user_input"
             else
-                echo ""
-                confirm_or_abort "Generate a new Ed25519 SSH key pair at ~/.ssh/id_ed25519?"
-                
+                echo -e "Generating a new Ed25519 SSH key pair at ~/.ssh/id_ed25519..."
                 mkdir -p ~/.ssh
                 chmod 700 ~/.ssh
                 
@@ -1018,6 +1090,7 @@ if [ -n "${CONFIG_PROVIDED_lxd_project}" ]; then
     echo -e "  ${BYELLOW}Host LXD Project Name [${NC}from config${BYELLOW}]: ${NC}${LXD_PROJECT}"
 elif [ "$ACCEPT_DEFAULTS" = true ]; then
     LXD_PROJECT="$DEFAULT_PROJECT"
+    echo -e "  ${BYELLOW}Host LXD Project Name [${NC}auto-accepted${BYELLOW}]: ${NC}${LXD_PROJECT}"
 else
     echo -ne "  ${BYELLOW}Host LXD Project Name [${NC}${DEFAULT_PROJECT}${BYELLOW}]: ${NC}"
     read -r user_input </dev/tty
