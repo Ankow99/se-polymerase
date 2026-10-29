@@ -7,24 +7,25 @@ At the core of the project is `synth`, a standalone LXD orchestrator that acts a
 ### Key Features
 
 Workflow & Execution
-* `Modular Execution` - Deployments are executed via modular, sequential scripts (`00-generate-env`, `01-verify-deps`, etc.) staged in `/usr/local/bin/`. If any step fails, you can SSH in and manually re-run the specific script to resume the deployment without starting from scratch.
-* `Background Detachment` - Deployments are executed in the background. Press `Ctrl+C` at any time during the deployment phase to instantly drop back to your local terminal. You can easily reconnect to the live progress by tailing the saved log file.
-* `Live Tracking` - Automatically records all deployment stdout/stderr to a `log-<project_name>.log` file and seamlessly transitions to a live juju status watch-loop.
+- `Modular Execution` - Deployments are executed via modular, sequential scripts (`00-generate-env`, `01-verify-deps`, etc.) staged in `/usr/local/bin/`. If any step fails, you can SSH in and manually re-run the specific script to resume the deployment without starting from scratch.
+- `Background Detachment` - Deployments are executed in the background. Press `Ctrl+C` at any time during the deployment phase to instantly drop back to your local terminal. You can easily reconnect to the live progress by tailing the saved log file.
+- `Live Tracking` - Automatically records all deployment stdout/stderr to a `log-<project_name>.log` file and seamlessly transitions to a live juju status watch-loop.
 
 State & Artifacts
-* `Isolated Directories` - All generated artifacts (logs, certificates, teardown scripts, configurations, and access credentials) are cleanly consolidated into a unique deployment ID folder created right next to your payload.
-* `Declarative Replication` - Saves the deployment state into a reusable `config-<project>.yaml` file inside the unique deployment folder, allowing 1:1 declarative environment replication without prompting.
-* `Manifest Generation` - Generates an `access-<project_name>.txt` manifest containing all URLs, local-forwarding tunnels, passwords, and a final cluster IP inventory table.
-* `Intelligent Teardown` - Generates a bespoke teardown script that wipes the LXD project, networks, and certificates, prompts to optionally save your declarative config file, and cleanly deletes the unique deployment folder.
+- `Isolated Directories` - All generated artifacts (logs, certificates, teardown scripts, configurations, and access credentials) are cleanly consolidated into a unique deployment ID folder created right next to your payload.
+- `Declarative Replication` - Saves the deployment state into a reusable `config-<project>.yaml` file inside the unique deployment folder, allowing 1:1 declarative environment replication without prompting.
+- `Manifest Generation` - Generates an `access-<project_name>.txt` manifest containing all URLs, local-forwarding tunnels, passwords, and a final cluster IP inventory table.
+- `Intelligent Teardown` - Generates a bespoke teardown script that wipes the LXD project, networks, and certificates, prompts to optionally save your declarative config file, and cleanly deletes the unique deployment folder.
 
 Infrastructure & Provisioning
-* `Dynamic Parsing` - Parses Jinja `cloud-config.yaml` payloads to dynamically calculate hardware requirements and generate interactive CLI prompts.
-* `Host Optimization` - Supports nested LXD architectures or bare-metal LXD daemons, leveraging the host's LXD image cache by default to massively speed up VM provisioning.
-* `Network Provisioning` - Provisions `ipv4.nat` bridges, calculates CIDR gateways, and validates DHCP settings to prevent collisions.
-* `Credential Management` - Auto-injects local or Launchpad SSH keys and establishes secure SSH tunnels for dashboard port-forwarding.
-* `Custom Manifests` - Supports injecting custom Sunbeam `manifest.yaml` files directly via CLI flags to override deployment defaults.
-* `Smart SSH Detection` - Automatically extracts keys from your local `ssh-agent` if standard identity files aren't found, or interactively generates a new RSA pair on the fly if you have none.
-* `Predictable Port Mapping` - Dynamically calculates collision-free, high-range local ports for remote dashboard SSH tunnels based on your unique deployment ID.
+- `Automated Host Bootstrapping` - Automatically detects missing host dependencies (`lxd`, `lvm2`, `jq`, etc.) and seamlessly initializes a performance-optimized LXD LVM-Thin storage pool to accelerate VM provisioning.
+- `Dynamic Parsing` - Parses Jinja `cloud-config.yaml` payloads to dynamically calculate hardware requirements and generate interactive CLI prompts.
+- `Host Optimization` - Supports nested LXD architectures or bare-metal LXD daemons, leveraging the host's LXD image cache by default to massively speed up VM provisioning.
+- `Network Provisioning` - Provisions `ipv4.nat` bridges, calculates CIDR gateways, and validates DHCP settings to prevent collisions.
+- `Credential Management` - Auto-injects local or Launchpad SSH keys and establishes secure SSH tunnels for dashboard port-forwarding.
+- `Custom Manifests` - Supports injecting custom Sunbeam `manifest.yaml` files directly via CLI flags to override deployment defaults.
+- `Smart SSH Detection` - Automatically extracts keys from your local `ssh-agent` if standard identity files aren't found, or interactively generates a new RSA pair on the fly if you have none.
+- `Predictable Port Mapping` - Dynamically calculates collision-free, high-range local ports for remote dashboard SSH tunnels based on your unique deployment ID.
 
 ---
 
@@ -50,13 +51,11 @@ Current available labs include:
 
 ## Prerequisites
 
-Ensure the following dependencies are installed on the host machine:
-* `lxd`
-* `jq`
-* `openssl`
-* `python3`
+While Polymerase is designed to work best on a clean, dedicated Ubuntu host (such as a fresh Testflinger node), a pristine machine is **not** strictly required. `synth` will automatically bootstrap a clean host by installing missing dependencies (`lxd`, `lvm2`, `jq`, `openssl`) and securely initializing an LXD storage pool out of the box, but it is also fully capable of adapting to and running alongside your existing host configurations.
 
-`synth` requires an SSH key pair to establish the final SSH connection into the created lab. It will automatically detect existing keys in `~/.ssh/` or your `ssh-agent`. If no key is found, `synth` will interactively prompt you to either provide a custom path or auto-generate a new 4096-bit RSA key pair on the fly.
+> **Recommendation:** If you are running `synth` on a machine with a pre-existing LXD setup, it is recommended ensuring your storage pool uses the **LVM-thin** backend (`lvm`). LVM-thin provides the instant snapshotting and block-level I/O performance necessary to rapidly provision large MAAS VM clusters without triggering deployment timeouts.
+
+`synth` requires an SSH key pair to establish the final SSH connection into the created lab. It will automatically detect existing keys in `~/.ssh/` or your `ssh-agent`. If no key is found, `synth` will interactively prompt you to either provide a custom path or auto-generate a new Ed25519 key pair on the fly.
 
 ---
 
@@ -75,7 +74,7 @@ Invoke the script against a cloud-init template:
 ./synth [OPTIONS] <CLOUD_INIT_FILE> [DEPLOY_ID]
 ```
 
-> **Note:** If this is your first time running `synth`, it may take a little longer to execute as it initializes LXD in the background.
+> **Note:** If this is your first time running `synth` on a new host, it will prompt you to install dependencies and initialize LXD's LVM storage pool.
 
 ### Arguments
 | Argument | Description |
@@ -159,9 +158,9 @@ ubuntu@maas-1:~$ 12-sunbeam-bootstrap
 If `synth` detects that you are deploying over a remote SSH session, it will automatically calculate and provide the exact `ssh -L` port-forwarding commands required to access the internal dashboards (LXD, MAAS, OpenStack Horizon) securely from your local browser. 
 
 Additionally, `synth` performs dynamic credential extraction:
-* LXD UI: Automatically generates and displays a volatile trust token.
-* OpenStack Horizon: Natively queries Juju (or the `sunbeam` snap) to extract the dashboard VIP, Domain, Username, and Admin Password.
-* Cluster Inventory: Captures all node hostnames, states, and IPv4 addresses.
+- LXD UI: Automatically generates and displays a volatile trust token.
+- OpenStack Horizon: Natively queries Juju (or the `sunbeam` snap) to extract the dashboard VIP, Domain, Username, and Admin Password.
+- Cluster Inventory: Captures all node hostnames, states, and IPv4 addresses.
 
 All of these credentials, URLs, and tunnel commands are safely appended to an `access-<project_name>.txt` file generated in the project directory, ensuring you don't lose them if your terminal buffer clears.
 
