@@ -1349,7 +1349,7 @@ if [ "$HOST_RAM" -gt 0 ] && [ "$TOT_RAM" -gt "$HOST_RAM" ]; then
 fi
 
 if [ "$HOST_DISK" -gt 0 ] && [ "$TOT_DISK" -gt "$HOST_DISK" ]; then
-    WARNINGS+="${BRED}  ! DISK EXHAUSTION: Requested ${TOT_DISK} GiB, but host only has ~${HOST_DISK} GiB available on / !${NC}\n"
+    WARNINGS+="${BYELLOW}  ! DISK EXHAUSTION: Requested ${TOT_DISK} GiB, but host only has ~${HOST_DISK} GiB available on the LXD pool!${NC}\n"
     DANGER=true
 fi
 
