@@ -1317,8 +1317,19 @@ fi
 HOST_CPU=$(nproc 2>/dev/null || echo 0)
 # Convert Kb to GiB and round to nearest whole number
 HOST_RAM=$(awk '/MemTotal/ {printf "%.0f", $2/1024/1024}' /proc/meminfo 2>/dev/null || echo 0)
-# Fetch available disk space on root (/) in GiB
-HOST_DISK=$(df -kP / | awk 'NR==2 {printf "%.0f", $4/1024/1024}' 2>/dev/null || echo 0)
+
+# Query LXD API for total LVM thin-pool size
+LXD_POOL="${LXD_POOL:-default}"
+POOL_RES=$(lxc query "/1.0/storage-pools/$LXD_POOL/resources" 2>/dev/null || true)
+
+if [ -n "$POOL_RES" ] && echo "$POOL_RES" | jq -e '.space.total > 0' >/dev/null 2>&1; then
+    POOL_TOTAL=$(echo "$POOL_RES" | jq -r '.space.total')
+    # Convert bytes to GiB (1024^3 = 1073741824)
+    HOST_DISK=$(( POOL_TOTAL / 1073741824 ))
+else
+    # Fallback to df if the LXD API is unreachable
+    HOST_DISK=$(df -kP / | awk 'NR==2 {printf "%.0f", $4/1024/1024}' 2>/dev/null || echo 0)
+fi
 
 # Evaluate Constraints
 WARNINGS=""
@@ -1870,6 +1881,11 @@ if [ -f "$WORKER_PID_FILE" ]; then
 else
     echo "PID file '$WORKER_PID_FILE' not found, skipping..."
 fi
+
+# Clean up the dynamic terminal resizing side-channel file
+if [ -f "$TERM_SIZE_FILE" ]; then
+    rm -f "$TERM_SIZE_FILE"
+fi
 echo ""
 
 echo -e "${BYELLOW}-------------- Cleanup Complete --------------${NC}"
@@ -1898,6 +1914,7 @@ echo -e "${BYELLOW}-> 2. Cleanup script created:${NC} $CLEANUP_SCRIPT"
 # Parent Trap: If the user presses Ctrl+C or connection breaks, detach the worker and exit cleanly.
 trap '
     [ -n "$TAIL_PID" ] && kill -9 "$TAIL_PID" 2>/dev/null
+    [ -n "$POLLER_PID" ] && kill -9 "$POLLER_PID" 2>/dev/null
     exec 1>&3 2>&4 # Restore terminal output
     echo -ne "\033[?25h" # Force cursor to reappear
     echo ""
@@ -1912,6 +1929,21 @@ trap '
 # Capture terminal height before forking so the headless worker knows how to size the UI
 USER_TERM_HEIGHT=$(tput lines 2>/dev/null || echo 40)
 SYS_USER="${SYS_USER:-ubuntu}"
+
+TERM_SIZE_FILE="$PROJECT_DIR/.term_size"
+echo "$USER_TERM_HEIGHT" > "$TERM_SIZE_FILE"
+
+# Spawn a lightweight poller before closing FDs so it can track live window resizes
+(
+    while kill -0 $$ 2>/dev/null; do
+        stty size <&3 2>/dev/null | awk '{print $1}' > "$TERM_SIZE_FILE"
+        sleep 2
+    done
+    # Self-clean if the parent abruptly dies
+    rm -f "$TERM_SIZE_FILE" 2>/dev/null
+) &
+POLLER_PID=$!
+disown $POLLER_PID 2>/dev/null
 
 # Fork remaining logic into a subshell so it can safely run headless
 (
@@ -2222,6 +2254,12 @@ SYS_USER="${SYS_USER:-ubuntu}"
                 
                 UI_FRAME+="${BYELLOW}------------------------------ Juju Status -------------------------------${NC}${CLR_EOL}\n"
                 
+                # Read live terminal height from the side-channel file updated by the parent poller
+                if [ -f "$PROJECT_DIR/.term_size" ]; then
+                    LIVE_HEIGHT=$(cat "$PROJECT_DIR/.term_size" 2>/dev/null)
+                    USER_TERM_HEIGHT=${LIVE_HEIGHT:-$USER_TERM_HEIGHT}
+                fi
+                
                 # Reserve lines for cloud-init logs + header (4) + a safety buffer (2)
                 MAX_JUJU_LINES=$(( USER_TERM_HEIGHT - ( 4 + CLOUD_INIT_LOG_LINES ) - 2 ))
                 if [ "$MAX_JUJU_LINES" -lt 10 ]; then MAX_JUJU_LINES=10; fi # Fallback for tiny windows (10 lines)
@@ -2456,6 +2494,10 @@ echo "$WORKER_PID" > "$WORKER_PID_FILE"
 # Wait for the background worker to finish naturally
 wait $WORKER_PID
 WORKER_EXIT_CODE=$?
+
+# Kill the size poller loop
+kill $POLLER_PID 2>/dev/null || true
+rm -f "$PROJECT_DIR/.term_size" 2>/dev/null
 
 # Kill the tail process (fails silently since the worker already did it)
 if [ -n "$TAIL_PID" ]; then
