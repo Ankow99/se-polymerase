@@ -1537,14 +1537,15 @@ network:
   version: 2
   ethernets:
     enp5s0:
+      transmit-checksum-offload: false
       dhcp4: false
       addresses: [${PRIMARY_STATIC_IP}/${PRIMARY_MASK}]
       routes:
         - to: default
           via: $PRIMARY_GW_IP
       nameservers:
-        addresses: [${PRIMARY_GW_IP}, ${PRIMARY_STATIC_IP}, ${MAAS_DNS}]
-        search: [lxd, ${TLD}, maas]
+        addresses: [${PRIMARY_STATIC_IP}, ${PRIMARY_GW_IP}, ${MAAS_DNS}]
+        search: [${TLD}, maas, lxd]
 EOF
     
     # Inject static net config and 
