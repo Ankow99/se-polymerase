@@ -2487,8 +2487,19 @@ except Exception:
     
     # Write the connection string directly to the log out in case the terminal detached
     {
+        TOTAL_TIME=$SECONDS
+        HOURS=$(( TOTAL_TIME / 3600 ))
+        MINS=$(( (TOTAL_TIME % 3600) / 60 ))
+        SECS=$(( TOTAL_TIME % 60 ))
+        
+        if [ $HOURS -gt 0 ]; then
+            TIME_STR="${HOURS}h ${MINS}m ${SECS}s"
+        else
+            TIME_STR="${MINS}m ${SECS}s"
+        fi
+        
         echo ""
-        echo -e "${BYELLOW}-> 7. Deployment complete! Connect to your environment using:${NC}"
+        echo -e "${BYELLOW}-> 7. Deployment completed in ${TIME_STR}! Connect to your environment using:${NC}"
         echo "  ssh ${SSH_OPTS[*]} ${SYS_USER}@$IP"
         echo ""
     } >> "$LOG_FILE"
@@ -2532,8 +2543,19 @@ IP=$(lxc list "$VM_NAME" --project "$LXD_PROJECT" --format=json 2>/dev/null | jq
 # ==========================================
 
 if [ -n "$IP" ]; then
+    TOTAL_TIME=$SECONDS
+    HOURS=$(( TOTAL_TIME / 3600 ))
+    MINS=$(( (TOTAL_TIME % 3600) / 60 ))
+    SECS=$(( TOTAL_TIME % 60 ))
+    
+    if [ $HOURS -gt 0 ]; then
+        TIME_STR="${HOURS}h ${MINS}m ${SECS}s"
+    else
+        TIME_STR="${MINS}m ${SECS}s"
+    fi
+    
     echo ""
-    echo -e "${BYELLOW}-> 7. Dropping into interactive shell...${NC}"
+    echo -e "${BYELLOW}-> 7. Deployment completed in ${TIME_STR}! Dropping into interactive shell...${NC}"
     echo ""
     
     # shellcheck disable=SC2029
