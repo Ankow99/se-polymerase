@@ -840,9 +840,9 @@ for cmd in jq openssl python3 ssh base64 awk sed; do
     fi
 done
 
-# Check if ZFS is installed for the zfs backend
+# Check if lvm2 is installed for the LVM backend
 if ! command -v lvm &> /dev/null; then
-    MISSING_APT+=("zfsutils-linux")
+    MISSING_APT+=("lvm2")
 fi
 
 # Check if LXD is missing or uninitialized
@@ -865,7 +865,7 @@ if [ ${#MISSING_APT[@]} -gt 0 ] || [ "$NEEDS_LXD_SNAP" = true ] || [ "$NEEDS_LXD
     [ "$NEEDS_LXD_INIT" = true ] && echo -e "Status: ${BYELLOW}LXD requires initialization${NC}"
     echo ""
     
-    confirm_or_abort "Would you like to automatically install dependencies and initialize LXD with ZFS backend?"
+    confirm_or_abort "Would you like to automatically install dependencies and initialize LXD with LVM-Thin backend?"
     echo ""
     
     # 1. Install APT dependencies
@@ -887,7 +887,7 @@ if [ ${#MISSING_APT[@]} -gt 0 ] || [ "$NEEDS_LXD_SNAP" = true ] || [ "$NEEDS_LXD
     
     # 3. Initialize LXD with LVM
     if [ "$NEEDS_LXD_INIT" = true ]; then
-        echo -e "${BYELLOW}-> Initializing LXD with ZFS storage...${NC}"
+        echo -e "${BYELLOW}-> Initializing LXD with LVM-Thin storage...${NC}"
         echo ""
         
         # Calculate 95% of available disk space on / (in GiB)
@@ -899,20 +899,17 @@ if [ ${#MISSING_APT[@]} -gt 0 ] || [ "$NEEDS_LXD_SNAP" = true ] || [ "$NEEDS_LXD
             exit 1
         fi
         
-        echo -e "Allocating '${LOOP_SIZE} GiB' sparse loop device for ZFS pool..."
+        echo -e "Allocating '${LOOP_SIZE} GiB' sparse loop device for LVM-Thin pool..."
         
         # Sleep to ensure the snap daemon is fully ready after fresh install
         sleep 3
         
         # Initialize LXD with LVM
-        if ! $SUDO_CMD lxd init --auto --storage-backend=zfs --storage-create-loop=${LOOP_SIZE}; then
+        if ! $SUDO_CMD lxd init --auto --storage-backend=lvm --storage-create-loop=${LOOP_SIZE}; then
             echo ""
-            echo -e "${BRED}Error: Failed to auto-initialize LXD. Please run '${NC}lxd init --auto --storage-backend=zfs${BRED}' manually and try again.${NC}"
+            echo -e "${BRED}Error: Failed to auto-initialize LXD. Please run '${NC}lxd init --auto --storage-backend=lvm --storage-create-loop=${LOOP_SIZE}${BRED}' manually and try again.${NC}"
             exit 1
         fi
-        
-        # Enable autotrim to discard freed blocks back to ext4
-        $SUDO_CMD zpool set autotrim=on default 2>/dev/null || true
         
         echo -e "LXD initialized successfully."
         echo ""
@@ -2493,13 +2490,13 @@ except Exception:
         SECS=$(( TOTAL_TIME % 60 ))
         
         if [ $HOURS -gt 0 ]; then
-            TIME_STR="${HOURS}h ${MINS}m ${SECS}s"
+            TIME_STR="${HOURS}${BYELLOW}h${NC} ${MINS}${BYELLOW}m${NC} ${SECS}${BYELLOW}s${NC}"
         else
-            TIME_STR="${MINS}m ${SECS}s"
+            TIME_STR="${MINS}${BYELLOW}m${NC} ${SECS}${BYELLOW}s${NC}"
         fi
         
         echo ""
-        echo -e "${BYELLOW}-> 7. Deployment completed in ${TIME_STR}! Connect to your environment using:${NC}"
+        echo -e "${BYELLOW}-> 7. Deployment completed in ${NC}${TIME_STR}${BYELLOW}! Connect to your environment using:${NC}"
         echo "  ssh ${SSH_OPTS[*]} ${SYS_USER}@$IP"
         echo ""
     } >> "$LOG_FILE"
@@ -2549,13 +2546,13 @@ if [ -n "$IP" ]; then
     SECS=$(( TOTAL_TIME % 60 ))
     
     if [ $HOURS -gt 0 ]; then
-        TIME_STR="${HOURS}h ${MINS}m ${SECS}s"
+        TIME_STR="${HOURS}${BYELLOW}h${NC} ${MINS}${BYELLOW}m${NC} ${SECS}${BYELLOW}s${NC}"
     else
-        TIME_STR="${MINS}m ${SECS}s"
+        TIME_STR="${MINS}${BYELLOW}m${NC} ${SECS}${BYELLOW}s${NC}"
     fi
     
     echo ""
-    echo -e "${BYELLOW}-> 7. Deployment completed in ${TIME_STR}! Dropping into interactive shell...${NC}"
+    echo -e "${BYELLOW}-> 7. Deployment completed in ${NC}${TIME_STR}${BYELLOW}! Dropping into interactive shell...${NC}"
     echo ""
     
     # shellcheck disable=SC2029

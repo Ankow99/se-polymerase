@@ -424,9 +424,10 @@ lxd:
     storage_pools:
     - config:
         size: {{ nested_storage }}
-      description: "Nested ZFS Storage"
+        lvm.use_thinpool: "true"
+      description: "Nested LVM Storage"
       name: default
-      driver: zfs 
+      driver: lvm 
     profiles:
     - config:
         limits.cpu: "2"
