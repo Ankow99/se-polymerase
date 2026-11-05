@@ -20,6 +20,9 @@ DEPLOY_ID="${DEPLOY_ID:-$(openssl rand -hex 4)}"
 # Host system LXD snap track (independent from payload configs)
 HOST_LXD_CHANNEL="5.21/stable"
 
+# Define preferred storage backend: "zfs", "lvm", or "dir"
+LXD_STORAGE_DRIVER="lvm"
+
 # Arrays to hold dynamic configuration
 LXC_OPTIONAL_ARGS=()
 DEFERRED_CONFIG=()
@@ -840,9 +843,11 @@ for cmd in jq openssl python3 ssh base64 awk sed; do
     fi
 done
 
-# Check if lvm2 is installed for the LVM backend
-if ! command -v lvm &> /dev/null; then
+# Check for storage-specific utilities
+if [ "$LXD_STORAGE_DRIVER" = "lvm" ] && ! command -v lvm &> /dev/null; then
     MISSING_APT+=("lvm2")
+elif [ "$LXD_STORAGE_DRIVER" = "zfs" ] && ! command -v zfs &> /dev/null; then
+    MISSING_APT+=("zfsutils-linux")
 fi
 
 # Check if LXD is missing or uninitialized
@@ -887,28 +892,58 @@ if [ ${#MISSING_APT[@]} -gt 0 ] || [ "$NEEDS_LXD_SNAP" = true ] || [ "$NEEDS_LXD
     
     # 3. Initialize LXD with LVM
     if [ "$NEEDS_LXD_INIT" = true ]; then
-        echo -e "${BYELLOW}-> Initializing LXD with LVM-Thin storage...${NC}"
+        echo -e "${BYELLOW}-> Initializing LXD with '${LXD_STORAGE_DRIVER}' storage backend...${NC}"
         echo ""
-        
-        # Calculate 95% of available disk space on / (in GiB)
-        FREE_SPACE_GIB=$($SUDO_CMD df -BG / | awk 'NR==2 {print $4}' | sed -E 's/[^0-9]//g')
-        LOOP_SIZE=$(( FREE_SPACE_GIB * 95 / 100 ))
-        
-        if [ "$LOOP_SIZE" -lt 10 ]; then
-            echo -e "${BRED}Error: Less than '10 GiB' of free space available to allocate to LXD!${NC}"
-            exit 1
-        fi
-        
-        echo -e "Allocating '${LOOP_SIZE} GiB' sparse loop device for LVM-Thin pool..."
         
         # Sleep to ensure the snap daemon is fully ready after fresh install
         sleep 3
         
-        # Initialize LXD with LVM
-        if ! $SUDO_CMD lxd init --auto --storage-backend=lvm --storage-create-loop=${LOOP_SIZE}; then
+        # Hunt for a completely empty raw disk (no partitions, not mounted)
+        SPARE_DISK=$(lsblk -ndo NAME,TYPE | awk '$2=="disk"{print $1}' | while read dev; do
+            if ! lsblk -n "/dev/$dev" | grep -q "part"; then
+                echo "/dev/$dev"
+                break
+            fi
+        done)
+        
+        # Base initialization command
+        INIT_CMD="lxd init --auto --storage-backend=${LXD_STORAGE_DRIVER}"
+        
+        if [ -n "$SPARE_DISK" ] && [ "$LXD_STORAGE_DRIVER" != "dir" ]; then
+            echo -e "Found bare-metal secondary disk '${SPARE_DISK}' Feeding it to LXD..."
+            INIT_CMD="${INIT_CMD} --storage-create-device=${SPARE_DISK}"
+        else
+            if [ -z "$SPARE_DISK" ]; then
+                echo -e "No spare bare-metal disk found. Falling back to loop file..."
+            fi
+            
+            # Calculate 95% of available disk space on / (in GiB)
+            FREE_SPACE_GIB=$($SUDO_CMD df -BG / | awk 'NR==2 {print $4}' | sed -E 's/[^0-9]//g')
+            LOOP_SIZE=$(( FREE_SPACE_GIB * 95 / 100 ))
+            
+            if [ "$LOOP_SIZE" -lt 10 ]; then
+                echo -e "${BRED}Error: Less than '10 GiB' of free space available to allocate to LXD!${NC}"
+                exit 1
+            fi
+            
+            if [ "$LXD_STORAGE_DRIVER" != "dir" ]; then
+                echo -e "Allocating '${LOOP_SIZE} GiB' sparse loop device for '${LXD_STORAGE_DRIVER}' pool..."
+                INIT_CMD="${INIT_CMD} --storage-create-loop=${LOOP_SIZE}"
+            else
+                echo -e "Using directory backend on root filesystem..."
+            fi
+        fi
+        
+        # Execute the dynamic initialization command
+        if ! $SUDO_CMD $INIT_CMD; then
             echo ""
-            echo -e "${BRED}Error: Failed to auto-initialize LXD. Please run '${NC}lxd init --auto --storage-backend=lvm --storage-create-loop=${LOOP_SIZE}${BRED}' manually and try again.${NC}"
+            echo -e "${BRED}Error: Failed to auto-initialize LXD. Please run '${NC}$INIT_CMD${BRED}' manually and try again.${NC}"
             exit 1
+        fi
+        
+        # Enable autotrim for ZFS to discard freed blocks back to ext4
+        if [ "$LXD_STORAGE_DRIVER" = "zfs" ]; then
+            $SUDO_CMD zpool set autotrim=on default 2>/dev/null || true
         fi
         
         echo -e "LXD initialized successfully."
