@@ -870,7 +870,7 @@ if [ ${#MISSING_APT[@]} -gt 0 ] || [ "$NEEDS_LXD_SNAP" = true ] || [ "$NEEDS_LXD
     [ "$NEEDS_LXD_INIT" = true ] && echo -e "Status: ${BYELLOW}LXD requires initialization${NC}"
     echo ""
     
-    confirm_or_abort "Would you like to automatically install dependencies and initialize LXD with LVM-Thin backend?"
+    confirm_or_abort "Would you like to automatically install dependencies and initialize LXD with '${LXD_STORAGE_DRIVER}' backend?"
     echo ""
     
     # 1. Install APT dependencies
