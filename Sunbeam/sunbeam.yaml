@@ -1312,7 +1312,7 @@ write_files:
         RAM=$(echo "{{ nodes_rams }}" | cut -d' ' -f$i)
         DISK=$(echo "{{ nodes_disks }}" | cut -d' ' -f$i)
         
-        lxc init "$HOST" --vm --empty -c limits.cpu="$CPU" -c limits.memory="$RAM" -d root,size="$DISK"
+        lxc init "$HOST" --vm --empty -p default -c limits.cpu="$CPU" -c limits.memory="$RAM" -d root,size="$DISK"
         
         i=$((i + 1))
     done
