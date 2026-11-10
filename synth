@@ -1638,7 +1638,7 @@ if [ "$LXD_PROJECT" != "default" ]; then
         lxc profile device add default root disk path=/ pool="$LXD_POOL" --project "$LXD_PROJECT"
         
         # Attach the cloud-init config drive to bypass agent race condition bugs
-        lxc profile device add default config disk source=cloud-init:config --project "$LXD_PROJECT"
+        #lxc profile device add default config disk source=cloud-init:config --project "$LXD_PROJECT"
         
         # Only attach the MAAS bridge to the host profile if non-nested
         if [ "$NESTED" = false ]; then
