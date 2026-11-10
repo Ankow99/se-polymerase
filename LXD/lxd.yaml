@@ -481,6 +481,9 @@ write_files:
         ssh_import_id:
           - {{ ssh_import_id }}
 {% endif %}
+    package_update: {{ 'true' if update_n_upgrade else 'false' }}
+    package_upgrade: {{ 'true' if update_n_upgrade else 'false' }}
+    package_reboot_if_required: {{ 'true' if update_n_upgrade else 'false' }}
     EOF_CLOUD_INIT
     
     # Create VMs directly via LXD

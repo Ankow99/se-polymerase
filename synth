@@ -2536,9 +2536,9 @@ except Exception:
         SECS=$(( TOTAL_TIME % 60 ))
         
         if [ $HOURS -gt 0 ]; then
-            TIME_STR="${HOURS}${BYELLOW}h${NC} ${MINS}${BYELLOW}m${NC} ${SECS}${BYELLOW}s${NC}"
+            TIME_STR="${HOURS}h ${MINS}m ${SECS}s"
         else
-            TIME_STR="${MINS}${BYELLOW}m${NC} ${SECS}${BYELLOW}s${NC}"
+            TIME_STR="${MINS}m ${SECS}s"
         fi
         
         echo ""
@@ -2592,9 +2592,9 @@ if [ -n "$IP" ]; then
     SECS=$(( TOTAL_TIME % 60 ))
     
     if [ $HOURS -gt 0 ]; then
-        TIME_STR="${HOURS}${BYELLOW}h${NC} ${MINS}${BYELLOW}m${NC} ${SECS}${BYELLOW}s${NC}"
+        TIME_STR="${HOURS}h ${MINS}m ${SECS}s"
     else
-        TIME_STR="${MINS}${BYELLOW}m${NC} ${SECS}${BYELLOW}s${NC}"
+        TIME_STR="${MINS}m ${SECS}s"
     fi
     
     echo ""
