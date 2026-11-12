@@ -928,11 +928,15 @@ if [ ${#MISSING_APT[@]} -gt 0 ] || [ "$NEEDS_LXD_SNAP" = true ] || [ "$NEEDS_LXD
         # Base initialization array
         INIT_CMD=(lxd init --auto --storage-backend="${LXD_STORAGE_DRIVER}")
         
-        if [ -n "$SPARE_DISK" ]; then
+        if [ -n "$SPARE_DISK" ] && [ "$LXD_STORAGE_DRIVER" != "dir" ]; then
             echo -e "Found bare-metal secondary disk '${SPARE_DISK}' (${SPARE_SIZE_GIB} GiB). Feeding it to LXD..."
             INIT_CMD+=("--storage-create-device=${SPARE_DISK}")
         else
-            echo -e "No suitable spare disk found. Falling back to '${LXD_STORAGE_DRIVER}'..."
+            if [ -n "$SPARE_DISK" ] && [ "$LXD_STORAGE_DRIVER" = "dir" ]; then
+                echo -e "Directory backend selected; ignoring raw block device '${SPARE_DISK}'..."
+            else
+                echo -e "No suitable spare disk found. Falling back to '${LXD_STORAGE_DRIVER}'..."
+            fi
             
             # Calculate 95% of available disk space on / (in GiB)
             FREE_SPACE_GIB=$(df -BG / | awk 'NR==2 {print $4}' | sed -E 's/[^0-9]//g')
