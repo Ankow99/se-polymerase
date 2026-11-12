@@ -2123,14 +2123,20 @@ disown $POLLER_PID 2>/dev/null
     CURSOR_TOP='\033[H'
     CLEAR_REST='\033[J'
     CLR_EOL=$'\033[K'
+    LXD_API_FAILS=0
     
     while [ "$PHASE" != "DONE" ]; do
         
-        # Prevent infinite loops if VM or Project is destroyed externally
+        # Prevent infinite loops if VM or Project is destroyed externally, allowing for transient API timeouts
         if ! lxc info "$VM_NAME" --project "$LXD_PROJECT" >/dev/null 2>&1; then
-            echo ""
-            echo -e "${BRED}Fatal: VM '$VM_NAME' or Project '$LXD_PROJECT' no longer exists. Aborting watch loop.${NC}${CLR_EOL}"
-            exit 1
+            LXD_API_FAILS=$((LXD_API_FAILS + 1))
+            if [ "$LXD_API_FAILS" -ge 5 ]; then
+                echo ""
+                echo -e "${BRED}Fatal: VM '$VM_NAME' or Project '$LXD_PROJECT' no longer exists. Aborting watch loop.${NC}${CLR_EOL}"
+                exit 1
+            fi
+        else
+            LXD_API_FAILS=0
         fi
         
         # PHASE A: LOG TAILING
