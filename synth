@@ -4,7 +4,7 @@
 # se-polymerase (synth)
 # Acts as the polymerase to synthesize an isolated, terraform-free LXD 
 # reproducer environment using the host's LXD for MAAS + Juju deployments.
-# version: 9.1.0
+# version: 9.7.0
 #
 # Synthesized by: Pablo Gonzalez De Greiff @ Canonical
 # ---
@@ -21,10 +21,10 @@ DEPLOY_ID="${DEPLOY_ID:-$(openssl rand -hex 4)}"
 HOST_LXD_CHANNEL="5.21/stable"
 
 # Define preferred storage backend for bare-metal disks ("zfs", "lvm", or "dir")
-LXD_SPARE_DRIVER="lvm"
+LXD_SPARE_DRIVER="dir"
 
 # Define fallback storage backend for loop files ("zfs" or "dir")
-LXD_NON_SPARE_DRIVER="zfs"
+LXD_NON_SPARE_DRIVER="dir"
 
 # Arrays to hold dynamic configuration
 LXC_OPTIONAL_ARGS=()
