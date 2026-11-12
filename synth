@@ -20,8 +20,11 @@ DEPLOY_ID="${DEPLOY_ID:-$(openssl rand -hex 4)}"
 # Host system LXD snap track (independent from payload configs)
 HOST_LXD_CHANNEL="5.21/stable"
 
-# Define preferred storage backend: "zfs", "lvm", or "dir"
-LXD_STORAGE_DRIVER="lvm"
+# Define preferred storage backend for bare-metal disks ("zfs", "lvm", or "dir")
+LXD_SPARE_DRIVER="lvm"
+
+# Define fallback storage backend for loop files ("zfs" or "dir")
+LXD_NON_SPARE_DRIVER="zfs"
 
 # Arrays to hold dynamic configuration
 LXC_OPTIONAL_ARGS=()
@@ -835,6 +838,30 @@ HORIZON_LOCAL_PORT=$(( 55000 + PORT_OFFSET ))
 SUDO_CMD=""
 [ "$EUID" -ne 0 ] && SUDO_CMD="sudo"
 
+# Pre-evaluate the storage backend, hunt for a completely empty raw disk (no partitions, not mounted)
+LXD_STORAGE_DRIVER="$LXD_NON_SPARE_DRIVER"
+SPARE_DISK=$(lsblk -ndo NAME,TYPE | awk '$2=="disk"{print $1}' | while read -r dev; do
+    # Skip virtual devices like zram, loop, etc
+    if [[ "$dev" == zram* ]] || [[ "$dev" == loop* ]] || [[ "$dev" == sr* ]]; then
+        continue
+    fi
+    
+    if ! lsblk -n "/dev/$dev" | grep -q "part"; then
+        echo "/dev/$dev"
+        break
+    fi
+done)
+
+# Verify it's greater than 500 GiB
+if [ -n "$SPARE_DISK" ]; then
+    SPARE_SIZE_GIB=$(lsblk -bndo SIZE "$SPARE_DISK" | awk '{printf "%.0f", $1/1073741824}')
+    if [ "$SPARE_SIZE_GIB" -ge 500 ]; then
+        LXD_STORAGE_DRIVER="$LXD_SPARE_DRIVER"
+    else
+        SPARE_DISK="" # Too small, reject it
+    fi
+fi
+
 # Check for missing apt packages
 MISSING_APT=()
 for cmd in jq openssl python3 ssh base64 awk sed; do
@@ -843,7 +870,7 @@ for cmd in jq openssl python3 ssh base64 awk sed; do
     fi
 done
 
-# Check for storage-specific utilities
+# Check for the utility of the selected backend
 if [ "$LXD_STORAGE_DRIVER" = "lvm" ] && ! command -v lvm &> /dev/null; then
     MISSING_APT+=("lvm2")
 elif [ "$LXD_STORAGE_DRIVER" = "zfs" ] && ! command -v zfs &> /dev/null; then
@@ -898,29 +925,14 @@ if [ ${#MISSING_APT[@]} -gt 0 ] || [ "$NEEDS_LXD_SNAP" = true ] || [ "$NEEDS_LXD
         # Sleep to ensure the snap daemon is fully ready after fresh install
         sleep 3
         
-        # Hunt for a completely empty raw disk (no partitions, not mounted)
-        SPARE_DISK=$(lsblk -ndo NAME,TYPE | awk '$2=="disk"{print $1}' | while read dev; do
-            # Skip virtual devices like zram, loop, etc
-            if [[ "$dev" == zram* ]] || [[ "$dev" == loop* ]] || [[ "$dev" == sr* ]]; then
-                continue
-            fi
-            
-            if ! lsblk -n "/dev/$dev" | grep -q "part"; then
-                echo "/dev/$dev"
-                break
-            fi
-        done)
+        # Base initialization array
+        INIT_CMD=(lxd init --auto --storage-backend="${LXD_STORAGE_DRIVER}")
         
-        # Base initialization command
-        INIT_CMD="lxd init --auto --storage-backend=${LXD_STORAGE_DRIVER}"
-        
-        if [ -n "$SPARE_DISK" ] && [ "$LXD_STORAGE_DRIVER" != "dir" ]; then
-            echo -e "Found bare-metal secondary disk '${SPARE_DISK}' Feeding it to LXD..."
-            INIT_CMD="${INIT_CMD} --storage-create-device=${SPARE_DISK}"
+        if [ -n "$SPARE_DISK" ]; then
+            echo -e "Found bare-metal secondary disk '${SPARE_DISK}' (${SPARE_SIZE_GIB} GiB). Feeding it to LXD..."
+            INIT_CMD+=("--storage-create-device=${SPARE_DISK}")
         else
-            if [ -z "$SPARE_DISK" ]; then
-                echo -e "No spare bare-metal disk found. Falling back to loop file..."
-            fi
+            echo -e "No suitable spare disk found. Falling back to '${LXD_STORAGE_DRIVER}'..."
             
             # Calculate 95% of available disk space on / (in GiB)
             FREE_SPACE_GIB=$(df -BG / | awk 'NR==2 {print $4}' | sed -E 's/[^0-9]//g')
@@ -933,22 +945,24 @@ if [ ${#MISSING_APT[@]} -gt 0 ] || [ "$NEEDS_LXD_SNAP" = true ] || [ "$NEEDS_LXD
             
             if [ "$LXD_STORAGE_DRIVER" != "dir" ]; then
                 echo -e "Allocating '${LOOP_SIZE} GiB' sparse loop device for '${LXD_STORAGE_DRIVER}' pool..."
-                INIT_CMD="${INIT_CMD} --storage-create-loop=${LOOP_SIZE}"
+                INIT_CMD+=("--storage-create-loop=${LOOP_SIZE}")
             else
                 echo -e "Using directory backend on root filesystem..."
             fi
         fi
         
         # Execute the dynamic initialization command
-        if ! $SUDO_CMD $INIT_CMD; then
+        if ! $SUDO_CMD "${INIT_CMD[@]}"; then
             echo ""
-            echo -e "${BRED}Error: Failed to auto-initialize LXD. Please run '${NC}$INIT_CMD${BRED}' manually and try again.${NC}"
+            echo -e "${BRED}Error: Failed to auto-initialize LXD. Please run '${NC}${INIT_CMD[*]}${BRED}' manually and try again.${NC}"
             exit 1
         fi
         
-        # Enable autotrim for ZFS to discard freed blocks back to ext4
+        # Apply ZFS optimizations if ZFS was selected as either backend
         if [ "$LXD_STORAGE_DRIVER" = "zfs" ]; then
             $SUDO_CMD zpool set autotrim=on default 2>/dev/null || true
+            echo 2147483648 | $SUDO_CMD tee /sys/module/zfs/parameters/zfs_arc_max >/dev/null
+            echo "options zfs zfs_arc_max=2147483648" | $SUDO_CMD tee /etc/modprobe.d/zfs.conf >/dev/null
         fi
         
         echo -e "LXD initialized successfully."
