@@ -18,7 +18,7 @@ State & Artifacts
 - `Intelligent Teardown` - Generates a bespoke teardown script that wipes the LXD project, networks, and certificates, prompts to optionally save your declarative config file, and cleanly deletes the unique deployment folder.
 
 Infrastructure & Provisioning
-- `Automated Host Bootstrapping` - Automatically detects missing host dependencies (`lxd`, `lvm2`, `jq`, etc.) and seamlessly initializes a performance-optimized LXD LVM-Thin storage pool to accelerate VM provisioning.
+- `Automated Host Bootstrapping` - Automatically detects missing host dependencies (`lxd`, `jq`, `openssl`) and initializes an LXD storage pool using a configurable backend (`dir` by default, or `zfs`/`lvm` based on spare disk availability).
 - `Dynamic Parsing` - Parses Jinja `cloud-config.yaml` payloads to dynamically calculate hardware requirements and generate interactive CLI prompts.
 - `Host Optimization` - Supports nested LXD architectures or bare-metal LXD daemons, leveraging the host's LXD image cache by default to massively speed up VM provisioning.
 - `Network Provisioning` - Provisions `ipv4.nat` bridges, calculates CIDR gateways, and validates DHCP settings to prevent collisions.
@@ -51,9 +51,9 @@ Current available labs include:
 
 ## Prerequisites
 
-While Polymerase is designed to work best on a clean, dedicated Ubuntu host (such as a fresh Testflinger node), a pristine machine is **not** strictly required. `synth` will automatically bootstrap a clean host by installing missing dependencies (`lxd`, `lvm2`, `jq`, `openssl`) and securely initializing an LXD storage pool out of the box, but it is also fully capable of adapting to and running alongside your existing host configurations.
+While Polymerase is designed to work best on a clean, dedicated Ubuntu host (such as a fresh Testflinger node), a pristine machine is **not** strictly required. `synth` will automatically bootstrap a clean host by installing missing dependencies (`lxd`, `jq`, `openssl`, and storage-specific utilities if needed) and securely initializing an LXD storage pool out of the box, while remaining fully capable of adapting to existing host configurations.
 
-> **Recommendation:** If you are running `synth` on a machine with a pre-existing LXD setup, it is recommended ensuring your storage pool uses the **LVM-thin** backend (`lvm`). LVM-thin provides the instant snapshotting and block-level I/O performance necessary to rapidly provision large MAAS VM clusters without triggering deployment timeouts.
+> **Storage Backend Selection:** By default, `synth` initializes LXD using the directory (`dir`) backend for maximum stability across environments. You can customize the preferred storage drivers at the top of the `synth` script via `LXD_SPARE_DRIVER` (used when an unpartitioned block device >= 500 GiB is detected) and `LXD_NON_SPARE_DRIVER` (fallback when no spare disk is available), supporting `"dir"`, `"zfs"`, or `"lvm"`.
 
 `synth` requires an SSH key pair to establish the final SSH connection into the created lab. It will automatically detect existing keys in `~/.ssh/` or your `ssh-agent`. If no key is found, `synth` will interactively prompt you to either provide a custom path or auto-generate a new Ed25519 key pair on the fly.
 
@@ -74,7 +74,7 @@ Invoke the script against a cloud-init template:
 ./synth [OPTIONS] <CLOUD_INIT_FILE> [DEPLOY_ID]
 ```
 
-> **Note:** If this is your first time running `synth` on a new host, it will prompt you to install dependencies and initialize LXD's LVM storage pool.
+> **Note:** If this is your first time running `synth` on a new host, it will prompt you to install dependencies and initialize LXD's storage pool using your configured backend (defaults to `dir`).
 
 ### Arguments
 | Argument | Description |
