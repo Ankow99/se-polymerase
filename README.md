@@ -39,6 +39,7 @@ Current available labs include:
 | :--- | :--- | :--- |
 | `sunbeam` | Automated, scalable installation of Canonical Sunbeam (OpenStack) | MAAS, Juju, OpenStack |
 | `openstack` | Highly available Charmed OpenStack deployment | MAAS, Juju, OpenStack |
+| `devstack` | Single-node DevStack OpenStack environment with optional service plugins (Skyline, Octavia, Heat, etc.) | OpenStack, DevStack, KVM |
 | `kubeadm` | Scalable Kubernetes cluster deployed via `kubeadm` | MAAS, Kubernetes, containerd |
 | `landscape` | High Availability Canonical Landscape deployment | MAAS, Juju, PostgreSQL, RabbitMQ |
 | `juju` | Base environment for generalized Juju controller and node provisioning | MAAS, Juju |
