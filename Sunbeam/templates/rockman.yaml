@@ -78,6 +78,6 @@ cloud_ha: "5"
 cloud_cpu: "16"
 cloud_ram: "64GiB"
 cloud_disk: "200GiB"
-cloud_osd_disk: "50GiB"
+cloud_osd_disk: "40GiB"
 cloud_osd_count: "1"
 
