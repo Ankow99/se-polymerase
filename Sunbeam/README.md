@@ -82,6 +82,29 @@ When launching this Transcript, `synth` will parse the payload and optionally pr
 | cloud_osd_disk | 30GiB | Size of each attached Ceph OSD volume |
 | cloud_osd_count | 4 | Number of Ceph OSD volumes to attach per cloud compute node |
 
+## Additional Features
+This Transcript supports enabling optional Sunbeam features during step `15-sunbeam-addons`. Enabling certain addons will automatically cascade and activate their prerequisite dependencies (for example, `os_add_amphora` automatically enables `os_add_tls`, `os_add_octavia`, `os_add_barbican`, and `os_add_vault`).
+
+| Addon Variable | Sunbeam Feature | Description & Sizing Notes |
+| :--- | :--- | :--- |
+| `os_add_vault` | `vault` | Deploys HashiCorp Vault for secret storage and certificate management. Automatically initializes, unseals, and authorizes the charm |
+| `os_add_tls` | `tls` | Enables TLS encryption on public, internal, and RGW endpoints. Uses Vault as an intermediate CA if `os_add_vault` is enabled; otherwise falls back to self-signed certificates |
+| `os_add_barbican` | `secrets` | Deploys OpenStack Barbican for key and secret management. Automatically enables `os_add_vault` |
+| `os_add_octavia` | `loadbalancer` | Deploys OpenStack Octavia for Load Balancer as a Service (LBaaS). Automatically enables `os_add_barbican` and `os_add_vault` |
+| `os_add_amphora` | `loadbalancer` (Amphora) | Enables the Octavia Amphora provider along with MicroOVN SDN feature gates and automated Amphora certificate signing. Automatically enables `os_add_octavia`, `os_add_tls`, `os_add_barbican`, and `os_add_vault` |
+| `os_add_masakari` | `instance-recovery` | Deploys OpenStack Masakari for automated compute instance high availability and recovery. |
+| `os_add_heat` | `orchestration` | Deploys OpenStack Heat for template-based cloud orchestration |
+| `os_add_designate` | `dns` | Deploys OpenStack Designate for DNS as a Service, configured with `ns1.<tld>.` |
+| `os_add_magnum` | `caas` | Deploys OpenStack Magnum for Container Infrastructure Management (Kubernetes clusters). Automatically enables `os_add_octavia`, `os_add_barbican`, and `os_add_vault` |
+| `os_add_ldap` | `ldap` | Enables external LDAP authentication integration for Keystone |
+| `os_add_images` | `images-sync` | Enables automated Glance cloud image synchronization |
+| `os_add_watcher` | `resource-optimization` | Deploys OpenStack Watcher for cluster resource optimization and workload rebalancing |
+| `os_add_telemetry` | `telemetry` | Deploys the OpenStack Telemetry and metering stack (Ceilometer, Gnocchi, and Aodh) |
+| `os_add_manila` | `shared-filesystem` | Deploys OpenStack Manila for Shared File Systems as a Service (enables the `feature.shared-filesystem` snap gate) |
+| `os_add_maintenance` | `maintenance` | Enables host maintenance mode capabilities (enables the `feature.maintenance` snap gate) |
+| `os_add_tempest` | `validation` | Deploys OpenStack Tempest for automated cloud validation and RefStack testing |
+| `os_add_cos` | `observability embedded` | Deploys the embedded Canonical Observability Stack (Prometheus, Loki, Grafana, Alertmanager, and Traefik). **Sizing requirement:** Allocate at least **`150GiB`+ on `cloud_disk`** per cloud node |
+
 ## Usage
 Deploy this Transcript using the `se-polymerase` orchestrator. The orchestrator isolates all generated files into a dedicated `[DEPLOY_ID]` directory and automatically handles headless background execution.
 
@@ -123,6 +146,41 @@ You now have a fully populated configuration file inside the generated deploymen
 ```bash
 ./synth Sunbeam/sunbeam.yaml -y -c Sunbeam/[DEPLOY_ID]/config-[PROJECT].yaml
 ```
+
+## Testflinger Machine Templates
+Pre-configured YAML templates for Canonical Testflinger bare-metal machines are located in `Sunbeam/templates/`. Each template shares the exact name of its target Testflinger host (e.g., `hoodin.yaml` for `hoodin`) and is tailored to that machine's hardware envelope.
+
+Because Testflinger machines vary significantly in CPU, RAM, and local storage, **larger machines can run the full addon suite (including COS) in full HA, whereas smaller or disk-constrained machines only support a subset of addons** without exhausting host RAM or disk space.
+
+### Host Capacity & Sizing Notes
+
+| Template / Machine | Host Capacity (`CPU` / `RAM` / `Disk`) | Template Footprint | Addon Capacity & Notes |
+| :--- | :--- | :--- | :--- |
+| `aitken.yaml` (`aitken`) | `96c` / `126 GiB` / `~822 GiB` | `48c` / `112 GiB` / `640 GiB` | **Partial addons (no COS):** Constrained by `126 GiB` RAM and `~822 GiB` disk. Runs core addons (Vault, Barbican, Octavia, Masakari, Tempest) with `100GiB` cloud root disks. |
+| `oogtar.yaml` (`oogtar`) | `256c` / `126 GiB` / `~894 GiB` | `90c` / `112 GiB` / `700 GiB` | **Partial addons (no COS):** High core count, but constrained by `126 GiB` RAM and `~894 GiB` disk. Runs Vault, TLS, Barbican, Octavia, Masakari, and Tempest; lacks disk headroom for COS without shrinking OSD allocations. |
+| `tabuu.yaml` (`tabuu`) | `32c` / `251 GiB` / `~823 GiB` | `30c` / `216 GiB` / `700 GiB` | **Most addons (14/17, no COS):** High RAM supports most OpenStack services, but `32` cores and `~823 GiB` disk (`100GiB` `cloud_disk`) exclude COS, Masakari, and Designate. |
+| `megatron.yaml` (`megatron`) | `128c` / `125 GiB` / `~3330 GiB` | `78c` / `112 GiB` / `1630 GiB` | **Multi-addon + COS (storage-heavy):** Massive `~3.3 TB` disk allows `200GiB` cloud root disks + `6` OSDs/node to run COS alongside core addons, while omitting RAM-heavy addons (Amphora, Magnum, Telemetry, Watcher) to fit `125 GiB` RAM. |
+| `hoodin.yaml` (`hoodin`) | `384c` / `250 GiB` / `~1378 GiB` | `122c` / `224 GiB` / `1120 GiB` | **Full addon suite (17/17):** High core count and `200GiB` cloud root disks support full HA controllers and every addon simultaneously, including COS. |
+| `rockman.yaml` (`rockman`) | `128c` / `503 GiB` / `~1380 GiB` | `116c` / `396 GiB` / `1240 GiB` | **Full addon suite (17/17, 5-node cloud):** `503 GiB` RAM supports a scaled 5-node cloud / 5-Sunbeam HA topology (`170GiB` `cloud_disk`, `1` OSD/node) with all addons enabled. |
+| `buzzar.yaml` (`buzzar`) | `104c` / `378 GiB` / `~2773 GiB` | `95c` / `236 GiB` / `2320 GiB` | **Full addon suite (17/17, max storage):** Abundant RAM and `~2.77 TB` disk support full HA controllers, `500GiB` cloud root disks, `100GiB` OSDs, and all addons simultaneously. |
+
+### Template Topology & Setup Matrix
+
+| Machine | MAAS (`CPU/RAM/Disk`) | Juju (`HA x CPU/RAM/Disk`) | Sunbeam (`HA x CPU/RAM/Disk`) | Cloud Nodes (`HA x CPU/RAM/Disk`) | Ceph OSDs (per Cloud Node) | Enabled Addons |
+| :--- | :--- | :--- | :--- | :--- | :--- | :--- |
+| `aitken` | `4c / 8GiB / 40GiB` | `1x (4c / 4GiB / 30GiB)` | `1x (4c / 4GiB / 30GiB)` | `3x (12c / 32GiB / 100GiB)` | `2x 40GiB` | Vault, Barbican, Octavia, Masakari, Tempest |
+| `oogtar` | `8c / 8GiB / 40GiB` | `1x (8c / 4GiB / 30GiB)` | `1x (8c / 4GiB / 30GiB)` | `3x (22c / 32GiB / 100GiB)` | `2x 50GiB` | Vault, TLS, Barbican, Octavia, Masakari, Tempest |
+| `tabuu` | `2c / 8GiB / 40GiB` | `1x (2c / 8GiB / 30GiB)` | `1x (2c / 8GiB / 30GiB)` | `3x (8c / 64GiB / 100GiB)` | `2x 50GiB` | All except Masakari, Designate, COS |
+| `megatron` | `6c / 8GiB / 50GiB` | `1x (6c / 4GiB / 40GiB)` | `1x (6c / 4GiB / 40GiB)` | `3x (20c / 32GiB / 200GiB)` | `6x 50GiB` | Vault, TLS, Barbican, Octavia, Masakari, Tempest, **COS** |
+| `hoodin` | `8c / 8GiB / 40GiB` | `3x (8c / 6GiB / 30GiB)` | `3x (8c / 6GiB / 30GiB)` | `3x (22c / 60GiB / 200GiB)` | `2x 50GiB` | **All 17 addons (incl. COS)** |
+| `rockman` | `4c / 12GiB / 30GiB` | `3x (4c / 8GiB / 20GiB)` | `5x (4c / 8GiB / 20GiB)` | `5x (16c / 64GiB / 170GiB)` | `1x 40GiB` | **All 17 addons (incl. COS)** |
+| `buzzar` | `5c / 8GiB / 40GiB` | `3x (5c / 6GiB / 30GiB)` | `3x (5c / 6GiB / 30GiB)` | `3x (20c / 64GiB / 500GiB)` | `2x 100GiB` | **All 17 addons (incl. COS)** |
+
+To deploy directly on a matching Testflinger machine using its template:
+```bash
+./synth Sunbeam/sunbeam.yaml -c Sunbeam/templates/hoodin.yaml
+```
+*(Note: `Sunbeam/templates/example.yaml` is also available as a default-values baseline if you want to build a custom configuration from scratch.)*
 
 ## Access and Cleanup
 Because the deployment is executed in the background, you can detach your terminal at any time. Monitor the live progress by tailing the log file stored in the deployment directory:
