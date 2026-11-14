@@ -29,7 +29,7 @@
 {% set custom_hostname = "" %}                      # PROMPT:Hostname
 {% set custom_tld = "openstack" %}                  # PROMPT:Top Level Domain
 {% set custom_timezone = "America/New_York" %}      # PROMPT:Timezone
-{% set custom_timeout = "45m" %}                    # PROMPT:Juju Wait Timeout
+{% set custom_timeout = "60m" %}                    # PROMPT:Juju Wait Timeout
 
 # --- Channels ---
 {% set custom_lxd_channel = "5.21/stable" %}          # PROMPT:LXD Channel
@@ -52,6 +52,7 @@
 {% set custom_maas_password = "admin" %}            # PROMPT:MAAS Admin Password
 {% set custom_maas_email = "admin@email.com" %}     # PROMPT:MAAS Admin Email
 {% set custom_maas_images = "jammy" %}              # PROMPT:MAAS Deploy Images (space separated)
+{% set custom_maas_space = "openstackspace" %}      # PROMPT:MAAS Network Space
 {% set custom_maas_dns = "8.8.8.8" %}               # PROMPT:MAAS DNS Forwarder
 {% set custom_maas_bridge = "mbr0" %}               # PROMPT:MAAS Bridge Name [BRIDGE:dhcp=false,cidr=maas_cidr]
 {% set custom_maas_cidr = "10.10.0.0/22" %}
@@ -125,6 +126,7 @@
 {% set hostname_base = meta.get("hostname") or custom_hostname %}
 {% set tld = meta.get("tld") or custom_tld %}
 {% set timezone = meta.get("timezone") or custom_timezone %}
+{% set timeout = meta.get("timeout") or custom_timeout %}
 
 {% set lxd_channel = meta.get("lxd_channel") or custom_lxd_channel %}
 {% set maas_channel = meta.get("maas_channel") or custom_maas_channel %}
@@ -146,6 +148,7 @@
 {% set maas_password = meta.get("maas_password") or custom_maas_password %}
 {% set maas_email = meta.get("maas_email") or custom_maas_email %}
 {% set maas_images = meta.get("maas_images") or custom_maas_images %}
+{% set maas_space = meta.get("maas_space") or custom_maas_space %}
 {% set maas_dns = meta.get("maas_dns") or custom_maas_dns %}
 {% set maas_bridge = meta.get("maas_bridge") or custom_maas_bridge %}
 {% set maas_cidr = meta.get("maas_cidr") or custom_maas_cidr %}
