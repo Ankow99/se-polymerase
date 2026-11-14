@@ -423,11 +423,9 @@ lxd:
       project: default
     storage_pools:
     - config:
-        size: {{ nested_storage }}
-        lvm.use_thinpool: "true"
-      description: "Nested LVM Storage"
+      description: "Nested Storage"
       name: default
-      driver: lvm 
+      driver: dir
     profiles:
     - config:
         limits.cpu: "2"
@@ -487,14 +485,14 @@ write_files:
     #!/bin/bash
     out=$(maas "$@")
     ret=$?
-
+    
     if [ $ret -ne 0 ] || [ -z "$out" ] || ! echo "$out" | jq -e . >/dev/null 2>&1; then
         echo "$out"
         exit $ret
     fi
-
+    
     target="$2"
-
+    
     # Helper function to align and draw OpenStack-style tables
     prettify() {
         python3 -c '
@@ -510,16 +508,16 @@ write_files:
     # 3. Remove the legacy dash separator from jq if it exists
     if len(raw_lines) > 1 and all(cell.replace("-", "").strip() == "" for cell in raw_lines[1]):
         raw_lines.pop(1)
-        
+    
     # 4. Catch empty strings and convert to "-" for a solid grid
     lines = [["-" if cell == "" or cell == "null" else cell for cell in row] for row in raw_lines]
-        
+    
     # 5. Calculate optimal column widths
     col_widths = [max(len(str(item)) for item in col) for col in zip(*lines)]
     
     def print_sep():
         print("+" + "+".join("-" * (w + 2) for w in col_widths) + "+")
-        
+    
     print("")
     print_sep()
     # 6. Print headers CENTERED
@@ -530,11 +528,11 @@ write_files:
     for row in lines[1:]:
         row_ext = row + [""] * (len(col_widths) - len(row))
         print("| " + " | ".join(str(item).ljust(w) for item, w in zip(row_ext, col_widths)) + " |")
-        
+    
     print_sep()
     '
     }
-
+    
     case "$target" in
         machines|machine|nodes|node)
             echo "$out" | jq -r '(["HOSTNAME", "STATUS", "POWER", "PWR TYPE", "IP ADDRESS", "SYSTEM ID"] | (., map(length*"-"))), ((if type=="array" then . else [.] end)[] | [.hostname, .status_name, .power_state, (.power_type // "-"), (.ip_addresses[0] // "-"), .system_id]) | @tsv' | prettify
@@ -614,6 +612,35 @@ write_files:
     ' | prettify || echo "$out" | jq -C .
             ;;
     esac
+
+- path: /etc/profile.d/default-editor.sh
+  permissions: '0644'
+  content: |
+    export EDITOR=nvim
+
+- path: /etc/sudoers.d/keep-editor
+  permissions: '0440'
+  content: |
+    Defaults env_keep += "EDITOR"
+
+{% if not nested_lxd and lxd_cert_b64 and lxd_key_b64 %}
+# Non-nested specific files (Host's LXD Certificates)
+- path: /root/snap/lxd/common/config/client.crt
+  owner: root:root
+  permissions: '0644'
+  encoding: b64
+  content: {{ lxd_cert_b64 }}
+
+- path: /root/snap/lxd/common/config/client.key
+  owner: root:root
+  permissions: '0600'
+  encoding: b64
+  content: {{ lxd_key_b64 }}
+{% endif %}
+
+# ==========================================
+# START OF HELPER SCRIPTS
+# ==========================================
 
 # Sunbeam helper: Sunbeam function to simplify automated usage - run_sunbeam "command" [logfile]
 - path: /usr/local/bin/run_sunbeam
@@ -770,30 +797,9 @@ write_files:
     echo -e "\nVault keys saved to '$VAULT_INIT' (KEEP THIS SAFE!)"
     $RUN_AS_LOGIN sunbeam vault status
 
-- path: /etc/profile.d/default-editor.sh
-  permissions: '0644'
-  content: |
-    export EDITOR=nvim
-
-- path: /etc/sudoers.d/keep-editor
-  permissions: '0440'
-  content: |
-    Defaults env_keep += "EDITOR"
-
-{% if not nested_lxd and lxd_cert_b64 and lxd_key_b64 %}
-# Non-nested specific files (Host's LXD Certificates)
-- path: /root/snap/lxd/common/config/client.crt
-  owner: root:root
-  permissions: '0644'
-  encoding: b64
-  content: {{ lxd_cert_b64 }}
-
-- path: /root/snap/lxd/common/config/client.key
-  owner: root:root
-  permissions: '0600'
-  encoding: b64
-  content: {{ lxd_key_b64 }}
-{% endif %}
+# ==========================================
+# END OF HELPER SCRIPTS
+# ==========================================
 
 # ==========================================
 # START OF AUTOMATION SCRIPTS (00 to 15)
@@ -1070,7 +1076,6 @@ write_files:
     source /etc/repro-env
     
     # Wait for MAAS to finish background network discovery
-    
     echo -e "\n${BYELLOW}-------- Waiting for MAAS to discover subnet '{{ maas_cidr }}'... --------${NC}\n"
     
     ATTEMPTS=0
@@ -1377,7 +1382,7 @@ write_files:
                 # Automatically retry testing on failure
                 echo -e "  [${BYELLOW}!!${NC}] '$HOST' is currently '$status'... Retrying!"
                 maast {{ maas_user }} machine test $SYSTEM_ID
-                all_ready=false
+                all_enlisted=false
             else
                 if [ "$status" = "null" ]; then
                     status="Waiting for PXE"

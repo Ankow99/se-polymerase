@@ -227,10 +227,9 @@ lxd:
       project: default
     storage_pools:
     - config:
-        size: {{ nested_storage }}
-      description: "Nested ZFS Storage"
+      description: "Nested Storage"
       name: default
-      driver: zfs 
+      driver: dir
     profiles:
     - config:
         limits.cpu: "2"
