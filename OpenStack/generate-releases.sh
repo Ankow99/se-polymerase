@@ -47,7 +47,7 @@ for entry in "${RELEASES[@]}"; do
         -e "s|{% set custom_rabbitmq_channel = .*|{% set custom_rabbitmq_channel = \"${rabbit}/stable\" %}      # PROMPT:RabbitMQ Channel|" \
         -e "s|{% set custom_vault_channel = .*|{% set custom_vault_channel = \"${vault}/stable\" %}         # PROMPT:Vault Channel|" \
         -e "s|{% set custom_maas_images = .*|{% set custom_maas_images = \"${ubuntu_os}\" %}              # PROMPT:MAAS Deploy Images (space separated)|" \
-        -e "s|{% set custom_os_base_flavor = .*|{% set custom_os_base_flavor = ${ubuntu_os} %}             # PROMPT:OpenStack Flavor Base|" \
+        -e "s|{% set custom_os_base_flavor = .*|{% set custom_os_base_flavor = \"${ubuntu_os}\" %}             # PROMPT:OpenStack Flavor Base|" \
         -e "s|{% set custom_juju_base = .*|{% set custom_juju_base = \"ubuntu@${os_ver}\" %}         # PROMPT:Juju Base|" \
         "$INPUT_FILE" > "$OUTPUT_FILE"
 done

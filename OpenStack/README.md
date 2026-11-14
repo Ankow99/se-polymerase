@@ -11,10 +11,11 @@ To successfully synthesize this environment, your host machine must meet the fol
 * Network: Outbound internet access for LXD image downloads, MAAS image synchronization, and Juju charm deployments
 
 ## Variables
-When launching this Transcript, `synth` will parse the payload and optionally prompt for the following configuration values. 
+When launching this Transcript, `synth` will parse the payload and optionally prompt for the following configuration values.
 
 | Variable | Default Value | Description |
 | :--- | :--- | :--- |
+| update_n_upgrade | True | Auto Update & Upgrade base packages |
 | vm_image | ubuntu:22.04 | Base operating system image for the primary MAAS controller |
 | sys_user | ubuntu | Default system user for SSH access |
 | password | ubuntu | Password for the default system user |
@@ -36,6 +37,7 @@ When launching this Transcript, `synth` will parse the payload and optionally pr
 | maas_password | admin | Web UI and API admin password for MAAS |
 | maas_email | admin@email.com | Admin email address for MAAS |
 | maas_images | jammy | Space separated list of Ubuntu releases to sync |
+| maas_space | openstackspace | Logical network space name mapped in MAAS |
 | maas_dns | 8.8.8.8 | Upstream DNS forwarder for the MAAS network |
 | maas_bridge | mbr0 | Name of the primary MAAS network bridge |
 | maas_cidr | 10.10.0.0/22 | Subnet CIDR for the MAAS network |
@@ -55,13 +57,14 @@ When launching this Transcript, `synth` will parse the payload and optionally pr
 | juju_ram | 6GiB | RAM allocated to each Juju controller |
 | juju_disk | 20GiB | Root disk size for each Juju controller |
 | juju_base | ubuntu@22.04 | Operating system base used for the Juju bootstrap |
+| node_ha | 4 | Total number of OpenStack machines to provision (minimum 3) |
 | node_cpu | 4 | CPU cores allocated to each OpenStack machine |
 | node_ram | 12GiB | RAM allocated to each OpenStack machine |
 | node_disk | 50GiB | Root disk size for each OpenStack machine |
 | node_osd_disk | 10GiB | Size of each attached Ceph OSD volume |
 | node_osd_count | 3 | Number of Ceph OSD volumes to attach per OpenStack machine |
 
-*Note: The total number of OpenStack hyperconverged machines is strictly fixed at 4. This ensures the cluster meets the strict quorum and architectural requirements of a high-availability deployment without overwhelming host resources.*
+*Note: A minimum of 3 OpenStack nodes (`node_ha >= 3`) is required to satisfy quorum and replication requirements for MySQL InnoDB, OVN Central, and Ceph. With the default of 4 nodes, node 1 is dedicated to control-plane containers and Ceph OSDs while nodes 2–4 host Nova Compute; scaling `node_ha` beyond 4 automatically expands Nova Compute, OVN Chassis, and Ceph OSD capacity across all additional nodes (up to 12 OSDs per node).*
 
 ## Release Generation Script
 Due to the strict version compatibility matrix between OpenStack, Ceph, OVN, and underlying database services, this repository includes a `generate-releases.sh` script.
@@ -88,7 +91,7 @@ Deploy with a nested LXD architecture, prompt for all variables interactively, a
 ```
 
 ## Access and Cleanup
-Once the payload finishes executing, `synth` will automatically drop you into a secure multiplexed SSH shell connected to the primary MAAS controller. 
+Once the payload finishes executing, `synth` will automatically drop you into a secure multiplexed SSH shell connected to the primary MAAS controller.
 
 An `openrc` file is automatically generated in your user directory and sourced at login. You can interact with the OpenStack CLI:
 ```bash
@@ -104,8 +107,8 @@ To completely wipe this environment and release its resources, execute the auto-
 
 ## Architecture Overview
 * Network Topology: Utilizes a dual-bridge network. The primary bridge handles MAAS provisioning and PXE traffic, while a secondary bridge provides an isolated Neutron provider network for OpenStack floating IPs.
-* Node Distribution: Features one primary MAAS controller, one Juju controller, and four hyperconverged OpenStack nodes.
-* Provisioning Pipeline: All nodes are created natively via the LXD API. The four OpenStack nodes are dynamically configured with loop-backed ZFS volumes that MAAS registers and tags as raw SSD block devices. Juju deploys MySQL, Vault, and Ceph Monitors in LXD containers across the nodes, while mapping Ceph OSDs and Nova Compute directly to the bare metal instances for hardware access.
+* Node Distribution: Features one primary MAAS controller, one Juju controller (by default), and a scalable pool of hyperconverged OpenStack nodes (defaulting to four).
+* Provisioning Pipeline: All nodes are created natively via the LXD API, powered on, and PXE booted. The OpenStack nodes are dynamically configured with LXD block storage volumes that MAAS registers and tags as raw SSD block devices. After MAAS commissions the hardware and Juju bootstraps the orchestration layer, Juju deploys MySQL InnoDB, Vault, OVN Central, Ceph Monitors, and OpenStack API services in LXD containers across the primary control nodes, while mapping Ceph OSDs, Nova Compute, and OVN Chassis directly to the bare-metal instances for hardware access.
 
 ---
 
@@ -163,7 +166,7 @@ Deploy with a nested LXD architecture, prompt for all variables interactively, a
 ```
 
 ## Access and Cleanup
-Once the payload finishes executing, `synth` will automatically drop you into a secure multiplexed SSH shell connected to the DevStack machine. 
+Once the payload finishes executing, `synth` will automatically drop you into a secure multiplexed SSH shell connected to the DevStack machine.
 
 An `openrc` file is automatically generated in your user directory and sourced at login. You can interact with the OpenStack CLI:
 ```bash
