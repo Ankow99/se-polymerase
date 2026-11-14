@@ -27,7 +27,7 @@ When launching this Transcript, `synth` will parse the payload and optionally pr
 | lxd_channel | 5.21/stable | Snap channel for the LXD installation |
 | maas_channel | 3.7/stable | Snap channel for the MAAS installation |
 | sunbeam_channel | 2024.1/stable | Snap channel for the Sunbeam installation |
-| lxd_project | default | Target LXD project for the deployment |
+| sunbeam_revision | None | Optional specific snap revision for Sunbeam |
 | lxd_pool | default | Target LXD storage pool for the deployment |
 | maas_user | admin | Web UI and API admin username for MAAS |
 | maas_password | admin | Web UI and API admin password for MAAS |
@@ -59,9 +59,9 @@ When launching this Transcript, `synth` will parse the payload and optionally pr
 | os_add_ldap | False | Enable LDAP |
 | os_add_images | False | Enable Images Sync |
 | os_add_watcher | False | Enable Watcher |
-| os_add_maintenance | False | Enable Maintenance Mode |
 | os_add_telemetry | False | Enable Ceilometer/Aodh |
 | os_add_manila | False | Enable Manila |
+| os_add_maintenance | False | Enable Maintenance Mode |
 | os_add_tempest | False | Enable Tempest |
 | os_add_cos | False | Enable Observability Stack |
 | maas_cpu | 4 | CPU cores allocated to the MAAS controller |

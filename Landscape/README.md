@@ -15,6 +15,7 @@ When launching this Transcript, `synth` will parse the payload and optionally pr
 
 | Variable | Default Value | Description |
 | :--- | :--- | :--- |
+| update_n_upgrade | True | Auto Update & Upgrade base packages |
 | vm_image | ubuntu:24.04 | Base operating system image for the primary MAAS controller |
 | sys_user | ubuntu | Default system user for SSH access |
 | password | ubuntu | Password for the default system user |
@@ -25,16 +26,22 @@ When launching this Transcript, `synth` will parse the payload and optionally pr
 | lxd_channel | 5.21/stable | Snap channel for the LXD installation |
 | maas_channel | 3.7/stable | Snap channel for the MAAS installation |
 | juju_channel | 3.6/stable | Snap channel for the Juju installation |
+| juju_base | ubuntu@22.04 | Operating system base used for the Juju bootstrap and model |
 | haproxy_channel | latest/stable | Charm channel for HAProxy |
+| haproxy_base | ubuntu@24.04 | Operating system base used for HAProxy |
 | postgresql_channel | 14/stable | Charm channel for PostgreSQL |
+| postgresql_base | ubuntu@22.04 | Operating system base used for PostgreSQL |
 | rabbitmq_channel | 3.9/stable | Charm channel for RabbitMQ Server |
+| rabbitmq_base | ubuntu@22.04 | Operating system base used for RabbitMQ Server |
 | landscape_server_channel | latest/stable | Charm channel for Landscape Server |
+| landscape_server_base | ubuntu@22.04 | Operating system base used for Landscape Server |
 | landscape_client_channel | latest/stable | Charm channel for Landscape Client |
 | lxd_pool | default | Target LXD storage pool for the deployment |
 | maas_user | admin | Web UI and API admin username for MAAS |
 | maas_password | admin | Web UI and API admin password for MAAS |
 | maas_email | admin@email.com | Admin email address for MAAS |
 | maas_images | noble jammy | Space-separated list of Ubuntu releases to sync |
+| maas_space | landspace | MAAS network space name for the deployment |
 | maas_dns | 8.8.8.8 | Upstream DNS forwarder for the MAAS network |
 | maas_bridge | mbr0 | Name of the primary MAAS network bridge |
 | maas_cidr | 10.10.0.0/22 | Subnet CIDR for the MAAS network |
@@ -46,7 +53,6 @@ When launching this Transcript, `synth` will parse the payload and optionally pr
 | juju_cpu | 2 | CPU cores allocated to each Juju controller |
 | juju_ram | 6GiB | RAM allocated to each Juju controller |
 | juju_disk | 20GiB | Root disk size for each Juju controller |
-| juju_base | ubuntu@22.04 | Operating system base used for the Juju bootstrap |
 | node_ha | 3 | Total number of core Landscape machines to provision |
 | node_cpu | 3 | CPU cores allocated to each core Landscape machine |
 | node_ram | 8GiB | RAM allocated to each core Landscape machine |

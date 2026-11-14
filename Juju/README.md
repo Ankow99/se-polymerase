@@ -15,6 +15,7 @@ When launching this Transcript, `synth` will parse the payload and optionally pr
 
 | Variable | Default Value | Description |
 | :--- | :--- | :--- |
+| update_n_upgrade | True | Auto Update & Upgrade base packages |
 | vm_image | ubuntu:24.04 | Base operating system image for the primary MAAS controller |
 | sys_user | ubuntu | Default system user for SSH access |
 | password | ubuntu | Password for the default system user |
@@ -30,6 +31,7 @@ When launching this Transcript, `synth` will parse the payload and optionally pr
 | maas_password | admin | Web UI and API admin password for MAAS |
 | maas_email | admin@email.com | Admin email address for MAAS |
 | maas_images | noble jammy | Space-separated list of Ubuntu releases to sync |
+| maas_space | jujuspace | MAAS network space name for the deployment |
 | maas_dns | 8.8.8.8 | Upstream DNS forwarder for the MAAS network |
 | maas_bridge | mbr0 | Name of the primary MAAS network bridge |
 | maas_cidr | 10.10.0.0/22 | Subnet CIDR for the MAAS network |

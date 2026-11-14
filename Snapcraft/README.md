@@ -15,6 +15,7 @@ When launching this Transcript, `synth` will parse the payload and optionally pr
 
 | Variable | Default Value | Description |
 | :--- | :--- | :--- |
+| update_n_upgrade | True | Auto Update & Upgrade base packages |
 | vm_image | ubuntu:24.04 | Base operating system image for the primary virtual machine |
 | sys_user | ubuntu | Default system user for SSH access |
 | password | ubuntu | Password for the default system user |
