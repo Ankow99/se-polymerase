@@ -69,11 +69,11 @@ When launching this Transcript, `synth` will parse the payload and optionally pr
 ## Release Generation Script
 Due to the strict version compatibility matrix between OpenStack, Ceph, OVN, and underlying database services, this repository includes a `generate-releases.sh` script.
 
-Instead of manually editing the base template to test older OpenStack releases, you can run the generator script against the base transcript. The script iterates through Canonical's official version matrix and outputs discrete, version-locked `cloud-init` templates for each supported release.
+Instead of manually editing the base template to test older OpenStack releases, you can run the generator script against the base transcript. The script iterates through the official [charm delivery](https://docs.openstack.org/charm-guide/latest/project/charm-delivery.html) matrix and outputs discrete, version-locked `cloud-init` templates for each supported release.
 
 To generate the release templates:
 ```bash
-./generate-releases.sh transcripts/openstack.yaml
+./generate-releases.sh openstack.yaml
 ```
 This will output distinct files such as `focal-ussuri.yaml`, `jammy-yoga.yaml`, and `jammy-2023.2.yaml` into your directory, with all underlying snap and charm channels properly pinned.
 
