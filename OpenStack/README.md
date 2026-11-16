@@ -82,12 +82,17 @@ Deploy a generated OpenStack release using the `se-polymerase` orchestrator.
 
 Accept all default variables and let `synth` auto-generate a deployment ID:
 ```bash
-./synth OpenStack/focal-ussuri.yaml -a
+./synth OpenStack/focal-ussuri.yaml -y
 ```
 
-Deploy with a nested LXD architecture, prompt for all variables interactively, and assign a specific case number as the deployment ID:
+Deploy using deb MAAS, prompt for all variables interactively, and assign a specific case number as the deployment ID:
 ```bash
-./synth OpenStack/jammy-2023.2.yaml -n 00426900
+./synth OpenStack/jammy-yoga.yaml -d 00426900
+```
+
+Deploy bypassing prompts by passing a pre-generated configuration file from a previous run:
+```bash
+./synth OpenStack/jammy-2024.1.yaml -yc OpenStack/00426900/config-openstack-00426900.yaml
 ```
 
 ## Access and Cleanup
@@ -157,12 +162,17 @@ Deploy this Transcript using the `se-polymerase` orchestrator.
 
 Accept all default variables and let `synth` auto-generate a deployment ID:
 ```bash
-./synth OpenStack/devstack.yaml -a
+./synth OpenStack/devstack.yaml -y
 ```
 
-Deploy with a nested LXD architecture, prompt for all variables interactively, and assign a specific case number as the deployment ID:
+Deploy using deb MAAS, prompt for all variables interactively, and assign a specific case number as the deployment ID:
 ```bash
-./synth OpenStack/devstack.yaml -n 00426900
+./synth OpenStack/devstack.yaml -d 00426900
+```
+
+Deploy bypassing prompts by passing a pre-generated configuration file from a previous run:
+```bash
+./synth OpenStack/devstack.yaml -yc OpenStack/00426900/config-devstack-00426900.yaml
 ```
 
 ## Access and Cleanup

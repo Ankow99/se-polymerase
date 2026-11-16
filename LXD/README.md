@@ -40,12 +40,17 @@ Deploy this Transcript using the `se-polymerase` orchestrator.
 
 Accept all default variables and let `synth` auto-generate a deployment ID:
 ```bash
-./synth LXD/lxd.yaml -a
+./synth LXD/lxd.yaml -y
 ```
 
-Deploy with a nested LXD architecture, prompt for all variables interactively, and assign a specific case number as the deployment ID:
+Deploy using deb MAAS, prompt for all variables interactively, and assign a specific case number as the deployment ID:
 ```bash
-./synth LXD/lxd.yaml -n 00426900
+./synth LXD/lxd.yaml -d 00426900
+```
+
+Deploy bypassing prompts by passing a pre-generated configuration file from a previous run:
+```bash
+./synth LXD/lxd.yaml -yc LXD/00426900/config-lxd-00426900.yaml
 ```
 
 ## Access and Cleanup

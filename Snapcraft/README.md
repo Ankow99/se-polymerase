@@ -39,12 +39,17 @@ Deploy this Transcript using the `se-polymerase` orchestrator.
 
 Accept all default variables and let `synth` auto-generate a deployment ID:
 ```bash
-./synth Snapcraft/snapcraft.yaml -a
+./synth Snapcraft/snapcraft.yaml -y
 ```
 
-Deploy with a nested LXD architecture, prompt for all variables interactively, and assign a specific case number as the deployment ID:
+Deploy using deb MAAS, prompt for all variables interactively, and assign a specific case number as the deployment ID:
 ```bash
-./synth Snapcraft/snapcraft.yaml -n 00426900
+./synth Snapcraft/snapcraft.yaml -d 00426900
+```
+
+Deploy bypassing prompts by passing a pre-generated configuration file from a previous run:
+```bash
+./synth Snapcraft/snapcraft.yaml -yc Snapcraft/00426900/config-snapcraft-00426900.yaml
 ```
 
 ## Access and Cleanup

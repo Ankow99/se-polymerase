@@ -53,12 +53,17 @@ Deploy this Transcript using the `se-polymerase` orchestrator.
 
 Accept all default variables and let `synth` auto-generate a deployment ID:
 ```bash
-./synth Kubernetes/kubeadm.yaml -a
+./synth Kubernetes/kubeadm.yaml -y
 ```
 
-Deploy with a nested LXD architecture, prompt for all variables interactively, and assign a specific case number as the deployment ID:
+Deploy using deb MAAS, prompt for all variables interactively, and assign a specific case number as the deployment ID:
 ```bash
-./synth Kubernetes/kubeadm.yaml -n 00426900
+./synth Kubernetes/kubeadm.yaml -d 00426900
+```
+
+Deploy bypassing prompts by passing a pre-generated configuration file from a previous run:
+```bash
+./synth Kubernetes/kubeadm.yaml -yc Kubernetes/00426900/config-kubeadm-00426900.yaml
 ```
 
 ## Access and Cleanup

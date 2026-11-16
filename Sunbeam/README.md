@@ -120,7 +120,7 @@ Deploy using deb MAAS, prompt for all variables interactively, and assign a spec
 
 Deploy bypassing prompts by passing a pre-generated configuration file from a previous run:
 ```bash
-./synth Sunbeam/sunbeam.yaml -c Sunbeam/00426900/config-sunbeam-00426900.yaml
+./synth Sunbeam/sunbeam.yaml -yc Sunbeam/00426900/config-sunbeam-00426900.yaml
 ```
 
 Deploy using a custom Sunbeam manifest file to override the default cloud generation (it is the user's responsibility to ensure this manifest works - not recommended):
