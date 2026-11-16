@@ -26,6 +26,8 @@ RELEASES=(
     "jammy 22.04 zed quincy 22.09 8.0 3.9 1.8"
     "jammy 22.04 2023.1 quincy 23.03 8.0 3.9 1.8"
     "jammy 22.04 2023.2 reef 23.09 8.0 3.9 1.8"
+    "jammy 22.04 2024.1 squid 24.03 8.0 3.9 1.8"
+    "noble 24.04 2024.1 squid 24.03 8.0 3.12 1.8"
 )
 
 echo "Starting OpenStack release cloud-init generation from '$INPUT_FILE'..."

@@ -91,7 +91,7 @@
 {% set custom_node_osd_count = 3 %}                 # PROMPT:Number of OSDs per Compute Node
 
 # Juju watch trigger message and models (space separated, order matters)
-{% set custom_cluster_trigger = "-------- Configuring the cloud... --------" %}
+{% set custom_cluster_trigger = "-------- Deploying Ceph OSD... --------" %}
 {% set custom_juju_trigger = "-------- Bootstrapping Juju Controller... --------" %}
 {% set custom_juju_models = "openstack" %}
 
