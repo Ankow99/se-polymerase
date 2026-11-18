@@ -1,7 +1,23 @@
 # Transcript: Sunbeam
 
 ## Description
-A fully automated, scalable OpenStack environment deployed via Canonical Sunbeam on top of MAAS. This Transcript synthesizes a primary MAAS controller, provisions a fleet of LXD virtual machines, enlists them as bare-metal nodes, and executes the Sunbeam cluster bootstrap and deployment processes. It serves as a comprehensive reproducer for Canonical OpenStack architectures deployed using Sunbeam.
+A fully automated, scalable Canonical OpenStack environment deployed via project Sunbeam using a Converged cloud architecture on top of the Canonical MAAS bare-metal provider. This Transcript synthesizes a primary MAAS controller, provisions a fleet of LXD virtual machines, enlists and commissions them as bare-metal nodes across MAAS Availability Zones, and executes the Sunbeam cluster bootstrap, deployment, and post-configuration workflows. It serves as a comprehensive reproducer for multi-node Canonical OpenStack reference architectures.
+
+## Architecture Overview
+This reproducer implements Canonical OpenStack's Converged reference architecture using Canonical MAAS as the bare-metal provider:
+
+- **Cloud Architecture (Converged):** Governance functions are isolated on dedicated Governor nodes, while OpenStack control and data planes are co-hosted on Cloud nodes:
+  - MAAS Controller (`maas-1`): Hosts the MAAS region/rack controller, local LXD hypervisor, and the `sunbeam` client CLI used to drive the deployment.
+  - Governor Nodes (`juju-controller-*`, `sunbeam-controller-*`): Dedicated machines assigned the `juju-controller` and `sunbeam` roles to handle model orchestration, lifecycle management, and cloud operations.
+  - Cloud Nodes (`cloud-*`): Co-host the `control` (Canonical Kubernetes and Charmed OpenStack control plane), `compute` (Nova, QEMU/KVM/Libvirt), `network` (MicroOVN L3 gateway), and `storage` (MicroCeph OSDs backed by raw LXD block volumes) roles.
+- Network Architecture & Traffic Segregation: Uses a two-network bridged topology mapped through MAAS network spaces (`sunspace`):
+  - Generic Network (`mbr0` / `maas_cidr`): Carries PXE provisioning, machine management, Juju/Sunbeam orchestration, and MetalLB load-balancer VIP pools for OpenStack Internal and Public APIs.
+  - External Network (`nbr0` / `os_neutron_cidr`): Mapped to `physnet1` on all Cloud nodes to provide north-south external connectivity and floating IP routing for tenant instances via MicroOVN.
+- High Availability, Availability Zones & Database Scaling:
+  - Availability Zones: Nodes are automatically distributed across MAAS Availability Zones (`AZ1` through `AZn`) matching their replica index.
+  - High Availability (HA): Setting `juju_ha`, `sunbeam_ha`, and `cloud_ha` to `3` or higher achieves full control-plane, storage (Ceph), and network HA across failure domains.
+  - Control-Plane Database (`os_multi_mysql`): Supports both a `single` shared MySQL service for smaller footprints and `multi` (one dedicated MySQL service per OpenStack service) for larger multi-node deployments, scaling automatically for HA as Cloud nodes are added.
+- Provisioning Pipeline: Virtual machines are created via the LXD API, enlisted and commissioned in MAAS using LXD power drivers, and tagged with their corresponding Sunbeam roles (`juju-controller`, `sunbeam`, `control`, `compute`, `storage`, `network`) before `12-sunbeam-bootstrap` and `13-sunbeam-deploy` generate the manifest and build the cluster.
 
 ## Requirements
 To successfully synthesize this environment, your host machine must meet the following minimum specifications using the *default* topology.
@@ -9,79 +25,6 @@ To successfully synthesize this environment, your host machine must meet the fol
 * RAM: 60 GiB
 * Disk: 310 GiB
 * Network: Outbound internet access for LXD image downloads, MAAS image synchronization, and Sunbeam snap installations
-
-## Variables
-When launching this Transcript, `synth` will parse the payload and optionally prompt for the following configuration values.
-
-| Variable | Default Value | Description |
-| :--- | :--- | :--- |
-| update_n_upgrade | True | Auto Update & Upgrade base packages |
-| auto_retry | True | Auto-retry once on Sunbeam deployment timeouts |
-| vm_image | ubuntu:24.04 | Base operating system image for the primary MAAS controller |
-| sys_user | ubuntu | Default system user for SSH access |
-| password | ubuntu | Password for the default system user |
-| pro_token | None | Optional Ubuntu Pro token for extended packages |
-| hostname | None | Custom hostname for the MAAS controller |
-| tld | sunbeam | Top Level Domain for the MAAS environment |
-| timezone | America/New_York | System timezone |
-| lxd_channel | 5.21/stable | Snap channel for the LXD installation |
-| maas_channel | 3.7/stable | Snap channel for the MAAS installation |
-| sunbeam_channel | 2024.1/stable | Snap channel for the Sunbeam installation |
-| sunbeam_revision | None | Optional specific snap revision for Sunbeam |
-| lxd_pool | default | Target LXD storage pool for the deployment |
-| maas_user | admin | Web UI and API admin username for MAAS |
-| maas_password | admin | Web UI and API admin password for MAAS |
-| maas_email | admin@email.com | Admin email address for MAAS |
-| maas_images | noble | Space separated list of Ubuntu releases to sync |
-| maas_space | sunspace | Logical network space name mapped in MAAS and Sunbeam |
-| maas_dns | 8.8.8.8 | Upstream DNS forwarder for the MAAS network |
-| maas_bridge | mbr0 | Name of the primary MAAS network bridge |
-| maas_cidr | 10.10.0.0/22 | Subnet CIDR for the MAAS network |
-| maas_ip_count | 30 | Number of IPs to reserve for the MAAS dynamic DHCP pool |
-| os_deployment | sunbeam | Internal logical name for the Sunbeam deployment |
-| os_multi_mysql | False | Enable Multi MySQL Topology |
-| os_run_demo | True | Run the Sunbeam demo user setup |
-| os_neutron_bridge | nbr0 | Name of the dedicated Neutron network bridge |
-| os_neutron_cidr | 10.20.0.0/22 | Subnet CIDR for the OpenStack provider network |
-| os_pub_api_ip_count | 50 | Number of IPs to reserve for the OpenStack Public API |
-| os_int_api_ip_count | 50 | Number of IPs to reserve for the OpenStack Internal API |
-| os_pub_api_hostname | public | OpenStack Public API Hostname |
-| os_int_api_hostname | internal | OpenStack Internal API Hostname |
-| os_rgw_api_hostname | rgw | OpenStack RGW API Hostname |
-| os_add_vault | False | Enable Vault |
-| os_add_tls | False | Enable TLS Endpoints |
-| os_add_barbican | False | Enable Barbican |
-| os_add_octavia | False | Enable Octavia |
-| os_add_amphora | False | Enable Octavia Amphora |
-| os_add_masakari | False | Enable Masakari |
-| os_add_heat | False | Enable Heat |
-| os_add_designate | False | Enable Designate |
-| os_add_magnum | False | Enable Magnum |
-| os_add_ldap | False | Enable LDAP |
-| os_add_images | False | Enable Images Sync |
-| os_add_watcher | False | Enable Watcher |
-| os_add_telemetry | False | Enable Ceilometer/Aodh |
-| os_add_manila | False | Enable Manila |
-| os_add_maintenance | False | Enable Maintenance Mode |
-| os_add_tempest | False | Enable Tempest |
-| os_add_cos | False | Enable Observability Stack |
-| maas_cpu | 4 | CPU cores allocated to the MAAS controller |
-| maas_ram | 8GiB | RAM allocated to the MAAS controller |
-| maas_disk | 30GiB | Root disk size for the MAAS controller |
-| juju_ha | 1 | Total number of Juju controller machines to provision |
-| juju_cpu | 3 | CPU cores allocated to each Juju controller |
-| juju_ram | 6GiB | RAM allocated to each Juju controller |
-| juju_disk | 30GiB | Root disk size for each Juju controller |
-| sunbeam_ha | 1 | Total number of Sunbeam controller machines to provision |
-| sunbeam_cpu | 3 | CPU cores allocated to each Sunbeam controller |
-| sunbeam_ram | 6GiB | RAM allocated to each Sunbeam controller |
-| sunbeam_disk | 30GiB | Root disk size for each Sunbeam controller |
-| cloud_ha | 1 | Total number of hyperconverged cloud compute nodes to provision |
-| cloud_cpu | 12 | CPU cores allocated to each cloud compute node |
-| cloud_ram | 40GiB | RAM allocated to each cloud compute node |
-| cloud_disk | 100GiB | Root disk size for each cloud compute node |
-| cloud_osd_disk | 30GiB | Size of each attached Ceph OSD volume |
-| cloud_osd_count | 4 | Number of Ceph OSD volumes to attach per cloud compute node |
 
 ## Additional Features
 This Transcript supports enabling optional Sunbeam features during step `15-sunbeam-addons`. Enabling certain addons will automatically cascade and activate their prerequisite dependencies (for example, `os_add_amphora` automatically enables `os_add_tls`, `os_add_octavia`, `os_add_barbican`, and `os_add_vault`).
@@ -148,41 +91,6 @@ You now have a fully populated configuration file inside the generated deploymen
 ./synth Sunbeam/sunbeam.yaml -y -c Sunbeam/[DEPLOY_ID]/config-[PROJECT].yaml
 ```
 
-## Testflinger Machine Templates
-Pre-configured YAML templates for Canonical Testflinger bare-metal machines are stored in `Sunbeam/templates/`. Each template file matches the exact name of its target Testflinger host (e.g., `hoodin.yaml` for `hoodin`) and is sized to fit that machine's hardware envelope.
-
-Because Testflinger machines vary significantly in CPU, RAM, and local storage, **larger hosts can run the full addon suite (including COS) in full HA, whereas smaller or disk-constrained hosts only support a subset of addons** without exhausting host RAM or disk space.
-
-### Host Capacity & Sizing Notes
-
-| Template | CPU | RAM | Disk | Template Footprint | Addon Capacity & Notes |
-| :--- | :--- | :--- | :--- | :--- | :--- |
-| `aitken.yaml` | 96 | 126&nbsp;GiB | ~822&nbsp;GiB | 48&nbsp;Cores<br>112&nbsp;GiB&nbsp;RAM<br>640&nbsp;GiB&nbsp;Disk | **Partial (no COS):** Constrained by 126 GiB RAM and ~822 GiB disk; runs core addons with 100 GiB cloud root disks |
-| `oogtar.yaml` | 256 | 126&nbsp;GiB | ~894&nbsp;GiB | 90&nbsp;Cores<br>112&nbsp;GiB&nbsp;RAM<br>700&nbsp;GiB&nbsp;Disk | **Partial (no COS):** Constrained by 126 GiB RAM and ~894 GiB disk; lacks disk headroom for COS without shrinking OSDs |
-| `tabuu.yaml` | 32 | 251&nbsp;GiB | ~823&nbsp;GiB | 30&nbsp;Cores<br>216&nbsp;GiB&nbsp;RAM<br>700&nbsp;GiB&nbsp;Disk | **Most (14/17, no COS):** High RAM supports most addons, but 32 cores and 100 GiB cloud root disks exclude COS, Masakari, and Designate |
-| `megatron.yaml` | 128 | 125&nbsp;GiB | ~3330&nbsp;GiB | 78&nbsp;Cores<br>112&nbsp;GiB&nbsp;RAM<br>1630&nbsp;GiB&nbsp;Disk | **Multi-addon + COS:** ~3.3 TB disk supports 200 GiB cloud root disks and COS; omits RAM-heavy addons to fit 125 GiB RAM |
-| `hoodin.yaml` | 384 | 250&nbsp;GiB | ~1378&nbsp;GiB | 122&nbsp;Cores<br>224&nbsp;GiB&nbsp;RAM<br>1120&nbsp;GiB&nbsp;Disk | **Full suite (17/17):** High core count and 200 GiB cloud root disks support full HA controllers and all addons, including COS |
-| `rockman.yaml` | 128 | 503&nbsp;GiB | ~1380&nbsp;GiB | 116&nbsp;Cores<br>396&nbsp;GiB&nbsp;RAM<br>1240&nbsp;GiB&nbsp;Disk | **Full suite (17/17):** 503 GiB RAM supports a 5-node cloud / 5-Sunbeam HA topology with 170 GiB cloud root disks and COS |
-| `buzzar.yaml` | 104 | 378&nbsp;GiB | ~2773&nbsp;GiB | 95&nbsp;Cores<br>236&nbsp;GiB&nbsp;RAM<br>2320&nbsp;GiB&nbsp;Disk | **Full suite (17/17):** High RAM and ~2.77 TB disk support full HA controllers, 500 GiB cloud root disks, and all addons |
-
-### Template Topology & Setup Matrix
-
-| Machine | MAAS | Juju | Sunbeam | Cloud Nodes | OSDs / Node | Enabled Addons |
-| :--- | :--- | :--- | :--- | :--- | :--- | :--- |
-| `aitken` | **1x**<br>4&nbsp;Cores<br>8&nbsp;GiB&nbsp;RAM<br>40&nbsp;GiB&nbsp;Disk | **1x**<br>4&nbsp;Cores<br>4&nbsp;GiB&nbsp;RAM<br>30&nbsp;GiB&nbsp;Disk | **1x**<br>4&nbsp;Cores<br>4&nbsp;GiB&nbsp;RAM<br>30&nbsp;GiB&nbsp;Disk | **3x**<br>12&nbsp;Cores<br>32&nbsp;GiB&nbsp;RAM<br>100&nbsp;GiB&nbsp;Disk | **2x**<br>40&nbsp;GiB | Vault, Barbican, Octavia, Masakari, Tempest |
-| `oogtar` | **1x**<br>8&nbsp;Cores<br>8&nbsp;GiB&nbsp;RAM<br>40&nbsp;GiB&nbsp;Disk | **1x**<br>8&nbsp;Cores<br>4&nbsp;GiB&nbsp;RAM<br>30&nbsp;GiB&nbsp;Disk | **1x**<br>8&nbsp;Cores<br>4&nbsp;GiB&nbsp;RAM<br>30&nbsp;GiB&nbsp;Disk | **3x**<br>22&nbsp;Cores<br>32&nbsp;GiB&nbsp;RAM<br>100&nbsp;GiB&nbsp;Disk | **2x**<br>50&nbsp;GiB | Vault, TLS, Barbican, Octavia, Masakari, Tempest |
-| `tabuu` | **1x**<br>2&nbsp;Cores<br>8&nbsp;GiB&nbsp;RAM<br>40&nbsp;GiB&nbsp;Disk | **1x**<br>2&nbsp;Cores<br>8&nbsp;GiB&nbsp;RAM<br>30&nbsp;GiB&nbsp;Disk | **1x**<br>2&nbsp;Cores<br>8&nbsp;GiB&nbsp;RAM<br>30&nbsp;GiB&nbsp;Disk | **3x**<br>8&nbsp;Cores<br>64&nbsp;GiB&nbsp;RAM<br>100&nbsp;GiB&nbsp;Disk | **2x**<br>50&nbsp;GiB | All except Masakari, Designate, COS |
-| `megatron` | **1x**<br>6&nbsp;Cores<br>8&nbsp;GiB&nbsp;RAM<br>50&nbsp;GiB&nbsp;Disk | **1x**<br>6&nbsp;Cores<br>4&nbsp;GiB&nbsp;RAM<br>40&nbsp;GiB&nbsp;Disk | **1x**<br>6&nbsp;Cores<br>4&nbsp;GiB&nbsp;RAM<br>40&nbsp;GiB&nbsp;Disk | **3x**<br>20&nbsp;Cores<br>32&nbsp;GiB&nbsp;RAM<br>200&nbsp;GiB&nbsp;Disk | **6x**<br>50&nbsp;GiB | Vault, TLS, Barbican, Octavia, Masakari, Tempest, **COS** |
-| `hoodin` | **1x**<br>8&nbsp;Cores<br>8&nbsp;GiB&nbsp;RAM<br>40&nbsp;GiB&nbsp;Disk | **3x**<br>8&nbsp;Cores<br>6&nbsp;GiB&nbsp;RAM<br>30&nbsp;GiB&nbsp;Disk | **3x**<br>8&nbsp;Cores<br>6&nbsp;GiB&nbsp;RAM<br>30&nbsp;GiB&nbsp;Disk | **3x**<br>22&nbsp;Cores<br>60&nbsp;GiB&nbsp;RAM<br>200&nbsp;GiB&nbsp;Disk | **2x**<br>50&nbsp;GiB | **All 17 addons (incl. COS)** |
-| `rockman` | **1x**<br>4&nbsp;Cores<br>12&nbsp;GiB&nbsp;RAM<br>30&nbsp;GiB&nbsp;Disk | **3x**<br>4&nbsp;Cores<br>8&nbsp;GiB&nbsp;RAM<br>20&nbsp;GiB&nbsp;Disk | **5x**<br>4&nbsp;Cores<br>8&nbsp;GiB&nbsp;RAM<br>20&nbsp;GiB&nbsp;Disk | **5x**<br>16&nbsp;Cores<br>64&nbsp;GiB&nbsp;RAM<br>170&nbsp;GiB&nbsp;Disk | **1x**<br>40&nbsp;GiB | **All 17 addons (incl. COS)** |
-| `buzzar` | **1x**<br>5&nbsp;Cores<br>8&nbsp;GiB&nbsp;RAM<br>40&nbsp;GiB&nbsp;Disk | **3x**<br>5&nbsp;Cores<br>6&nbsp;GiB&nbsp;RAM<br>30&nbsp;GiB&nbsp;Disk | **3x**<br>5&nbsp;Cores<br>6&nbsp;GiB&nbsp;RAM<br>30&nbsp;GiB&nbsp;Disk | **3x**<br>20&nbsp;Cores<br>64&nbsp;GiB&nbsp;RAM<br>500&nbsp;GiB&nbsp;Disk | **2x**<br>100&nbsp;GiB | **All 17 addons (incl. COS)** |
-
-To deploy directly on a matching Testflinger machine using its template:
-```bash
-./synth Sunbeam/sunbeam.yaml -c Sunbeam/templates/hoodin.yaml
-```
-*(Note: `Sunbeam/templates/defaults.yaml` is also available as a default-values baseline if you want to build a custom configuration from scratch.)*
-
 ## Access and Cleanup
 Because the deployment is executed in the background, you can detach your terminal at any time. Monitor the live progress by tailing the log file stored in the deployment directory:
 ```bash
@@ -234,7 +142,111 @@ If a deployment fails at step `12` due to a transient network error or misconfig
 ubuntu@maas-1:~$ 12-sunbeam-bootstrap
 ```
 
-## Architecture Overview
-* Network Topology: Utilizes a dual-bridge network. The primary bridge handles MAAS provisioning and PXE traffic, while a secondary bridge provides an isolated Neutron provider network for OpenStack traffic.
-* Node Distribution: Features one primary MAAS controller, one dedicated Juju controller, one Sunbeam cluster controller, and one heavy compute node handling the bulk of the virtualization and storage workload.
-* Provisioning Pipeline: Nodes are created natively via the LXD API and commissioned in MAAS. Ceph OSDs are mapped to the compute node as raw block devices. The `sunbeam` CLI is invoked on the primary MAAS controller to validate the MAAS provider, map the network spaces, generate a multi-node manifest, and ultimately execute the cluster bootstrap, cloud configuration, and addon deployment sequences.
+## Variables
+When launching this Transcript, `synth` will parse the payload and optionally prompt for the following configuration values.
+
+| Variable | Default Value | Description |
+| :--- | :--- | :--- |
+| update_n_upgrade | True | Auto Update & Upgrade base packages |
+| auto_retry | True | Auto-retry once on Sunbeam deployment timeouts |
+| vm_image | ubuntu:24.04 | Base operating system image for the primary MAAS controller |
+| sys_user | ubuntu | Default system user for SSH access |
+| password | ubuntu | Password for the default system user |
+| pro_token | None | Optional Ubuntu Pro token for extended packages |
+| hostname | None | Custom hostname for the MAAS controller |
+| tld | sunbeam | Top Level Domain for the MAAS environment |
+| timezone | America/New_York | System timezone |
+| lxd_channel | 5.21/stable | Snap channel for the LXD installation |
+| maas_channel | 3.7/stable | Snap channel for the MAAS installation |
+| sunbeam_channel | 2024.1/stable | Snap channel for the Sunbeam installation |
+| sunbeam_revision | None | Optional specific snap revision for Sunbeam |
+| lxd_pool | default | Target LXD storage pool for the deployment |
+| maas_user | admin | Web UI and API admin username for MAAS |
+| maas_password | admin | Web UI and API admin password for MAAS |
+| maas_email | admin@email.com | Admin email address for MAAS |
+| maas_images | noble | Space separated list of Ubuntu releases to sync |
+| maas_space | sunspace | Logical network space name mapped in MAAS and Sunbeam |
+| maas_dns | 8.8.8.8 | Upstream DNS forwarder for the MAAS network |
+| maas_bridge | mbr0 | Name of the primary MAAS network bridge |
+| maas_cidr | 10.10.0.0/22 | Subnet CIDR for the MAAS network |
+| maas_ip_count | 30 | Number of IPs to reserve for the MAAS dynamic DHCP pool |
+| os_deployment | sunbeam | Internal logical name for the Sunbeam deployment |
+| os_multi_mysql | False | Enable dedicated MySQL cluster per OpenStack service control-plane database topology|
+| os_run_demo | True | Run the Sunbeam demo user setup |
+| os_neutron_bridge | nbr0 | Name of the dedicated Neutron network bridge |
+| os_neutron_cidr | 10.20.0.0/22 | Subnet CIDR for the OpenStack provider network |
+| os_pub_api_ip_count | 50 | Number of IPs to reserve for the OpenStack Public API |
+| os_int_api_ip_count | 50 | Number of IPs to reserve for the OpenStack Internal API |
+| os_pub_api_hostname | public | OpenStack Public API Hostname |
+| os_int_api_hostname | internal | OpenStack Internal API Hostname |
+| os_rgw_api_hostname | rgw | OpenStack RGW API Hostname |
+| os_add_vault | False | Enable Vault |
+| os_add_tls | False | Enable TLS Endpoints |
+| os_add_barbican | False | Enable Barbican |
+| os_add_octavia | False | Enable Octavia |
+| os_add_amphora | False | Enable Octavia Amphora |
+| os_add_masakari | False | Enable Masakari |
+| os_add_heat | False | Enable Heat |
+| os_add_designate | False | Enable Designate |
+| os_add_magnum | False | Enable Magnum |
+| os_add_ldap | False | Enable LDAP |
+| os_add_images | False | Enable Images Sync |
+| os_add_watcher | False | Enable Watcher |
+| os_add_telemetry | False | Enable Ceilometer/Aodh |
+| os_add_manila | False | Enable Manila |
+| os_add_maintenance | False | Enable Maintenance Mode |
+| os_add_tempest | False | Enable Tempest |
+| os_add_cos | False | Enable Observability Stack |
+| maas_cpu | 4 | CPU cores allocated to the MAAS controller |
+| maas_ram | 8GiB | RAM allocated to the MAAS controller |
+| maas_disk | 30GiB | Root disk size for the MAAS controller |
+| juju_ha | 1 | Number of dedicated Governor nodes (`juju-controller` role) to provision (`>= 3` for HA) |
+| juju_cpu | 3 | CPU cores allocated to each Juju controller |
+| juju_ram | 6GiB | RAM allocated to each Juju controller |
+| juju_disk | 30GiB | Root disk size for each Juju controller |
+| sunbeam_ha | 1 | Number of dedicated Governor nodes (`sunbeam` operational role) to provision (`>= 3` for HA) |
+| sunbeam_cpu | 3 | CPU cores allocated to each Sunbeam controller |
+| sunbeam_ram | 6GiB | RAM allocated to each Sunbeam controller |
+| sunbeam_disk | 30GiB | Root disk size for each Sunbeam controller |
+| cloud_ha | 1 | Number of Converged Cloud nodes (`control`, `compute`, `network`, and `storage` roles) to provision (`>= 3` for full control-plane and data-plane HA) |
+| cloud_cpu | 12 | CPU cores allocated to each cloud compute node |
+| cloud_ram | 40GiB | RAM allocated to each cloud compute node |
+| cloud_disk | 100GiB | Root disk size for each cloud compute node |
+| cloud_osd_disk | 30GiB | Size of each attached Ceph OSD volume |
+| cloud_osd_count | 4 | Number of Ceph OSD volumes to attach per cloud compute node |
+
+## Testflinger Machine Templates
+Pre-configured YAML templates for Canonical Testflinger bare-metal machines are stored in `Sunbeam/templates/`. Each template file matches the exact name of its target Testflinger host (e.g., `hoodin.yaml` for `hoodin`) and is sized to fit that machine's hardware envelope.
+
+Because Testflinger machines vary significantly in CPU, RAM, and local storage, **larger hosts can run the full addon suite (including COS) in full HA, whereas smaller or disk-constrained hosts only support a subset of addons** without exhausting host RAM or disk space.
+
+### Host Capacity & Sizing Notes
+
+| Template | CPU | RAM | Disk | Template Footprint | Addon Capacity & Notes |
+| :--- | :--- | :--- | :--- | :--- | :--- |
+| `aitken.yaml` | 96 | 126&nbsp;GiB | ~822&nbsp;GiB | 48&nbsp;Cores<br>112&nbsp;GiB&nbsp;RAM<br>640&nbsp;GiB&nbsp;Disk | **Partial (no COS):** Constrained by 126 GiB RAM and ~822 GiB disk; runs core addons with 100 GiB cloud root disks |
+| `oogtar.yaml` | 256 | 126&nbsp;GiB | ~894&nbsp;GiB | 90&nbsp;Cores<br>112&nbsp;GiB&nbsp;RAM<br>700&nbsp;GiB&nbsp;Disk | **Partial (no COS):** Constrained by 126 GiB RAM and ~894 GiB disk; lacks disk headroom for COS without shrinking OSDs |
+| `tabuu.yaml` | 32 | 251&nbsp;GiB | ~823&nbsp;GiB | 30&nbsp;Cores<br>216&nbsp;GiB&nbsp;RAM<br>700&nbsp;GiB&nbsp;Disk | **Most (14/17, no COS):** High RAM supports most addons, but 32 cores and 100 GiB cloud root disks exclude COS, Masakari, and Designate |
+| `megatron.yaml` | 128 | 125&nbsp;GiB | ~3330&nbsp;GiB | 78&nbsp;Cores<br>112&nbsp;GiB&nbsp;RAM<br>1630&nbsp;GiB&nbsp;Disk | **Multi-addon + COS:** ~3.3 TB disk supports 200 GiB cloud root disks and COS; omits RAM-heavy addons to fit 125 GiB RAM |
+| `hoodin.yaml` | 384 | 250&nbsp;GiB | ~1378&nbsp;GiB | 122&nbsp;Cores<br>224&nbsp;GiB&nbsp;RAM<br>1120&nbsp;GiB&nbsp;Disk | **Full suite (17/17):** High core count and 200 GiB cloud root disks support full HA controllers and all addons, including COS |
+| `rockman.yaml` | 128 | 503&nbsp;GiB | ~1380&nbsp;GiB | 116&nbsp;Cores<br>396&nbsp;GiB&nbsp;RAM<br>1240&nbsp;GiB&nbsp;Disk | **Full suite (17/17):** 503 GiB RAM supports a 5-node cloud / 5-Sunbeam HA topology with 170 GiB cloud root disks and COS |
+| `buzzar.yaml` | 104 | 378&nbsp;GiB | ~2773&nbsp;GiB | 95&nbsp;Cores<br>236&nbsp;GiB&nbsp;RAM<br>2320&nbsp;GiB&nbsp;Disk | **Full suite (17/17):** High RAM and ~2.77 TB disk support full HA controllers, 500 GiB cloud root disks, and all addons |
+
+### Template Topology & Setup Matrix
+
+| Machine | MAAS | Juju | Sunbeam | Cloud Nodes | OSDs / Node | Enabled Addons |
+| :--- | :--- | :--- | :--- | :--- | :--- | :--- |
+| `aitken` | **1x**<br>4&nbsp;Cores<br>8&nbsp;GiB&nbsp;RAM<br>40&nbsp;GiB&nbsp;Disk | **1x**<br>4&nbsp;Cores<br>4&nbsp;GiB&nbsp;RAM<br>30&nbsp;GiB&nbsp;Disk | **1x**<br>4&nbsp;Cores<br>4&nbsp;GiB&nbsp;RAM<br>30&nbsp;GiB&nbsp;Disk | **3x**<br>12&nbsp;Cores<br>32&nbsp;GiB&nbsp;RAM<br>100&nbsp;GiB&nbsp;Disk | **2x**<br>40&nbsp;GiB | Vault, Barbican, Octavia, Masakari, Tempest |
+| `oogtar` | **1x**<br>8&nbsp;Cores<br>8&nbsp;GiB&nbsp;RAM<br>40&nbsp;GiB&nbsp;Disk | **1x**<br>8&nbsp;Cores<br>4&nbsp;GiB&nbsp;RAM<br>30&nbsp;GiB&nbsp;Disk | **1x**<br>8&nbsp;Cores<br>4&nbsp;GiB&nbsp;RAM<br>30&nbsp;GiB&nbsp;Disk | **3x**<br>22&nbsp;Cores<br>32&nbsp;GiB&nbsp;RAM<br>100&nbsp;GiB&nbsp;Disk | **2x**<br>50&nbsp;GiB | Vault, TLS, Barbican, Octavia, Masakari, Tempest |
+| `tabuu` | **1x**<br>2&nbsp;Cores<br>8&nbsp;GiB&nbsp;RAM<br>40&nbsp;GiB&nbsp;Disk | **1x**<br>2&nbsp;Cores<br>8&nbsp;GiB&nbsp;RAM<br>30&nbsp;GiB&nbsp;Disk | **1x**<br>2&nbsp;Cores<br>8&nbsp;GiB&nbsp;RAM<br>30&nbsp;GiB&nbsp;Disk | **3x**<br>8&nbsp;Cores<br>64&nbsp;GiB&nbsp;RAM<br>100&nbsp;GiB&nbsp;Disk | **2x**<br>50&nbsp;GiB | All except Masakari, Designate, COS |
+| `megatron` | **1x**<br>6&nbsp;Cores<br>8&nbsp;GiB&nbsp;RAM<br>50&nbsp;GiB&nbsp;Disk | **1x**<br>6&nbsp;Cores<br>4&nbsp;GiB&nbsp;RAM<br>40&nbsp;GiB&nbsp;Disk | **1x**<br>6&nbsp;Cores<br>4&nbsp;GiB&nbsp;RAM<br>40&nbsp;GiB&nbsp;Disk | **3x**<br>20&nbsp;Cores<br>32&nbsp;GiB&nbsp;RAM<br>200&nbsp;GiB&nbsp;Disk | **6x**<br>50&nbsp;GiB | Vault, TLS, Barbican, Octavia, Masakari, Tempest, **COS** |
+| `hoodin` | **1x**<br>8&nbsp;Cores<br>8&nbsp;GiB&nbsp;RAM<br>40&nbsp;GiB&nbsp;Disk | **3x**<br>8&nbsp;Cores<br>6&nbsp;GiB&nbsp;RAM<br>30&nbsp;GiB&nbsp;Disk | **3x**<br>8&nbsp;Cores<br>6&nbsp;GiB&nbsp;RAM<br>30&nbsp;GiB&nbsp;Disk | **3x**<br>22&nbsp;Cores<br>60&nbsp;GiB&nbsp;RAM<br>200&nbsp;GiB&nbsp;Disk | **2x**<br>50&nbsp;GiB | **All 17 addons (incl. COS)** |
+| `rockman` | **1x**<br>4&nbsp;Cores<br>12&nbsp;GiB&nbsp;RAM<br>30&nbsp;GiB&nbsp;Disk | **3x**<br>4&nbsp;Cores<br>8&nbsp;GiB&nbsp;RAM<br>20&nbsp;GiB&nbsp;Disk | **5x**<br>4&nbsp;Cores<br>8&nbsp;GiB&nbsp;RAM<br>20&nbsp;GiB&nbsp;Disk | **5x**<br>16&nbsp;Cores<br>64&nbsp;GiB&nbsp;RAM<br>170&nbsp;GiB&nbsp;Disk | **1x**<br>40&nbsp;GiB | **All 17 addons (incl. COS)** |
+| `buzzar` | **1x**<br>5&nbsp;Cores<br>8&nbsp;GiB&nbsp;RAM<br>40&nbsp;GiB&nbsp;Disk | **3x**<br>5&nbsp;Cores<br>6&nbsp;GiB&nbsp;RAM<br>30&nbsp;GiB&nbsp;Disk | **3x**<br>5&nbsp;Cores<br>6&nbsp;GiB&nbsp;RAM<br>30&nbsp;GiB&nbsp;Disk | **3x**<br>20&nbsp;Cores<br>64&nbsp;GiB&nbsp;RAM<br>500&nbsp;GiB&nbsp;Disk | **2x**<br>100&nbsp;GiB | **All 17 addons (incl. COS)** |
+
+To deploy directly on a matching Testflinger machine using its template:
+```bash
+./synth Sunbeam/sunbeam.yaml -c Sunbeam/templates/hoodin.yaml
+```
+*(Note: `Sunbeam/templates/defaults.yaml` is also available as a default-values baseline if you want to build a custom configuration from scratch.)*
+
