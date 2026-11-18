@@ -6,25 +6,24 @@ A fully automated, scalable Canonical OpenStack environment deployed via project
 ## Architecture Overview
 This reproducer implements Canonical OpenStack's Converged reference architecture using Canonical MAAS as the bare-metal provider:
 
-- **Cloud Architecture (Converged):** Governance functions are isolated on dedicated Governor nodes, while OpenStack control and data planes are co-hosted on Cloud nodes:
+### Cloud Architecture (Converged):
+Governance functions are isolated on dedicated Governor nodes, while OpenStack control and data planes are co-hosted on Cloud nodes:
   - MAAS Controller (`maas-1`): Hosts the MAAS region/rack controller, local LXD hypervisor, and the `sunbeam` client CLI used to drive the deployment.
   - Governor Nodes (`juju-controller-*`, `sunbeam-controller-*`): Dedicated machines assigned the `juju-controller` and `sunbeam` roles to handle model orchestration, lifecycle management, and cloud operations.
   - Cloud Nodes (`cloud-*`): Co-host the `control` (Canonical Kubernetes and Charmed OpenStack control plane), `compute` (Nova, QEMU/KVM/Libvirt), `network` (MicroOVN L3 gateway), and `storage` (MicroCeph OSDs backed by raw LXD block volumes) roles.
-- Network Architecture & Traffic Segregation: Uses a two-network bridged topology mapped through MAAS network spaces (`sunspace`):
+
+### Network Architecture & Traffic Segregation:
+Uses a two-network bridged topology mapped through MAAS network spaces (`sunspace`):
   - Generic Network (`mbr0` / `maas_cidr`): Carries PXE provisioning, machine management, Juju/Sunbeam orchestration, and MetalLB load-balancer VIP pools for OpenStack Internal and Public APIs.
   - External Network (`nbr0` / `os_neutron_cidr`): Mapped to `physnet1` on all Cloud nodes to provide north-south external connectivity and floating IP routing for tenant instances via MicroOVN.
-- High Availability, Availability Zones & Database Scaling:
+
+### High Availability, Availability Zones & Database Scaling:
   - Availability Zones: Nodes are automatically distributed across MAAS Availability Zones (`AZ1` through `AZn`) matching their replica index.
   - High Availability (HA): Setting `juju_ha`, `sunbeam_ha`, and `cloud_ha` to `3` or higher achieves full control-plane, storage (Ceph), and network HA across failure domains.
   - Control-Plane Database (`os_multi_mysql`): Supports both a `single` shared MySQL service for smaller footprints and `multi` (one dedicated MySQL service per OpenStack service) for larger multi-node deployments, scaling automatically for HA as Cloud nodes are added.
-- Provisioning Pipeline: Virtual machines are created via the LXD API, enlisted and commissioned in MAAS using LXD power drivers, and tagged with their corresponding Sunbeam roles (`juju-controller`, `sunbeam`, `control`, `compute`, `storage`, `network`) before `12-sunbeam-bootstrap` and `13-sunbeam-deploy` generate the manifest and build the cluster.
 
-## Requirements
-To successfully synthesize this environment, your host machine must meet the following minimum specifications using the *default* topology.
-* CPU: 22 cores
-* RAM: 60 GiB
-* Disk: 310 GiB
-* Network: Outbound internet access for LXD image downloads, MAAS image synchronization, and Sunbeam snap installations
+### Provisioning Pipeline
+Virtual machines are created via the LXD API, enlisted and commissioned in MAAS using LXD power drivers, and tagged with their corresponding Sunbeam roles (`juju-controller`, `sunbeam`, `control`, `compute`, `storage`, `network`) before `12-sunbeam-bootstrap` and `13-sunbeam-deploy` generate the manifest and build the cluster.
 
 ## Additional Features
 This Transcript supports enabling optional Sunbeam features during step `15-sunbeam-addons`. Enabling certain addons will automatically cascade and activate their prerequisite dependencies (for example, `os_add_amphora` automatically enables `os_add_tls`, `os_add_octavia`, `os_add_barbican`, and `os_add_vault`).
@@ -48,6 +47,13 @@ This Transcript supports enabling optional Sunbeam features during step `15-sunb
 | `os_add_maintenance` | maintenance | Enables host maintenance mode capabilities (enables the `feature.maintenance` snap gate) |
 | `os_add_tempest` | validation | Deploys OpenStack Tempest for automated cloud validation and RefStack testing |
 | `os_add_cos` | observability embedded | Deploys the embedded Canonical Observability Stack (Prometheus, Loki, Grafana, Alertmanager, and Traefik). **Sizing requirement:** Allocate at least `>150GiB` on `cloud_disk` per cloud node |
+
+## Requirements
+To successfully synthesize this environment, your host machine must meet the following minimum specifications using the *default* topology.
+* CPU: 22 cores
+* RAM: 60 GiB
+* Disk: 310 GiB
+* Network: Outbound internet access for LXD image downloads, MAAS image synchronization, and Sunbeam snap installations
 
 ## Usage
 Deploy this Transcript using the `se-polymerase` orchestrator. The orchestrator isolates all generated files into a dedicated `[DEPLOY_ID]` directory and automatically handles headless background execution.
