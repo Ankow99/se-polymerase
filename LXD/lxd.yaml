@@ -3,7 +3,7 @@
 
 # ---
 # lxd transcript: Automated scalable cloud-init install of LXD
-# version: 4.0.0
+# version: 4.1.0
 #
 # Synthesized by: Pablo Gonzalez De Greiff @ Canonical
 # ---
@@ -495,6 +495,9 @@ write_files:
         DISK=$(echo "{{ nodes_disks }}" | cut -d' ' -f$i)
         
         lxc init "{{ node_image }}" "$HOST" --vm -c limits.cpu="$CPU" -c limits.memory="$RAM" -d root,size="$DISK" -c cloud-init.user-data="$(cat /tmp/userdata.yaml)"
+        
+        # Inject the writeback cache back into the local root disk
+        lxc config device set "$HOST" root io.cache=writeback
         
         i=$((i + 1))
     done

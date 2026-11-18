@@ -3,7 +3,7 @@
 
 # ---
 # sunbeam transcript: Automated scalable cloud-init install of Sunbeam using MAAS
-# version: 12.1.0
+# version: 12.2.0
 #
 # Synthesized by: Pablo Gonzalez De Greiff @ Canonical
 # ---
@@ -1319,6 +1319,9 @@ write_files:
         
         lxc init "$HOST" --vm --empty -p default -c limits.cpu="$CPU" -c limits.memory="$RAM" -d root,size="$DISK"
         
+        # Inject the writeback cache back into the local root disk
+        lxc config device set "$HOST" root io.cache=writeback
+        
         i=$((i + 1))
     done
     
@@ -1329,7 +1332,7 @@ write_files:
                 # Loop to create and attach multiple OSD disks
                 for i in $(seq 1 {{ cloud_osd_count }}); do
                     lxc storage volume create {{ lxd_pool }} ${HOST}-osd${i}-disk size={{ cloud_osd_disk }} --type=block
-                    lxc config device add $HOST osd${i} disk pool={{ lxd_pool }} source=${HOST}-osd${i}-disk
+                    lxc config device add $HOST osd${i} disk pool={{ lxd_pool }} source=${HOST}-osd${i}-disk io.cache=writeback
                 done
                 
                 # Attach Neutron networking
