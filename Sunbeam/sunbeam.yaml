@@ -55,6 +55,7 @@
 
 # --- OpenStack Settings ---
 {% set custom_os_deployment = "sunbeam" %}          # PROMPT:OpenStack Deployment Name
+{% set custom_os_multi_mysql = False %}             # PROMPT:Enable Multi MySQL Topology
 {% set custom_os_run_demo = True %}                 # PROMPT:Run Demo User Setup
 {% set custom_os_neutron_bridge = "nbr0" %}         # PROMPT:Neutron Bridge Name [BRIDGE:dhcp=true,cidr=os_neutron_cidr]
 {% set custom_os_neutron_cidr = "10.20.0.0/22" %}
@@ -172,6 +173,7 @@
 {% set maas_ip_count = meta.get("maas_ip_count") | default(custom_maas_ip_count, true) | int %}
 
 {% set os_deployment = meta.get("os_deployment") or custom_os_deployment %}
+{% set os_multi_mysql = meta.get("os_multi_mysql") | default(custom_os_multi_mysql, true) | string | lower == "true" %}
 {% set os_run_demo = meta.get("os_run_demo") | default(custom_os_run_demo, true) | string | lower == "true" %}
 {% set os_neutron_bridge = meta.get("os_neutron_bridge") or custom_os_neutron_bridge %}
 {% set os_neutron_cidr = meta.get("os_neutron_cidr") or custom_os_neutron_cidr %}
@@ -1715,7 +1717,7 @@ write_files:
       config:
         proxy:
           proxy_required: false
-        database: single
+        database: {{ 'multi' if os_multi_mysql else 'single' }}
         region: RegionOne
         bootstrap:
           management_cidr: {{ maas_cidr }}

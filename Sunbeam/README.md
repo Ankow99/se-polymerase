@@ -39,6 +39,7 @@ When launching this Transcript, `synth` will parse the payload and optionally pr
 | maas_cidr | 10.10.0.0/22 | Subnet CIDR for the MAAS network |
 | maas_ip_count | 30 | Number of IPs to reserve for the MAAS dynamic DHCP pool |
 | os_deployment | sunbeam | Internal logical name for the Sunbeam deployment |
+| os_multi_mysql | False | Enable Multi MySQL Topology |
 | os_run_demo | True | Run the Sunbeam demo user setup |
 | os_neutron_bridge | nbr0 | Name of the dedicated Neutron network bridge |
 | os_neutron_cidr | 10.20.0.0/22 | Subnet CIDR for the OpenStack provider network |
