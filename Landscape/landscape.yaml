@@ -1004,6 +1004,11 @@ write_files:
     
     source /etc/repro-env
     
+    # Enable writeback cache only when using the 'dir' storage driver
+    POOL_DRIVER=$(lxc storage list --format json | jq -r '.[] | select(.name=="{{ lxd_pool }}") | .driver')
+    CACHE_OPT=""
+    [ "$POOL_DRIVER" = "dir" ] && CACHE_OPT="io.cache=writeback"
+    
     # Create VMs directly via LXD
     echo -e "\n${BYELLOW}-------- Creating empty VMs in LXD... --------${NC}\n"
     
@@ -1015,8 +1020,8 @@ write_files:
         
         lxc init "$HOST" --vm --empty -c limits.cpu="$CPU" -c limits.memory="$RAM" -d root,size="$DISK"
         
-        # Inject the writeback cache back into the local root disk
-        lxc config device set "$HOST" root io.cache=writeback
+        # Inject the writeback cache back into the local root disk only if the backed is dir
+        [ -n "$CACHE_OPT" ] && lxc config device set "$HOST" root "$CACHE_OPT"
         
         i=$((i + 1))
     done
