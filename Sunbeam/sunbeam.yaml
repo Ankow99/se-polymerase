@@ -2024,6 +2024,10 @@ write_files:
             $RUN_AS_LOGIN juju add-ssh-key -m "$model" "{{ ssh_key }}"
         done
 {% endif %}
+        # Configure kubectl alias and bash completion on all cloud nodes
+        echo -e "\n${BYELLOW}-------- Configuring kubectl alias and completion on cloud nodes... --------${NC}\n"
+        
+        $RUN_AS_LOGIN juju exec -m openstack-machines -a sunbeam-machine -- "grep -q 'alias kubectl=' /home/ubuntu/.bashrc || { echo 'alias kubectl=\"sudo k8s kubectl\"' >> /home/ubuntu/.bashrc && sudo k8s kubectl completion bash >> /home/ubuntu/.bashrc; }"
     else
         echo -e "\n${BRED}======================================================================${NC}"
         echo -e "${BRED}[FAILURE] Sunbeam Cluster Deploy failed!${NC}"
