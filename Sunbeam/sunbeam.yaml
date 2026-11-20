@@ -3,7 +3,7 @@
 
 # ---
 # sunbeam transcript: Automated scalable cloud-init install of Sunbeam using MAAS
-# version: 12.2.0
+# version: 13.0.0
 #
 # Synthesized by: Pablo Gonzalez De Greiff @ Canonical
 # ---
@@ -16,7 +16,7 @@
 {% set custom_nested_lxd = True %}
 {% set custom_maas_snap = True %}
 {% set custom_update_n_upgrade = True %}            # PROMPT:Auto Update & Upgrade
-{% set custom_auto_retry = True %}                  # PROMPT:Auto-Retry Once on Sunbeam Timeouts
+{% set custom_max_retries = 2 %}                    # PROMPT:Max Retries on Sunbeam Timeouts
 
 # --- Auth & System ---
 {% set custom_repro_name = "sunbeam" %}
@@ -139,7 +139,7 @@
 {% set nested_lxd = meta.get("nested_lxd") | default(custom_nested_lxd, true) | string | lower == "true" %}
 {% set maas_snap = meta.get("maas_snap") | default(custom_maas_snap, true) | string | lower == "true" %}
 {% set update_n_upgrade = meta.get("update_n_upgrade") | default(custom_update_n_upgrade, true) | string | lower == "true" %}
-{% set auto_retry = meta.get("auto_retry") | default(custom_auto_retry, true) | string | lower == "true" %}
+{% set max_retries = meta.get("max_retries") | default(custom_max_retries, true) | int %}
 
 {% set ssh_key = meta.get("ssh_key") or custom_ssh_key %}
 {% set ssh_import_id = meta.get("ssh_import_id") or custom_ssh_import_id %}
@@ -382,16 +382,16 @@ apt:
 
 snap:
   commands:
-  - snap install yq
-  - snap install lxd --channel={{ lxd_channel }}
+    - snap install yq
+    - snap install lxd --channel={{ lxd_channel }}
 {% if maas_snap %}
-  - snap install maas --channel={{ maas_channel }}
+    - snap install maas --channel={{ maas_channel }}
 {% endif %}
 {% if sunbeam_revision %}
-  - snap install openstack --revision={{ sunbeam_revision }}
-  - snap switch openstack --channel={{ sunbeam_channel }}
+    - snap install openstack --revision={{ sunbeam_revision }}
+    - snap switch openstack --channel={{ sunbeam_channel }}
 {% else %}
-  - snap install openstack --channel={{ sunbeam_channel }}
+    - snap install openstack --channel={{ sunbeam_channel }}
 {% endif %}
 
 package_update: {{ 'true' if update_n_upgrade else 'false' }}
@@ -405,44 +405,44 @@ lxd:
     config:
       core.https_address: '[::]:8444'
     networks:
-    - config:
-        ipv4.address: {{ maas_gateway }}/{{ maas_prefix }}
-        ipv4.dhcp: "false"
-        ipv4.nat: "true"
-        ipv6.address: none
-      description: "Non-DHCP NAT bridge for MAAS"
-      name: {{ maas_bridge }}
-      type: bridge
-      project: default
-    - config:
-        ipv4.address: {{ os_neutron_gateway_ip }}/{{ os_neutron_prefix }}
-        ipv4.dhcp: "true"
-        ipv4.nat: "true"
-        ipv6.address: none
-      description: "Neutron managed bridge"
-      name: {{ os_neutron_bridge }}
-      type: bridge
-      project: default
+      - config:
+          ipv4.address: {{ maas_gateway }}/{{ maas_prefix }}
+          ipv4.dhcp: "false"
+          ipv4.nat: "true"
+          ipv6.address: none
+        description: "Non-DHCP NAT bridge for MAAS"
+        name: {{ maas_bridge }}
+        type: bridge
+        project: default
+      - config:
+          ipv4.address: {{ os_neutron_gateway_ip }}/{{ os_neutron_prefix }}
+          ipv4.dhcp: "true"
+          ipv4.nat: "true"
+          ipv6.address: none
+        description: "Neutron managed bridge"
+        name: {{ os_neutron_bridge }}
+        type: bridge
+        project: default
     storage_pools:
-    - config:
-      description: "Nested Storage"
-      name: default
-      driver: dir
+      - config: {}
+        description: "Nested Storage"
+        name: default
+        driver: dir
     profiles:
-    - config:
-        limits.cpu: "2"
-        limits.memory: 6GiB
-      description: "Default LXD profile"
-      devices:
-        eth0:
-          name: eth0
-          network: {{ maas_bridge }}
-          type: nic
-        root:
-          path: /
-          pool: default
-          type: disk
-      name: default
+      - config:
+          limits.cpu: "2"
+          limits.memory: 6GiB
+        description: "Default LXD profile"
+        devices:
+          eth0:
+            name: eth0
+            network: {{ maas_bridge }}
+            type: nic
+          root:
+            path: /
+            pool: default
+            type: disk
+        name: default
     projects: []
     cluster: null
 {% endif %}
@@ -452,13 +452,14 @@ write_files:
 - path: /etc/profile.d/maas-login.sh
   permissions: '0644'
   content: |
+    # shellcheck shell=sh
     if [ "$USER" = "{{ sys_user }}" ] || [ "$USER" = "root" ]; then
         IS_NESTED_LXD="{{ 'true' if nested_lxd else 'false' }}"
         LXD_PROJECT="{{ lxd_project }}"
         ADMIN_USER="{{ maas_user }}"
         
-        if command -v maas >/dev/null 2>&1 && sudo maas apikey --username {{ maas_user }} >/dev/null 2>&1; then
-            maas login {{ maas_user }} 'http://localhost:5240/MAAS/' $(sudo maas apikey --username {{ maas_user }}) >/dev/null 2>&1
+        if command -v maas >/dev/null 2>&1 && sudo maas apikey --username "$ADMIN_USER" >/dev/null 2>&1; then
+            maas login "$ADMIN_USER" 'http://localhost:5240/MAAS/' "$(sudo maas apikey --username "$ADMIN_USER")" >/dev/null 2>&1
         fi
         
         if command -v lxc >/dev/null 2>&1; then
@@ -472,11 +473,13 @@ write_files:
         fi
         
         if [ -f "/home/{{ sys_user }}/admin-openrc" ]; then
-            source /home/{{ sys_user }}/admin-openrc
+            # shellcheck source=/dev/null
+            . "/home/{{ sys_user }}/admin-openrc"
         fi
         
         if [ -f "/etc/repro-env" ]; then
-            source /etc/repro-env
+            # shellcheck source=/dev/null
+            . /etc/repro-env
         fi
     fi
 
@@ -644,6 +647,17 @@ write_files:
 # START OF HELPER SCRIPTS
 # ==========================================
 
+# Helper: Set or overwrite an exported variable in /etc/repro-env - set_env <KEY> <VALUE>
+- path: /usr/local/bin/set_env
+  permissions: '0755'
+  content: |
+    #!/bin/bash
+    if grep -q "^export $1=" /etc/repro-env; then
+        sed -i "s|^export $1=.*|export $1=\"$2\"|" /etc/repro-env
+    else
+        echo "export $1=\"$2\"" >> /etc/repro-env
+    fi
+
 # Sunbeam helper: Sunbeam function to simplify automated usage - run_sunbeam "command" [logfile]
 - path: /usr/local/bin/run_sunbeam
   permissions: '0755'
@@ -652,6 +666,7 @@ write_files:
     
     # Source the environment variables so it has $RUN_AS_LOGIN, $AUTO_RETRY, $BRED, etc.
     if [ -f "/etc/repro-env" ]; then
+        # shellcheck source=/dev/null
         source /etc/repro-env
     else
         echo "Error: /etc/repro-env not found."
@@ -661,33 +676,48 @@ write_files:
     cmd="$1"
     log_file="$2"
     exit_code=0
+    retries=0
     
     if [ -z "$log_file" ]; then
         # No log file provided, just print cleanly to stdout
         $RUN_AS_LOGIN script -q -e -f -c "$cmd" /dev/null | sed -u -e 's/\r$//' -e 's/.*\r//'
         exit_code=${PIPESTATUS[0]}
     else
-        > "$log_file" # Clean the log file on the first run
+        : > "$log_file" # Clean the log file on the first run
         $RUN_AS_LOGIN script -q -e -f -c "$cmd" /dev/null | sed -u -e 's/\r$//' -e 's/.*\r//' | tee "$log_file"
         exit_code=${PIPESTATUS[0]}
         
-        # Auto-retry once if a Juju timeout is detected
-        if [ "$AUTO_RETRY" = "true" ] && [ $exit_code -ne 0 ] && grep -q "wait timed out after" "$log_file"; then
-            echo -e "\n${BYELLOW}Timeout detected. Waiting 60s and retrying once...${NC}\n"
+        # Auto-retry up to $MAX_RETRIES times if a Juju timeout is detected
+        while [ "${MAX_RETRIES:-0}" -gt 0 ] && [ "$retries" -lt "$MAX_RETRIES" ] && [ "$exit_code" -ne 0 ] && [ "$(grep -c "wait timed out after" "$log_file")" -gt "$retries" ]; do
+            retries=$((retries + 1))
+            echo -e "\n${BYELLOW}Timeout detected. Waiting 60s and retrying ($retries/$MAX_RETRIES)...${NC}\n"
             sleep 60
             $RUN_AS_LOGIN script -q -e -f -c "$cmd" /dev/null | sed -u -e 's/\r$//' -e 's/.*\r//' | tee -a "$log_file"
             exit_code=${PIPESTATUS[0]}
         fi
         
+        # Normalize logfile name to step key (e.g. /tmp/sunbeam-octavia-amphora.log -> OCTAVIA_AMPHORA)
+        step_key=$(basename "$log_file" .log | sed -e 's/^sunbeam-//' -e 's/^amphora-certs$/octavia-amphora/' -e 's/-certs$//' | tr '[:lower:]-' '[:upper:]_')
+        if [[ "$log_file" == *-certs.log ]]; then
+            prev_var="RETRIES_${step_key}"
+            retries=$(( ${!prev_var:-0} + retries ))
+        fi
+        
+        set_env "CURRENT_STEP" "$step_key"
+        set_env "RETRIES_${step_key}" "$retries"
+        
         # Warn user and show logfile command if the run failed
-        if [ $exit_code -ne 0 ]; then
+        if [ "$exit_code" -eq 0 ]; then
+            set_env "STATUS_${step_key}" "succeeded"
+        else
+            set_env "STATUS_${step_key}" "failed"
             echo -e "\n${BRED}Command failed. To check the logfile for errors, run:${NC} less -R $log_file\n"
         fi
     fi
     
     # Return the exit code of 'script', bypassing sed/tee
     echo -ne "\033[?25h" # Force cursor to reappear
-    exit $exit_code
+    exit "$exit_code"
 
 # Sunbeam helper: Wait for an entire model to stabilize - wait_for_model <model>
 - path: /usr/local/bin/wait_for_model
@@ -697,6 +727,7 @@ write_files:
     
     # Source the environment variables
     if [ -f "/etc/repro-env" ]; then
+        # shellcheck source=/dev/null
         source /etc/repro-env
     else
         echo "Error: /etc/repro-env not found."
@@ -727,6 +758,7 @@ write_files:
     
     # Source the environment variables
     if [ -f "/etc/repro-env" ]; then
+        # shellcheck source=/dev/null
         source /etc/repro-env
     else
         echo "Error: /etc/repro-env not found."
@@ -751,6 +783,7 @@ write_files:
     
     if ! $RUN_AS_LOGIN juju wait-for application "$APP" -m "$MODEL" --timeout=20m --query="$QUERY"; then
         echo -e "  [${BRED}!!${NC}] $APP failed to become active within the timeout. Aborting."
+        [ -n "$CURRENT_STEP" ] && set_env "STATUS_${CURRENT_STEP}" "failed"
         exit 1
     else
         echo -e "  [${BGREEN}OK${NC}] $APP is Active!"
@@ -764,18 +797,18 @@ write_files:
     
     # Source the environment variables
     if [ -f "/etc/repro-env" ]; then
+        # shellcheck source=/dev/null
         source /etc/repro-env
     else
         echo "Error: /etc/repro-env not found."
         exit 1
     fi
     
-    echo -e "\n${BYELLOW}-------- Initializing Vault... --------${NC}\n"
-    
     if grep -q "Root token:" "$VAULT_INIT" 2>/dev/null; then
-        echo "Vault already initialized. Using existing keys..."
+        echo -e "\n${BYELLOW}-------- Unsealing Vault... --------${NC}\n"
     else
-        echo "Initializing Vault..."
+        echo -e "\n${BYELLOW}-------- Initializing Vault... --------${NC}\n"
+        
         $RUN_AS_LOGIN bash -c "sunbeam vault init 1 1 > '$VAULT_INIT'"
     fi
     
@@ -787,11 +820,11 @@ write_files:
     
     VAULT_UNIT_COUNT=$($RUN_AS_LOGIN bash -c "sunbeam vault status | grep -c 'vault/'")
     if [ -z "$VAULT_UNIT_COUNT" ] || [ "$VAULT_UNIT_COUNT" -eq 0 ]; then
-        VAULT_UNIT_COUNT={{ cloud_ha }}
+        VAULT_UNIT_COUNT="{{ cloud_ha }}"
     fi
     
     echo "Attempting to unseal $VAULT_UNIT_COUNT Vault unit(s)..."
-    for i in $(seq 1 $VAULT_UNIT_COUNT); do
+    for i in $(seq 1 "$VAULT_UNIT_COUNT"); do
         echo -e "\nSending unseal key to Vault unit $i..."
         run_sunbeam "sunbeam vault unseal '$VAULT_KEY'"
     done
@@ -826,8 +859,8 @@ write_files:
     echo -e "\n${BYELLOW}-------- Generating Runtime Environment... --------${NC}\n"
     
     # 1. Calculate Runtime Variables
-    IP_ADDRESS=$(hostname -I | awk '{print $1}')
-    INTERFACE=$(ip -j route show default | jq -r '.[].dev')
+    INTERFACE=$(ip -j route show default | jq -r '.[0].dev')
+    IP_ADDRESS=$(ip -4 -j addr show dev "$INTERFACE" | jq -r '.[0].addr_info[0].local')
     
     # LXD Setup Logic
 {% if nested_lxd %}
@@ -856,14 +889,13 @@ write_files:
     export LXD_CERT="$LXD_CERT"
     export LXD_KEY="$LXD_KEY"
     export MANIFEST_FILE="/home/{{ sys_user }}/manifest.yaml"
-    export AUTO_RETRY="{{ 'true' if auto_retry else 'false' }}"
     export CERTS_FOLDER="/home/{{ sys_user }}/certs"
     export VAULT_INIT="/home/{{ sys_user }}/vault-init.txt"
+    export MAX_RETRIES="{{ max_retries }}"
     EOF
     
-    # 3. Secure the state file (Only root and sys_user can read it)
-    chown {{ sys_user }}:{{ sys_user }} /etc/repro-env
-    chmod 600 /etc/repro-env
+    # 3. Make the state file readable by all users
+    chmod 644 /etc/repro-env
     
     # 4. Handle Python IP Math (Append output to state file)
     echo -e "\n${BYELLOW}-------- Calculating Payload IP Allocations --------${NC}\n"
@@ -916,6 +948,7 @@ write_files:
         sys.exit(1)
     " >> /etc/repro-env || exit 1
     
+    # shellcheck source=/dev/null
     source /etc/repro-env
     
     echo "MAAS Network CIDR      - {{ maas_cidr }}"
@@ -946,7 +979,14 @@ write_files:
         exec sudo "$0" "$@"
     fi
     
-    source /etc/repro-env
+    # Source the environment variables
+    if [ -f "/etc/repro-env" ]; then
+        # shellcheck source=/dev/null
+        source /etc/repro-env
+    else
+        echo "Error: /etc/repro-env not found."
+        exit 1
+    fi
     
 {% if not maas_snap %}
     
@@ -962,7 +1002,7 @@ write_files:
     echo -e "\n${BYELLOW}-------- Verifying dependencies... --------${NC}\n"
     
     for cmd in lxc jq yq maas sunbeam; do
-        if ! command -v $cmd >/dev/null 2>&1; then
+        if ! command -v "$cmd" >/dev/null 2>&1; then
             echo "CRITICAL ERROR: Required command '$cmd' not found."
             echo "Snap/apt package installation likely failed due to a network error."
             exit 1
@@ -980,7 +1020,19 @@ write_files:
         exec sudo "$0" "$@"
     fi
     
-    source /etc/repro-env
+    # Source the environment variables
+    if [ -f "/etc/repro-env" ]; then
+        # shellcheck source=/dev/null
+        source /etc/repro-env
+    else
+        echo "Error: /etc/repro-env not found."
+        exit 1
+    fi
+    
+    CREATEADMIN_ARGS=(--username "{{ maas_user }}" --password "{{ maas_password }}" --email "{{ maas_email }}")
+{% if ssh_import_id %}
+    CREATEADMIN_ARGS+=(--ssh-import "{{ ssh_import_id }}")
+{% endif %}
     
 {% if maas_snap %}
     
@@ -1003,15 +1055,23 @@ write_files:
     # Initialise snap MAAS
     echo -e "\n${BYELLOW}-------- Initializing snap MAAS... --------${NC}\n"
     
-    maas init region+rack --database-uri "postgres://{{ maas_user }}:{{ maas_password }}@$HOSTNAME/{{ maas_db_name }}" --maas-url http://${IP_ADDRESS}:5240/MAAS
-    maas createadmin --username {{ maas_user }} --password {{ maas_password }} --email {{ maas_email }} {% if ssh_import_id %}--ssh-import {{ ssh_import_id }}{% endif %}
+    if ! maas apikey --username "{{ maas_user }}" >/dev/null 2>&1; then
+        maas init region+rack --database-uri "postgres://{{ maas_user }}:{{ maas_password }}@$HOSTNAME/{{ maas_db_name }}" --maas-url "http://${IP_ADDRESS}:5240/MAAS"
+        maas createadmin "${CREATEADMIN_ARGS[@]}"
+    else
+        echo "MAAS snap already initialized with user '{{ maas_user }}'. Skipping init..."
+    fi
     
 {% else %}
     
     # Initialise deb MAAS
     echo -e "\n${BYELLOW}-------- Initializing deb MAAS... --------${NC}\n"
     
-    maas createadmin --username {{ maas_user }} --password {{ maas_password }} --email {{ maas_email }} {% if ssh_import_id %}--ssh-import {{ ssh_import_id }}{% endif %}
+    if ! maas apikey --username "{{ maas_user }}" >/dev/null 2>&1; then
+        maas createadmin "${CREATEADMIN_ARGS[@]}"
+    else
+        echo "MAAS deb already initialized with user '{{ maas_user }}'. Skipping init..."
+    fi
     
 {% endif %}
     
@@ -1021,7 +1081,7 @@ write_files:
     sleep 30
     ATTEMPTS=0
     MAX_ATTEMPTS=10 # Timeout - 5 min
-    until maas login {{ maas_user }} 'http://localhost:5240/MAAS/' $(maas apikey --username {{ maas_user }}) > /dev/null 2>&1; do
+    until APIKEY=$(maas apikey --username "{{ maas_user }}" 2>/dev/null) && [ -n "$APIKEY" ] && maas login "{{ maas_user }}" 'http://localhost:5240/MAAS/' "$APIKEY" > /dev/null 2>&1; do
         if [ $ATTEMPTS -ge $MAX_ATTEMPTS ]; then
             echo -e "${BRED}[FATAL] Timeout waiting for MAAS API to become ready. Aborting.${NC}\n"
             exit 1
@@ -1034,35 +1094,36 @@ write_files:
     # Grab API key and login as admin
     echo -e "\n${BYELLOW}-------- Logging in as '{{ maas_user }}' user... --------${NC}\n"
     
-    export APIKEY=$(maas apikey --username {{ maas_user }})
+    APIKEY=$(maas apikey --username "{{ maas_user }}")
+    export APIKEY
     
     # Export the APIKEY back to the environment state for later scripts
-    if ! grep -q "APIKEY" /etc/repro-env; then
-        echo "export APIKEY=\"$APIKEY\"" >> /etc/repro-env
-    fi
+    set_env "APIKEY" "$APIKEY"
     
-    maas login {{ maas_user }} 'http://localhost:5240/MAAS/' $APIKEY
-    maas {{ maas_user }} maas set-config name=maas_name value={{ lxd_project }}
-    maas {{ maas_user }} maas set-config name=completed_intro value=true
+    maas login "{{ maas_user }}" 'http://localhost:5240/MAAS/' "$APIKEY"
+    maas "{{ maas_user }}" maas set-config name=maas_name value="{{ lxd_project }}"
+    maas "{{ maas_user }}" maas set-config name=completed_intro value=true
     
     # Apply global kernel boot parameters
-    maas {{ maas_user }} maas set-config name=kernel_opts value="console=tty1 console=ttyS0,115200 loglevel=4 fsck.mode=auto fsck.repair=yes systemd.show_status=false mitigations=auto nosplash"
+    maas "{{ maas_user }}" maas set-config name=kernel_opts value="console=tty1 console=ttyS0,115200 loglevel=4 fsck.mode=auto fsck.repair=yes systemd.show_status=false mitigations=auto nosplash"
     
     # Automatically create and add ssh keys to MAAS
     echo -e "\n${BYELLOW}-------- Generating SSH keys and adding them to MAAS... --------${NC}\n"
     
     if [ ! -f "/home/{{ sys_user }}/.ssh/id_rsa" ]; then
         ssh-keygen -q -t rsa -N "" -f "/home/{{ sys_user }}/.ssh/id_rsa"
-        chown {{ sys_user }}:{{ sys_user }} /home/{{ sys_user }}/.ssh/id_rsa /home/{{ sys_user }}/.ssh/id_rsa.pub
-        chmod 600 /home/{{ sys_user }}/.ssh/id_rsa
-        chmod 644 /home/{{ sys_user }}/.ssh/id_rsa.pub
-        maas {{ maas_user }} sshkeys create key="$(cat /home/{{ sys_user }}/.ssh/id_rsa.pub)"
+        chown "{{ sys_user }}:{{ sys_user }}" "/home/{{ sys_user }}/.ssh/id_rsa" "/home/{{ sys_user }}/.ssh/id_rsa.pub"
+        chmod 600 "/home/{{ sys_user }}/.ssh/id_rsa"
+        chmod 644 "/home/{{ sys_user }}/.ssh/id_rsa.pub"
+        maas "{{ maas_user }}" sshkeys create key="$(cat "/home/{{ sys_user }}/.ssh/id_rsa.pub")"
     else
         echo "SSH keys already exist. Skipping generation to prevent lockout..."
     fi
     
 {% if ssh_key %}
-    maas {{ maas_user }} sshkeys create key="{{ ssh_key }}"
+    if ! maas "{{ maas_user }}" sshkeys read | jq -e --arg key "{{ ssh_key }}" '.[] | select(.key == $key)' >/dev/null 2>&1; then
+        maas "{{ maas_user }}" sshkeys create key="{{ ssh_key }}"
+    fi
 {% endif %}
 
 - path: /usr/local/bin/03-maas-networking
@@ -1075,7 +1136,14 @@ write_files:
         exec sudo "$0" "$@"
     fi
     
-    source /etc/repro-env
+    # Source the environment variables
+    if [ -f "/etc/repro-env" ]; then
+        # shellcheck source=/dev/null
+        source /etc/repro-env
+    else
+        echo "Error: /etc/repro-env not found."
+        exit 1
+    fi
     
     # Wait for MAAS to finish background network discovery
     echo -e "\n${BYELLOW}-------- Waiting for MAAS to discover subnet '{{ maas_cidr }}'... --------${NC}\n"
@@ -1086,7 +1154,7 @@ write_files:
         missing_subnet=false
         
         # Check if the subnet exists in the MAAS database
-        if maas {{ maas_user }} subnets read | jq -e ".[] | select(.cidr == \"{{ maas_cidr }}\")" > /dev/null 2>&1; then
+        if maas "{{ maas_user }}" subnets read | jq -e ".[] | select(.cidr == \"{{ maas_cidr }}\")" > /dev/null 2>&1; then
             echo -e "  [${BGREEN}OK${NC}] Subnet '{{ maas_cidr }}' has been discovered!"
         else
             echo "  [..] Subnet '{{ maas_cidr }}' is currently syncing/discovering..."
@@ -1112,45 +1180,58 @@ write_files:
     # Configure MAAS networking (set gateways, vlans, DHCP on etc)
     echo -e "\n${BYELLOW}-------- Configuring MAAS networking... --------${NC}\n"
     
-    export FABRIC_ID=$(maas {{ maas_user }} subnet read "{{ maas_cidr }}" | jq -r ".vlan.fabric_id")
-    export VLAN_TAG=$(maas {{ maas_user }} subnet read "{{ maas_cidr }}" | jq -r ".vlan.vid")
-    export PRIMARY_RACK=$(maas {{ maas_user }} rack-controllers read | jq -r ".[] | .system_id" | head -n 1)
+    FABRIC_ID=$(maas "{{ maas_user }}" subnet read "{{ maas_cidr }}" | jq -r ".vlan.fabric_id")
+    VLAN_TAG=$(maas "{{ maas_user }}" subnet read "{{ maas_cidr }}" | jq -r ".vlan.vid")
+    PRIMARY_RACK=$(maas "{{ maas_user }}" rack-controllers read | jq -r ".[] | .system_id" | head -n 1)
+    export FABRIC_ID VLAN_TAG PRIMARY_RACK
     
-    maast {{ maas_user }} subnet update {{ maas_cidr }} gateway_ip=$MAAS_GATEWAY
-    maast {{ maas_user }} ipranges create type=dynamic start_ip=$MAAS_RESERVED_IP_START end_ip=$MAAS_RESERVED_IP_END
-    maast {{ maas_user }} ipranges create type=reserved start_ip=$OS_INTERNAL_API_IP_START end_ip=$OS_INTERNAL_API_IP_END comment="{{ os_deployment }}-internal-api"
-    maast {{ maas_user }} ipranges create type=reserved start_ip=$OS_PUBLIC_API_IP_START end_ip=$OS_PUBLIC_API_IP_END comment="{{ os_deployment }}-public-api"
+    maast "{{ maas_user }}" subnet update "{{ maas_cidr }}" gateway_ip="$MAAS_GATEWAY"
+    if ! maas "{{ maas_user }}" ipranges read | jq -e --arg ip "$MAAS_RESERVED_IP_START" '.[] | select(.start_ip==$ip)' >/dev/null 2>&1; then
+        maast "{{ maas_user }}" ipranges create type=dynamic start_ip="$MAAS_RESERVED_IP_START" end_ip="$MAAS_RESERVED_IP_END"
+    fi
+    if ! maas "{{ maas_user }}" ipranges read | jq -e --arg ip "$OS_INTERNAL_API_IP_START" '.[] | select(.start_ip==$ip)' >/dev/null 2>&1; then
+        maast "{{ maas_user }}" ipranges create type=reserved start_ip="$OS_INTERNAL_API_IP_START" end_ip="$OS_INTERNAL_API_IP_END" comment="{{ os_deployment }}-internal-api"
+    fi
+    if ! maas "{{ maas_user }}" ipranges read | jq -e --arg ip "$OS_PUBLIC_API_IP_START" '.[] | select(.start_ip==$ip)' >/dev/null 2>&1; then
+        maast "{{ maas_user }}" ipranges create type=reserved start_ip="$OS_PUBLIC_API_IP_START" end_ip="$OS_PUBLIC_API_IP_END" comment="{{ os_deployment }}-public-api"
+    fi
 {% if os_add_masakari %}
-    #maast {{ maas_user }} ipranges create type=reserved start_ip=$OS_INST_REC_IP end_ip=$OS_INST_REC_IP comment="{{ os_deployment }}-storage-ippool"
+    #if ! maas "{{ maas_user }}" ipranges read | jq -e --arg ip "$OS_INST_REC_IP" '.[] | select(.start_ip==$ip)' >/dev/null 2>&1; then
+    #    maast "{{ maas_user }}" ipranges create type=reserved start_ip="$OS_INST_REC_IP" end_ip="$OS_INST_REC_IP" comment="{{ os_deployment }}-storage-ippool"
+    #fi
 {% endif %}
-    maast {{ maas_user }} vlan update $FABRIC_ID $VLAN_TAG dhcp_on=true primary_rack=$PRIMARY_RACK
-    maast {{ maas_user }} maas set-config name=upstream_dns value={{ maas_dns }}
+    maast "{{ maas_user }}" vlan update "$FABRIC_ID" "$VLAN_TAG" dhcp_on=true primary_rack="$PRIMARY_RACK"
+    maast "{{ maas_user }}" maas set-config name=upstream_dns value="{{ maas_dns }}"
     
     # Map network spaces to cloud networks
     echo -e "\n${BYELLOW}-------- Mapping network spaces to cloud networks... --------${NC}\n"
     
-    maast {{ maas_user }} spaces create name={{ maas_space }}
-    maast {{ maas_user }} vlan update $FABRIC_ID $VLAN_TAG space={{ maas_space }}
+    if ! maas "{{ maas_user }}" spaces read | jq -e '.[] | select(.name=="{{ maas_space }}")' >/dev/null 2>&1; then
+        maast "{{ maas_user }}" spaces create name="{{ maas_space }}"
+    fi
+    maast "{{ maas_user }}" vlan update "$FABRIC_ID" "$VLAN_TAG" space="{{ maas_space }}"
     
     # Set the MAAS domain name
     echo -e "\n${BYELLOW}-------- Configuring MAAS domain '{{ tld if tld else 'maas' }}'... --------${NC}\n"
     
     # Check if MAAS auto-created the domain during initialization
-    EXISTING_DOMAIN_ID=$(maas {{ maas_user }} domains read | jq -r '.[] | select(.name=="'{{ tld if tld else 'maas' }}'") | .id')
+    EXISTING_DOMAIN_ID=$(maas "{{ maas_user }}" domains read | jq -r --arg domain "{{ tld if tld else 'maas' }}" '.[] | select(.name==$domain) | .id')
     
     if [ -n "$EXISTING_DOMAIN_ID" ] && [ "$EXISTING_DOMAIN_ID" != "null" ]; then
         echo "Domain '{{ tld if tld else 'maas' }}' already exists! Setting as default and authoritative..."
-        export MAAS_DOMAIN_NAME_ID=$EXISTING_DOMAIN_ID
-        maast {{ maas_user }} domain update $MAAS_DOMAIN_NAME_ID authoritative=true
-        maast {{ maas_user }} domain set-default $MAAS_DOMAIN_NAME_ID
+        MAAS_DOMAIN_NAME_ID="$EXISTING_DOMAIN_ID"
+        export MAAS_DOMAIN_NAME_ID
+        maast "{{ maas_user }}" domain update "$MAAS_DOMAIN_NAME_ID" authoritative=true
+        maast "{{ maas_user }}" domain set-default "$MAAS_DOMAIN_NAME_ID"
     else
         echo "Domain not found. Renaming default domain to '{{ tld if tld else 'maas' }}'..."
-        export MAAS_DOMAIN_NAME_ID=$(maas {{ maas_user }} domains read | jq -r '.[] | select(.is_default==true) | .id')
-        maast {{ maas_user }} domain update $MAAS_DOMAIN_NAME_ID name={{ tld if tld else 'maas' }} authoritative=true
+        MAAS_DOMAIN_NAME_ID=$(maas "{{ maas_user }}" domains read | jq -r '.[] | select(.is_default==true) | .id')
+        export MAAS_DOMAIN_NAME_ID
+        maast "{{ maas_user }}" domain update "$MAAS_DOMAIN_NAME_ID" name="{{ tld if tld else 'maas' }}" authoritative=true
     fi
     
     # Update the rack controller to use the correct domain
-    maast {{ maas_user }} rack-controller update $PRIMARY_RACK domain={{ tld if tld else 'maas' }}
+    maast "{{ maas_user }}" rack-controller update "$PRIMARY_RACK" domain="{{ tld if tld else 'maas' }}"
     
     # Add MAAS DNS to host
     cat <<EOF > /etc/netplan/99-maas-dns.yaml
@@ -1168,10 +1249,8 @@ write_files:
     netplan apply
     
     # Persist dynamic networking variables
-    cat <<EOF >> /etc/repro-env
-    export PRIMARY_RACK="$PRIMARY_RACK"
-    export MAAS_DOMAIN_NAME_ID="$MAAS_DOMAIN_NAME_ID"
-    EOF
+    set_env "PRIMARY_RACK" "$PRIMARY_RACK"
+    set_env "MAAS_DOMAIN_NAME_ID" "$MAAS_DOMAIN_NAME_ID"
 
 - path: /usr/local/bin/04-maas-images
   permissions: '0755'
@@ -1183,17 +1262,29 @@ write_files:
         exec sudo "$0" "$@"
     fi
     
-    source /etc/repro-env
+    # Source the environment variables
+    if [ -f "/etc/repro-env" ]; then
+        # shellcheck source=/dev/null
+        source /etc/repro-env
+    else
+        echo "Error: /etc/repro-env not found."
+        exit 1
+    fi
     
     # Configure boot images
     echo -e "\n${BYELLOW}-------- Configuring MAAS boot images... --------${NC}\n"
     
-    export BOOT_SOURCE_ID=$(maas {{ maas_user }} boot-sources read | jq -r '.[0].id')
+    BOOT_SOURCE_ID=$(maas "{{ maas_user }}" boot-sources read | jq -r '.[0].id')
+    export BOOT_SOURCE_ID
     
-    for RELEASE in {{ maas_images }}; do
-        maast {{ maas_user }} boot-source-selections create $BOOT_SOURCE_ID os="ubuntu" release="$RELEASE" arches="amd64" labels='*' subarches='*'
+    EXISTING_RELEASES=$(maas "{{ maas_user }}" boot-source-selections read "$BOOT_SOURCE_ID" | jq -r '.[].release')
+    MAAS_IMAGES=({{ maas_images }})
+    for RELEASE in "${MAAS_IMAGES[@]}"; do
+        if ! echo "$EXISTING_RELEASES" | grep -qx "$RELEASE"; then
+            maast "{{ maas_user }}" boot-source-selections create "$BOOT_SOURCE_ID" os="ubuntu" release="$RELEASE" arches="amd64" labels='*' subarches='*'
+        fi
     done
-    maas {{ maas_user }} boot-resources import
+    maas "{{ maas_user }}" boot-resources import
     
     # Wait for MAAS boot images to be ready
     echo -e "\n\n${BYELLOW}-------- Waiting for all MAAS boot images to sync... --------${NC}\n"
@@ -1203,9 +1294,9 @@ write_files:
     while true; do
         missing_images=false
         
-        importing_status=$(maas {{ maas_user }} boot-resources is-importing)
-        requested_releases=$(maas {{ maas_user }} boot-source-selections read $BOOT_SOURCE_ID | jq -r '.[].release')
-        downloaded_releases=$(maas {{ maas_user }} boot-resources read | jq -r '.[].name' | sort | uniq)
+        importing_status=$(maas "{{ maas_user }}" boot-resources is-importing)
+        requested_releases=$(maas "{{ maas_user }}" boot-source-selections read "$BOOT_SOURCE_ID" | jq -r '.[].release')
+        downloaded_releases=$(maas "{{ maas_user }}" boot-resources read | jq -r '.[].name' | sort | uniq)
         
         # Check if the image has been downloaded
         for release in $requested_releases; do
@@ -1227,7 +1318,7 @@ write_files:
         if [ "$missing_images" = "false" ]; then
             clean_list=$(echo "$requested_releases" | tr '\n' ' ')
             echo "All selected boot images ( $clean_list) are fully synced!"
-            maast {{ maas_user }} boot-resources read
+            maast "{{ maas_user }}" boot-resources read
             break
         fi
         
@@ -1251,7 +1342,14 @@ write_files:
         exec sudo "$0" "$@"
     fi
     
-    source /etc/repro-env
+    # Source the environment variables
+    if [ -f "/etc/repro-env" ]; then
+        # shellcheck source=/dev/null
+        source /etc/repro-env
+    else
+        echo "Error: /etc/repro-env not found."
+        exit 1
+    fi
     
 {% if nested_lxd %}
     
@@ -1259,14 +1357,14 @@ write_files:
     echo -e "\n${BYELLOW}-------- Generating trust certificate for local LXD... --------${NC}\n"
     
     if [ ! -f "$LXD_CERT" ]; then
-        openssl req -x509 -newkey rsa:2048 -keyout $LXD_KEY -out $LXD_CERT -nodes -days 3650 -subj "/CN=lxd-local"
-        lxc config trust add $LXD_CERT --name lxd-local
+        openssl req -x509 -newkey rsa:2048 -keyout "$LXD_KEY" -out "$LXD_CERT" -nodes -days 3650 -subj "/CN=lxd-local"
+        lxc config trust add "$LXD_CERT" --name lxd-local
         
         # Provide certs to user context
-        $RUN_AS_LOGIN mkdir -p /home/{{ sys_user }}/snap/lxd/common/config
-        cp $LXD_CERT /home/{{ sys_user }}/snap/lxd/common/config/client.crt
-        cp $LXD_KEY /home/{{ sys_user }}/snap/lxd/common/config/client.key
-        chown -R {{ sys_user }}:{{ sys_user }} /home/{{ sys_user }}/snap/lxd/common/config
+        $RUN_AS_LOGIN mkdir -p "/home/{{ sys_user }}/snap/lxd/common/config"
+        cp "$LXD_CERT" "/home/{{ sys_user }}/snap/lxd/common/config/client.crt"
+        cp "$LXD_KEY" "/home/{{ sys_user }}/snap/lxd/common/config/client.key"
+        chown -R "{{ sys_user }}:{{ sys_user }}" "/home/{{ sys_user }}/snap/lxd/common/config"
     else
         echo "LXD trust certificate already exists. Skipping generation to preserve MAAS power controls..."
     fi
@@ -1276,16 +1374,20 @@ write_files:
     # Setup external LXD client certificates and remote connection
     echo -e "\n${BYELLOW}-------- Configuring remote LXD connection... --------${NC}\n"
     
-    lxc remote add host-lxd https://$LXD_ADDR --accept-certificate
+    if ! lxc remote list --format csv | grep -qE '^host-lxd( \(current\))?,'; then
+        lxc remote add host-lxd "https://$LXD_ADDR" --accept-certificate
+    fi
     lxc remote switch host-lxd
     
     # Provide certs to user context
-    $RUN_AS_LOGIN mkdir -p /home/{{ sys_user }}/snap/lxd/common/config
-    cp $LXD_CERT /home/{{ sys_user }}/snap/lxd/common/config/client.crt
-    cp $LXD_KEY /home/{{ sys_user }}/snap/lxd/common/config/client.key
-    chown -R {{ sys_user }}:{{ sys_user }} /home/{{ sys_user }}/snap/lxd/common/config
+    $RUN_AS_LOGIN mkdir -p "/home/{{ sys_user }}/snap/lxd/common/config"
+    cp "$LXD_CERT" "/home/{{ sys_user }}/snap/lxd/common/config/client.crt"
+    cp "$LXD_KEY" "/home/{{ sys_user }}/snap/lxd/common/config/client.key"
+    chown -R "{{ sys_user }}:{{ sys_user }}" "/home/{{ sys_user }}/snap/lxd/common/config"
     
-    $RUN_AS_LOGIN lxc remote add host-lxd https://$LXD_ADDR --accept-certificate
+    if ! $RUN_AS_LOGIN lxc remote list --format csv | grep -qE '^host-lxd( \(current\))?,'; then
+        $RUN_AS_LOGIN lxc remote add host-lxd "https://$LXD_ADDR" --accept-certificate
+    fi
     
 {% endif %}
     
@@ -1294,7 +1396,7 @@ write_files:
     # Switch to LXD MAAS project
     echo -e "\n${BYELLOW}-------- Switching to LXD '{{ lxd_project }}' project... --------${NC}\n"
     
-    lxc project switch {{ lxd_project }}
+    lxc project switch "{{ lxd_project }}"
     
 {% endif %}
 
@@ -1308,7 +1410,14 @@ write_files:
         exec sudo "$0" "$@"
     fi
     
-    source /etc/repro-env
+    # Source the environment variables
+    if [ -f "/etc/repro-env" ]; then
+        # shellcheck source=/dev/null
+        source /etc/repro-env
+    else
+        echo "Error: /etc/repro-env not found."
+        exit 1
+    fi
     
     # Enable writeback cache only when using the 'dir' storage driver
     POOL_DRIVER=$(lxc storage list --format json | jq -r '.[] | select(.name=="{{ lxd_pool }}") | .driver')
@@ -1319,12 +1428,17 @@ write_files:
     echo -e "\n${BYELLOW}-------- Creating empty VMs in LXD... --------${NC}\n"
     
     i=1
-    for HOST in {{ nodes_hostnames }}; do
+    NODES_HOSTNAMES=({{ nodes_hostnames }})
+    for HOST in "${NODES_HOSTNAMES[@]}"; do
         CPU=$(echo "{{ nodes_cpus }}" | cut -d' ' -f$i)
         RAM=$(echo "{{ nodes_rams }}" | cut -d' ' -f$i)
         DISK=$(echo "{{ nodes_disks }}" | cut -d' ' -f$i)
         
-        lxc init "$HOST" --vm --empty -p default -c limits.cpu="$CPU" -c limits.memory="$RAM" -d root,size="$DISK"
+        if ! lxc info "$HOST" >/dev/null 2>&1; then
+            lxc init "$HOST" --vm --empty -p default -c limits.cpu="$CPU" -c limits.memory="$RAM" -d root,size="$DISK"
+        else
+            echo "VM '$HOST' already exists. Skipping creation..."
+        fi
         
         # Inject the writeback cache back into the local root disk only if the backed is dir
         [ -n "$CACHE_OPT" ] && lxc config device set "$HOST" root "$CACHE_OPT"
@@ -1333,17 +1447,17 @@ write_files:
     done
     
     # Attach specific extra devices to the cloud nodes
-    for HOST in {{ nodes_hostnames }}; do
+    for HOST in "${NODES_HOSTNAMES[@]}"; do
         case "$HOST" in
             cloud-*)
                 # Loop to create and attach multiple OSD disks
-                for i in $(seq 1 {{ cloud_osd_count }}); do
-                    lxc storage volume create {{ lxd_pool }} ${HOST}-osd${i}-disk size={{ cloud_osd_disk }} --type=block
-                    lxc config device add $HOST osd${i} disk pool={{ lxd_pool }} source=${HOST}-osd${i}-disk $CACHE_OPT
+                for i in $(seq 1 "{{ cloud_osd_count }}"); do
+                    lxc storage volume create "{{ lxd_pool }}" "${HOST}-osd${i}-disk" size="{{ cloud_osd_disk }}" --type=block
+                    lxc config device add "$HOST" "osd${i}" disk pool="{{ lxd_pool }}" source="${HOST}-osd${i}-disk" io.cache=writeback
                 done
                 
                 # Attach Neutron networking
-                lxc config device add $HOST eth1 nic nictype=bridged parent="{{ os_neutron_bridge }}"
+                lxc config device add "$HOST" eth1 nic nictype=bridged parent="{{ os_neutron_bridge }}"
                 ;;
         esac
     done
@@ -1358,13 +1472,24 @@ write_files:
         exec sudo "$0" "$@"
     fi
     
-    source /etc/repro-env
+    # Source the environment variables
+    if [ -f "/etc/repro-env" ]; then
+        # shellcheck source=/dev/null
+        source /etc/repro-env
+    else
+        echo "Error: /etc/repro-env not found."
+        exit 1
+    fi
     
     # Start VMs to trigger PXE Boot & Enlistment
     echo -e "\n${BYELLOW}-------- Starting VMs for MAAS enlistment... --------${NC}\n"
     
-    for HOST in {{ nodes_hostnames }}; do
-        lxc start $HOST
+    NODES_HOSTNAMES=({{ nodes_hostnames }})
+    for HOST in "${NODES_HOSTNAMES[@]}"; do
+        if [ "$(lxc info "$HOST" | awk '/Status:/{print $2}')" != "RUNNING" ]; then
+            lxc start "$HOST"
+            echo "Started '$HOST'..."
+        fi
     done
     
     # Wait for VMs to enlist in MAAS via MAC
@@ -1375,23 +1500,23 @@ write_files:
     while true; do
         all_enlisted=true
         
-        for HOST in {{ nodes_hostnames }}; do
+        for HOST in "${NODES_HOSTNAMES[@]}"; do
             # Fetch the dynamic MAC to identify the machine in MAAS
-            MAC=$(lxc config get $HOST volatile.eth0.hwaddr)
+            MAC=$(lxc config get "$HOST" volatile.eth0.hwaddr)
             if [ -z "$MAC" ]; then
                 echo "  [..] Waiting for LXD to assign MAC address to '$HOST'..."
                 all_enlisted=false
                 continue
             fi
-            SYSTEM_ID=$(maas {{ maas_user }} machines read mac_address=$MAC | jq -r '.[0].system_id')
-            status=$(maas {{ maas_user }} machines read mac_address=$MAC | jq -r '.[0].status_name')
+            SYSTEM_ID=$(maas "{{ maas_user }}" machines read mac_address="$MAC" | jq -r '.[0].system_id')
+            status=$(maas "{{ maas_user }}" machines read mac_address="$MAC" | jq -r '.[0].status_name')
             
-            if [ "$SYSTEM_ID" != "null" ] && [ "$status" = "New" ]; then
+            if [ "$SYSTEM_ID" != "null" ] && [[ "$status" =~ ^(New|Commissioning|Ready|Allocated|Deployed)$ ]]; then
                 echo -e "  [${BGREEN}OK${NC}] '$HOST' was enlisted with ID '$SYSTEM_ID'!"
             elif [[ "$status" == *"Failed"* ]]; then
                 # Automatically retry testing on failure
                 echo -e "  [${BYELLOW}!!${NC}] '$HOST' is currently '$status'... Retrying!"
-                maast {{ maas_user }} machine test $SYSTEM_ID
+                maast "{{ maas_user }}" machine test "$SYSTEM_ID"
                 all_enlisted=false
             else
                 if [ "$status" = "null" ]; then
@@ -1430,41 +1555,49 @@ write_files:
         exec sudo "$0" "$@"
     fi
     
-    source /etc/repro-env
+    # Source the environment variables
+    if [ -f "/etc/repro-env" ]; then
+        # shellcheck source=/dev/null
+        source /etc/repro-env
+    else
+        echo "Error: /etc/repro-env not found."
+        exit 1
+    fi
     
     # Create Availability Zones in MAAS
     echo -e "\n${BYELLOW}-------- Creating Availability Zones... --------${NC}\n"
-    for i in $(seq 1 {{ max_ha }}); do
+    for i in $(seq 1 "{{ max_ha }}"); do
         ZONE="AZ$i"
-        if ! maas {{ maas_user }} zones read | jq -e ".[] | select(.name==\"$ZONE\")" > /dev/null; then
+        if ! maas "{{ maas_user }}" zones read | jq -e --arg zone "$ZONE" '.[] | select(.name==$zone)' > /dev/null; then
             echo "Creating zone: $ZONE"
-            maast {{ maas_user }} zones create name="$ZONE" description="Auto-generated AZ for HA Node $i"
+            maast "{{ maas_user }}" zones create name="$ZONE" description="Auto-generated AZ for HA Node $i"
         else
-            echo "Zone $ZONE already exists."
+            echo "Zone '$ZONE' already exists."
         fi
     done
     
     echo "Assigning Primary MAAS Controller to AZ1..."
-    maast {{ maas_user }} rack-controller update "$PRIMARY_RACK" zone="AZ1"
+    maast "{{ maas_user }}" rack-controller update "$PRIMARY_RACK" zone="AZ1"
     
     # Find machines by MAC and set hostnames, domain, and explicit LXD power controls
     echo -e "\n${BYELLOW}-------- Configuring hostnames and power controls... --------${NC}\n"
     
-    LXD_CERT_CONTENT=$(cat $LXD_CERT)
-    LXD_KEY_CONTENT=$(cat $LXD_KEY)
+    LXD_CERT_CONTENT=$(cat "$LXD_CERT")
+    LXD_KEY_CONTENT=$(cat "$LXD_KEY")
     
-    for HOST in {{ nodes_hostnames }}; do
-        MAC=$(lxc config get $HOST volatile.eth0.hwaddr)
-        SYSTEM_ID=$(maas {{ maas_user }} machines read mac_address=$MAC | jq -r '.[0].system_id')
+    NODES_HOSTNAMES=({{ nodes_hostnames }})
+    for HOST in "${NODES_HOSTNAMES[@]}"; do
+        MAC=$(lxc config get "$HOST" volatile.eth0.hwaddr)
+        SYSTEM_ID=$(maas "{{ maas_user }}" machines read mac_address="$MAC" | jq -r '.[0].system_id')
         
         NODE_NUM=$(echo "$HOST" | awk -F'-' '{print $NF}')
         TARGET_ZONE="AZ${NODE_NUM}"
         
         # Force the MAAS hostname, domain, and explicit LXD power controls
-        maast {{ maas_user }} machine update $SYSTEM_ID \
-          hostname=$HOST \
-          domain=$MAAS_DOMAIN_NAME_ID \
-          zone=$TARGET_ZONE \
+        maast "{{ maas_user }}" machine update "$SYSTEM_ID" \
+          hostname="$HOST" \
+          domain="$MAAS_DOMAIN_NAME_ID" \
+          zone="$TARGET_ZONE" \
           power_type="lxd" \
           power_parameters_power_address="https://$LXD_ADDR" \
           power_parameters_certificate="$LXD_CERT_CONTENT" \
@@ -1483,14 +1616,29 @@ write_files:
         exec sudo "$0" "$@"
     fi
     
-    source /etc/repro-env
+    # Source the environment variables
+    if [ -f "/etc/repro-env" ]; then
+        # shellcheck source=/dev/null
+        source /etc/repro-env
+    else
+        echo "Error: /etc/repro-env not found."
+        exit 1
+    fi
     
     # Commission machines
     echo -e "\n${BYELLOW}-------- Commissioning machines... --------${NC}\n"
     
-    for HOST in {{ nodes_hostnames }}; do
-        SYSTEM_ID=$(maas {{ maas_user }} machines read hostname=$HOST | jq -r '.[0].system_id')
-        maast {{ maas_user }} machine commission $SYSTEM_ID
+    NODES_HOSTNAMES=({{ nodes_hostnames }})
+    for HOST in "${NODES_HOSTNAMES[@]}"; do
+        MACHINE_JSON=$(maas "{{ maas_user }}" machines read hostname="$HOST")
+        SYSTEM_ID=$(echo "$MACHINE_JSON" | jq -r '.[0].system_id')
+        STATUS=$(echo "$MACHINE_JSON" | jq -r '.[0].status_name')
+        
+        if [ "$STATUS" = "New" ] || [[ "$STATUS" == *"Failed"* ]]; then
+            maast "{{ maas_user }}" machine commission "$SYSTEM_ID"
+        else
+            echo "Skipping commission for '$HOST' (already '$STATUS')."
+        fi
     done
     
     # Wait for VMs to be ready
@@ -1502,25 +1650,25 @@ write_files:
     while true; do
         all_ready=true
         
-        for HOST in {{ nodes_hostnames }}; do
+        for HOST in "${NODES_HOSTNAMES[@]}"; do
             # Query MAAS for the status
-            status=$(maas {{ maas_user }} machines read hostname=$HOST | jq -r '.[0].status_name')
+            status=$(maas "{{ maas_user }}" machines read hostname="$HOST" | jq -r '.[0].status_name')
             
             if [ "$status" = "Ready" ]; then
                 echo -e "  [${BGREEN}OK${NC}] '$HOST' is '$status'!"
             elif [[ "$status" == *"Failed"* ]]; then
                 # Automatically retry commissioning on failure
                 echo -e "  [${BYELLOW}!!${NC}] '$HOST' is currently '$status'... Retrying!"
-                SYSTEM_ID=$(maas {{ maas_user }} machines read hostname=$HOST | jq -r '.[0].system_id')
-                maast {{ maas_user }} machine commission $SYSTEM_ID
+                SYSTEM_ID=$(maas "{{ maas_user }}" machines read hostname="$HOST" | jq -r '.[0].system_id')
+                maast "{{ maas_user }}" machine commission "$SYSTEM_ID"
                 all_ready=false
             elif [[ "$status" == *"Commissioning"* ]] && [ $ATTEMPTS -eq $HALF_ATTEMPTS ]; then
                 # If stuck for 15 minutes, abort the current operation and try again
                 echo -e "  [${BYELLOW}!!${NC}] '$HOST' has been '$status' for too long. Aborting and retrying!"
-                SYSTEM_ID=$(maas {{ maas_user }} machines read hostname=$HOST | jq -r '.[0].system_id')
-                maast {{ maas_user }} machine abort $SYSTEM_ID
+                SYSTEM_ID=$(maas "{{ maas_user }}" machines read hostname="$HOST" | jq -r '.[0].system_id')
+                maast "{{ maas_user }}" machine abort "$SYSTEM_ID"
                 sleep 5
-                maast {{ maas_user }} machine commission $SYSTEM_ID
+                maast "{{ maas_user }}" machine commission "$SYSTEM_ID"
                 all_ready=false
             else
                 echo "  [..] '$HOST' is currently '$status'..."
@@ -1531,7 +1679,7 @@ write_files:
         # If the flag is still true, everyone is ready -> break the loop
         if [ "$all_ready" = true ]; then
             echo "All VMs are Ready!"
-            maast {{ maas_user }} machines read
+            maast "{{ maas_user }}" machines read
             netplan apply # Update MAAS DNS record
             sleep 10
             break
@@ -1557,76 +1705,83 @@ write_files:
         exec sudo "$0" "$@"
     fi
     
-    source /etc/repro-env
+    # Source the environment variables
+    if [ -f "/etc/repro-env" ]; then
+        # shellcheck source=/dev/null
+        source /etc/repro-env
+    else
+        echo "Error: /etc/repro-env not found."
+        exit 1
+    fi
     
     # Create tags and add them to commissioned machines
     echo -e "\n${BYELLOW}-------- Creating and adding tags... --------${NC}\n"
     
-    maast {{ maas_user }} tags create name=openstack-{{ os_deployment }}
-    maast {{ maas_user }} tags create name=control
-    maast {{ maas_user }} tags create name=compute
-    maast {{ maas_user }} tags create name=storage
-    maast {{ maas_user }} tags create name=network
-    maast {{ maas_user }} tags create name=sunbeam
-    maast {{ maas_user }} tags create name=juju-controller
+    EXISTING_TAGS=$(maas "{{ maas_user }}" tags read | jq -r '.[].name')
+    for TAG in "openstack-{{ os_deployment }}" control compute storage network sunbeam juju-controller; do
+        if ! echo "$EXISTING_TAGS" | grep -qx "$TAG"; then
+            maast "{{ maas_user }}" tags create name="$TAG"
+        fi
+    done
     
-    for HOST in {{ nodes_hostnames }}; do
-        SYSTEM_ID=$(maas {{ maas_user }} machines read hostname=$HOST | jq -r '.[0].system_id')
+    NODES_HOSTNAMES=({{ nodes_hostnames }})
+    for HOST in "${NODES_HOSTNAMES[@]}"; do
+        SYSTEM_ID=$(maas "{{ maas_user }}" machines read hostname="$HOST" | jq -r '.[0].system_id')
         
         # Tag main disks as SSDs
         echo -e "\n${BYELLOW}-------- Tagging main disks as SSDs for '$HOST'... --------${NC}\n"
         
-        MAIN_BLOCK_ID=$(maas {{ maas_user }} block-devices read $SYSTEM_ID | jq -r '.[] | select(.serial | tostring | contains("lxd_osd") | not) | .id' | head -n 1)
+        MAIN_BLOCK_ID=$(maas "{{ maas_user }}" block-devices read "$SYSTEM_ID" | jq -r '.[] | select(.serial | tostring | contains("lxd_osd") | not) | .id' | head -n 1)
         if [ -n "$MAIN_BLOCK_ID" ] && [ "$MAIN_BLOCK_ID" != "null" ]; then
-            maast {{ maas_user }} block-device add-tag $SYSTEM_ID $MAIN_BLOCK_ID tag=ssd
-            maast {{ maas_user }} block-device remove-tag $SYSTEM_ID $MAIN_BLOCK_ID tag=rotary
-            maast {{ maas_user }} block-device remove-tag $SYSTEM_ID $MAIN_BLOCK_ID tag=1rpm
-            maast {{ maas_user }} block-device set-boot-disk $SYSTEM_ID $MAIN_BLOCK_ID
-            maast {{ maas_user }} machine set-storage-layout $SYSTEM_ID storage_layout=flat
+            maast "{{ maas_user }}" block-device add-tag "$SYSTEM_ID" "$MAIN_BLOCK_ID" tag=ssd
+            maast "{{ maas_user }}" block-device remove-tag "$SYSTEM_ID" "$MAIN_BLOCK_ID" tag=rotary
+            maast "{{ maas_user }}" block-device remove-tag "$SYSTEM_ID" "$MAIN_BLOCK_ID" tag=1rpm
+            maast "{{ maas_user }}" block-device set-boot-disk "$SYSTEM_ID" "$MAIN_BLOCK_ID"
+            maast "{{ maas_user }}" machine set-storage-layout "$SYSTEM_ID" storage_layout=flat
         fi
         
         echo -e "\n${BYELLOW}-------- Tagging '$HOST'... --------${NC}\n"
         
         # Base tag for all nodes
-        maast {{ maas_user }} tag update-nodes openstack-{{ os_deployment }} add=$SYSTEM_ID
+        maast "{{ maas_user }}" tag update-nodes "openstack-{{ os_deployment }}" add="$SYSTEM_ID"
         
         case "$HOST" in
             juju-controller-*)
-                maast {{ maas_user }} tag update-nodes juju-controller add=$SYSTEM_ID
+                maast "{{ maas_user }}" tag update-nodes juju-controller add="$SYSTEM_ID"
                 ;;
             
             sunbeam-controller-*)
-                maast {{ maas_user }} tag update-nodes sunbeam add=$SYSTEM_ID
+                maast "{{ maas_user }}" tag update-nodes sunbeam add="$SYSTEM_ID"
                 ;;
             
             cloud-*)
-                maast {{ maas_user }} tag update-nodes control add=$SYSTEM_ID
-                maast {{ maas_user }} tag update-nodes compute add=$SYSTEM_ID
-                maast {{ maas_user }} tag update-nodes storage add=$SYSTEM_ID
-                maast {{ maas_user }} tag update-nodes network add=$SYSTEM_ID
+                maast "{{ maas_user }}" tag update-nodes control add="$SYSTEM_ID"
+                maast "{{ maas_user }}" tag update-nodes compute add="$SYSTEM_ID"
+                maast "{{ maas_user }}" tag update-nodes storage add="$SYSTEM_ID"
+                maast "{{ maas_user }}" tag update-nodes network add="$SYSTEM_ID"
                 
                 # Tag the ceph osd devices
                 echo -e "\n${BYELLOW}-------- Tagging ceph storage for '$HOST'... --------${NC}\n"
                 
-                for i in $(seq 1 {{ cloud_osd_count }}); do
-                    OSD_BLOCK_ID=$(maas {{ maas_user }} block-devices read $SYSTEM_ID | jq -r '.[] | select(.serial == "lxd_osd'${i}'") | .id')
+                for i in $(seq 1 "{{ cloud_osd_count }}"); do
+                    OSD_BLOCK_ID=$(maas "{{ maas_user }}" block-devices read "$SYSTEM_ID" | jq -r --arg serial "lxd_osd${i}" '.[] | select(.serial == $serial) | .id')
                     
                     if [ -n "$OSD_BLOCK_ID" ] && [ "$OSD_BLOCK_ID" != "null" ]; then
-                        maast {{ maas_user }} block-device add-tag $SYSTEM_ID $OSD_BLOCK_ID tag=ceph
-                        maast {{ maas_user }} block-device add-tag $SYSTEM_ID $OSD_BLOCK_ID tag=ssd
-                        maast {{ maas_user }} block-device remove-tag $SYSTEM_ID $OSD_BLOCK_ID tag=rotary
-                        maast {{ maas_user }} block-device remove-tag $SYSTEM_ID $OSD_BLOCK_ID tag=1rpm
+                        maast "{{ maas_user }}" block-device add-tag "$SYSTEM_ID" "$OSD_BLOCK_ID" tag=ceph
+                        maast "{{ maas_user }}" block-device add-tag "$SYSTEM_ID" "$OSD_BLOCK_ID" tag=ssd
+                        maast "{{ maas_user }}" block-device remove-tag "$SYSTEM_ID" "$OSD_BLOCK_ID" tag=rotary
+                        maast "{{ maas_user }}" block-device remove-tag "$SYSTEM_ID" "$OSD_BLOCK_ID" tag=1rpm
                     fi
                 done
                 
                 # Tag the additional neutron interface
                 echo -e "\n${BYELLOW}-------- Tagging neutron interface for '$HOST'... --------${NC}\n"
                 
-                CLOUD_NEUTRON_MAC=$(lxc config get $HOST volatile.eth1.hwaddr)
-                CLOUD_NEUTRON_INTERFACE_ID=$(maas {{ maas_user }} interfaces read $SYSTEM_ID | jq -r '.[] | select(.mac_address=="'$CLOUD_NEUTRON_MAC'") | .id')
+                CLOUD_NEUTRON_MAC=$(lxc config get "$HOST" volatile.eth1.hwaddr)
+                CLOUD_NEUTRON_INTERFACE_ID=$(maas "{{ maas_user }}" interfaces read "$SYSTEM_ID" | jq -r --arg mac "$CLOUD_NEUTRON_MAC" '.[] | select(.mac_address==$mac) | .id')
                 
                 if [ -n "$CLOUD_NEUTRON_INTERFACE_ID" ] && [ "$CLOUD_NEUTRON_INTERFACE_ID" != "null" ]; then
-                    maast {{ maas_user }} interface update $SYSTEM_ID $CLOUD_NEUTRON_INTERFACE_ID tags=neutron:physnet1
+                    maast "{{ maas_user }}" interface update "$SYSTEM_ID" "$CLOUD_NEUTRON_INTERFACE_ID" tags=neutron:physnet1
                 fi
                 ;;
         esac
@@ -1642,7 +1797,14 @@ write_files:
         exec sudo "$0" "$@"
     fi
     
-    source /etc/repro-env
+    # Source the environment variables
+    if [ -f "/etc/repro-env" ]; then
+        # shellcheck source=/dev/null
+        source /etc/repro-env
+    else
+        echo "Error: /etc/repro-env not found."
+        exit 1
+    fi
     
     # Prepare machine for Sunbeam usage
     echo -e "\n${BYELLOW}-------- Preparing machine for Sunbeam usage... --------${NC}\n"
@@ -1652,8 +1814,12 @@ write_files:
     # Add the Canonical MAAS provider
     echo -e "\n${BYELLOW}-------- Adding the Canonical MAAS provider... --------${NC}\n"
     
-    $RUN_AS_LOGIN sunbeam deployment add maas {{ os_deployment }} $APIKEY http://${IP_ADDRESS}:5240/MAAS
-    $RUN_AS_LOGIN sunbeam deployment space map {{ maas_space }}
+    if ! $RUN_AS_LOGIN sunbeam deployment show "{{ os_deployment }}" >/dev/null 2>&1; then
+        $RUN_AS_LOGIN sunbeam deployment add maas "{{ os_deployment }}" "$APIKEY" "http://${IP_ADDRESS}:5240/MAAS"
+    else
+        echo "Sunbeam deployment '{{ os_deployment }}' already exists. Skipping add..."
+    fi
+    $RUN_AS_LOGIN sunbeam deployment space map "{{ maas_space }}"
     
     # Validate MAAS provider
     echo -e "\n${BYELLOW}-------- Validating MAAS provider... --------${NC}\n"
@@ -1661,16 +1827,16 @@ write_files:
     $RUN_AS_LOGIN sunbeam deployment validate
     
     # Grab the single newest report file
-    LATEST_REPORT=$(ls -t /home/{{ sys_user }}/snap/openstack/common/reports/ | head -n 1)
+    LATEST_REPORT=$(find "/home/{{ sys_user }}/snap/openstack/common/reports" -maxdepth 1 -type f -printf '%T@ %p\n' | sort -nr | head -n 1 | cut -d' ' -f2-)
     
-    cat "/home/{{ sys_user }}/snap/openstack/common/reports/$LATEST_REPORT"
+    cat "$LATEST_REPORT"
     echo ""
-    echo -e "Number of fails      - ${BRED}$(grep -c failed /home/{{ sys_user }}/snap/openstack/common/reports/$LATEST_REPORT)${NC}"
-    echo -e "Number of warnings   - ${BYELLOW}$(grep -c warning /home/{{ sys_user }}/snap/openstack/common/reports/$LATEST_REPORT)${NC}"
-    echo -e "Number of successes  - ${BGREEN}$(grep -c success /home/{{ sys_user }}/snap/openstack/common/reports/$LATEST_REPORT)${NC}"
+    echo -e "Number of fails      - ${BRED}$(grep -c failed "$LATEST_REPORT")${NC}"
+    echo -e "Number of warnings   - ${BYELLOW}$(grep -c warning "$LATEST_REPORT")${NC}"
+    echo -e "Number of successes  - ${BGREEN}$(grep -c success "$LATEST_REPORT")${NC}"
     echo ""
     
-    $RUN_AS_LOGIN sunbeam deployment show {{ os_deployment }}
+    $RUN_AS_LOGIN sunbeam deployment show "{{ os_deployment }}"
     sleep 10
 
 {% if os_manifest_b64 %}
@@ -1691,7 +1857,14 @@ write_files:
         exec sudo "$0" "$@"
     fi
     
-    source /etc/repro-env
+    # Source the environment variables
+    if [ -f "/etc/repro-env" ]; then
+        # shellcheck source=/dev/null
+        source /etc/repro-env
+    else
+        echo "Error: /etc/repro-env not found."
+        exit 1
+    fi
     
     if [ -f "/etc/manifest.yaml" ]; then
         # Use custom Sunbeam deployment manifest
@@ -1760,7 +1933,8 @@ write_files:
     EOF
         
         # Dynamically append all cloud nodes and their neutron interfaces
-        for HOST in {{ nodes_hostnames }}; do
+        NODES_HOSTNAMES=({{ nodes_hostnames }})
+        for HOST in "${NODES_HOSTNAMES[@]}"; do
             case "$HOST" in
                 cloud-*)
                     echo "          $HOST: eth1" >> "$MANIFEST_FILE"
@@ -1769,7 +1943,7 @@ write_files:
         done
     fi
     
-    chown {{ sys_user }}:{{ sys_user }} "$MANIFEST_FILE"
+    chown "{{ sys_user }}:{{ sys_user }}" "$MANIFEST_FILE"
     chmod 644 "$MANIFEST_FILE"
     cat "$MANIFEST_FILE"
     
@@ -1786,7 +1960,6 @@ write_files:
     LOGFILE="/tmp/sunbeam-bootstrap.log"
     
     if run_sunbeam "sunbeam cluster bootstrap --accept-defaults --manifest $MANIFEST_FILE" "$LOGFILE"; then
-        echo "export BOOTSTRAP_SUCCESS=true" >> /etc/repro-env
         
         echo -e "\n${BYELLOW}-------- Controller Model Status... --------${NC}\n"
         $RUN_AS_LOGIN juju status -m controller
@@ -1794,8 +1967,6 @@ write_files:
         echo -e "\n${BYELLOW}-------- OpenStack-Infra Model Status... --------${NC}\n"
         $RUN_AS_LOGIN juju status -m openstack-infra
     else
-        echo "export BOOTSTRAP_SUCCESS=false" >> /etc/repro-env
-        
         echo -e "\n${BRED}======================================================================${NC}"
         echo -e "${BRED}[FAILURE] Sunbeam Cluster Bootstrap failed!${NC}"
         echo -e "${BRED}To inspect logs:${NC} less /tmp/sunbeam-bootstrap.log"
@@ -1814,9 +1985,16 @@ write_files:
         exec sudo "$0" "$@"
     fi
     
-    source /etc/repro-env
+    # Source the environment variables
+    if [ -f "/etc/repro-env" ]; then
+        # shellcheck source=/dev/null
+        source /etc/repro-env
+    else
+        echo "Error: /etc/repro-env not found."
+        exit 1
+    fi
     
-    if [ "$BOOTSTRAP_SUCCESS" != "true" ]; then
+    if [ "$STATUS_BOOTSTRAP" != "succeeded" ]; then
         echo -e "\n${BYELLOW}======================================================================${NC}"
         echo -e "${BYELLOW}[SKIPPED] Deploy script skipped because step '${NC}12-sunbeam-bootstrap${BYELLOW}' failed.${NC}"
         echo -e "${BYELLOW}Once step 12 passes, run deploy manually with:${NC} 13-sunbeam-deploy"
@@ -1830,7 +2008,6 @@ write_files:
     LOGFILE="/tmp/sunbeam-deploy.log"
     
     if run_sunbeam "sunbeam cluster deploy --accept-defaults --manifest $MANIFEST_FILE" "$LOGFILE"; then
-        echo "export DEPLOY_SUCCESS=true" >> /etc/repro-env
         
         echo -e "\n${BYELLOW}-------- OpenStack-Machines Model Status... --------${NC}\n"
         $RUN_AS_LOGIN juju status -m openstack-machines
@@ -1848,8 +2025,6 @@ write_files:
         done
 {% endif %}
     else
-        echo "export DEPLOY_SUCCESS=false" >> /etc/repro-env
-        
         echo -e "\n${BRED}======================================================================${NC}"
         echo -e "${BRED}[FAILURE] Sunbeam Cluster Deploy failed!${NC}"
         echo -e "${BRED}To inspect logs:${NC} less /tmp/sunbeam-deploy.log"
@@ -1869,9 +2044,16 @@ write_files:
         exec sudo "$0" "$@"
     fi
     
-    source /etc/repro-env
+    # Source the environment variables
+    if [ -f "/etc/repro-env" ]; then
+        # shellcheck source=/dev/null
+        source /etc/repro-env
+    else
+        echo "Error: /etc/repro-env not found."
+        exit 1
+    fi
     
-    if [ "$DEPLOY_SUCCESS" != "true" ]; then
+    if [ "$STATUS_DEPLOY" != "succeeded" ]; then
         echo -e "\n${BYELLOW}======================================================================${NC}"
         echo -e "${BYELLOW}[SKIPPED] Configure script skipped because step '${NC}13-sunbeam-deploy${BYELLOW}' failed.${NC}"
         echo -e "${BYELLOW}Once step 13 passes, run configure manually with:${NC} 14-sunbeam-configure"
@@ -1884,7 +2066,7 @@ write_files:
     
     echo -e "\n${BYELLOW}-------- Syncing MetalLB VIPs to MAAS DNS... --------${NC}\n"
     
-    CLOUD_IP=$(maas {{ maas_user }} machines read hostname=cloud-1 | jq -r '.[0].ip_addresses[0]')
+    CLOUD_IP=$(maas "{{ maas_user }}" machines read hostname=cloud-1 | jq -r '.[0].ip_addresses[0]')
     SSH_CMD="ssh -i /home/{{ sys_user }}/.ssh/id_rsa -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null -q ubuntu@$CLOUD_IP"
     
     # Fetch all LoadBalancer services and their IPs dynamically
@@ -1917,17 +2099,24 @@ write_files:
         fi
         
         # Look up the domain ID in MAAS
-        local domain_id=$(maas {{ maas_user }} domains read | jq -r ".[] | select(.name==\"$domain\") | .id")
+        local domain_id
+        domain_id=$(maas "{{ maas_user }}" domains read | jq -r --arg domain "$domain" '.[] | select(.name==$domain) | .id')
         
         # If the custom domain doesn't exist yet, create it and make MAAS authoritative
         if [ -z "$domain_id" ] || [ "$domain_id" = "null" ]; then
             echo "Domain '$domain' not found in MAAS. Creating it..."
-            domain_id=$(maas {{ maas_user }} domains create name="$domain" authoritative=true | jq -r '.id')
+            domain_id=$(maas "{{ maas_user }}" domains create name="$domain" authoritative=true | jq -r '.id')
         fi
         
-        # Register the record under the resolved domain ID
-        echo "Registering $host.$domain ($ip) in MAAS DNS..."
-        maast {{ maas_user }} dnsresources create domain=$domain_id name="$host" ip_addresses=$ip
+        local existing_dns_id
+        existing_dns_id=$(maas "{{ maas_user }}" dnsresources read domain="$domain" name="$host" | jq -r '.[0].id // empty')
+        if [ -n "$existing_dns_id" ]; then
+            echo "Updating '$host.$domain' ($ip) in MAAS DNS..."
+            maast "{{ maas_user }}" dnsresources update "$existing_dns_id" ip_addresses="$ip"
+        else
+            echo "Registering '$host.$domain' ($ip) in MAAS DNS..."
+            maast "{{ maas_user }}" dnsresources create domain="$domain_id" name="$host" ip_addresses="$ip"
+        fi
     }
     
 {% if pub_fqdn or int_fqdn or rgw_fqdn %}
@@ -1988,19 +2177,16 @@ write_files:
     LOGFILE="/tmp/sunbeam-configure.log"
     
     if run_sunbeam "sunbeam configure --accept-defaults --openrc /home/{{ sys_user }}/demo-openrc --manifest $MANIFEST_FILE" "$LOGFILE"; then
-        echo "export CONFIGURE_SUCCESS=true" >> /etc/repro-env
         
         echo -e "\n${BYELLOW}-------- Generating Admin Credentials... --------${NC}\n"
         
-        $RUN_AS_LOGIN sunbeam openrc > /home/{{ sys_user }}/admin-openrc
-        chown {{ sys_user }}:{{ sys_user }} /home/{{ sys_user }}/admin-openrc
+        $RUN_AS_LOGIN sunbeam openrc > "/home/{{ sys_user }}/admin-openrc"
+        chown "{{ sys_user }}:{{ sys_user }}" "/home/{{ sys_user }}/admin-openrc"
         
         echo -e "\n${BYELLOW}-------- Sunbeam Cluster List... --------${NC}\n"
         
         $RUN_AS_LOGIN sunbeam cluster list
     else
-        echo "export CONFIGURE_SUCCESS=false" >> /etc/repro-env
-        
         echo -e "\n${BRED}======================================================================${NC}"
         echo -e "${BRED}[FAILURE] Sunbeam Configure failed!${NC}"
         echo -e "${BRED}To inspect logs:${NC} less /tmp/sunbeam-configure.log"
@@ -2019,9 +2205,16 @@ write_files:
         exec sudo "$0" "$@"
     fi
     
-    source /etc/repro-env
+    # Source the environment variables
+    if [ -f "/etc/repro-env" ]; then
+        # shellcheck source=/dev/null
+        source /etc/repro-env
+    else
+        echo "Error: /etc/repro-env not found."
+        exit 1
+    fi
     
-    if [ "$CONFIGURE_SUCCESS" != "true" ]; then
+    if [ "$STATUS_CONFIGURE" != "succeeded" ]; then
         echo -e "\n${BYELLOW}======================================================================${NC}"
         echo -e "${BYELLOW}[SKIPPED] Addons script skipped because step '${NC}14-sunbeam-configure${BYELLOW}' failed.${NC}"
         echo -e "${BYELLOW}Once step 14 passes, run addons manually with:${NC} 15-sunbeam-addons"
@@ -2030,7 +2223,6 @@ write_files:
     fi
     
     wait_for_model "openstack-machines" || exit 1
-    wait_for_model "openstack" || exit 1
     
     echo -e "\n${BYELLOW}-------- Activating Optional Features... --------${NC}\n"
     
@@ -2052,7 +2244,7 @@ write_files:
         echo "Vault unseal key saved to '$VAULT_INIT' (KEEP THIS SAFE!)"
         $RUN_AS_LOGIN sunbeam vault status
         
-        wait_for_app "vault" "openstack" "$VAULT_UNIT_COUNT"
+        wait_for_app "vault" "openstack"
     fi
 {% endif %}
     
@@ -2060,11 +2252,11 @@ write_files:
     echo -e "\n${BYELLOW}-------- Enabling TLS via Vault for API Endpoints... --------${NC}\n"
     
     mkdir -p "$CERTS_FOLDER"
-    chown {{ sys_user }}:{{ sys_user }} "$CERTS_FOLDER"
+    chown "{{ sys_user }}:{{ sys_user }}" "$CERTS_FOLDER"
     
     if [ ! -f "$CERTS_FOLDER/sunbeam-ca.crt" ]; then
         echo "Creating OpenSSL CA configuration..."
-        cat <<EOF > $CERTS_FOLDER/ca.conf
+        cat <<EOF > "$CERTS_FOLDER/ca.conf"
     [v3_ca]
     subjectKeyIdentifier = hash
     authorityKeyIdentifier = keyid:always,issuer
@@ -2073,47 +2265,51 @@ write_files:
     EOF
         
         echo "Generating Self-Signed Root CA for Vault..."
-        openssl req -x509 -newkey rsa:4096 -keyout $CERTS_FOLDER/sunbeam-ca.key -out $CERTS_FOLDER/sunbeam-ca.crt -sha256 -days 3650 -nodes -config $CERTS_FOLDER/ca.conf -extensions v3_ca -subj "/CN=Sunbeam Local Root CA"
-        chown {{ sys_user }}:{{ sys_user }} $CERTS_FOLDER/sunbeam-ca.* $CERTS_FOLDER/ca.conf
+        openssl req -x509 -newkey rsa:4096 -keyout "$CERTS_FOLDER/sunbeam-ca.key" -out "$CERTS_FOLDER/sunbeam-ca.crt" -sha256 -days 3650 -nodes -config "$CERTS_FOLDER/ca.conf" -extensions v3_ca -subj "/CN=Sunbeam Local Root CA"
+        chown "{{ sys_user }}:{{ sys_user }}" "$CERTS_FOLDER"/sunbeam-ca.* "$CERTS_FOLDER/ca.conf"
     else
         echo "Root CA already exists. Skipping generation to preserve Vault trust chain..."
     fi
     
-    CA_B64=$(base64 -w0 $CERTS_FOLDER/sunbeam-ca.crt)
+    CA_B64=$(base64 -w0 "$CERTS_FOLDER/sunbeam-ca.crt")
     if run_sunbeam "sunbeam enable -m $MANIFEST_FILE tls vault --ca \"$CA_B64\" --ca-chain \"$CA_B64\" --endpoint public --endpoint internal --endpoint rgw" "/tmp/sunbeam-tls.log"; then
         # Extract CSR from vault
-        echo "Obtaining the CSRs from Vault..."
-        $RUN_AS_LOGIN bash -c "sunbeam tls vault list_outstanding_csrs --format yaml > $CERTS_FOLDER/vault_csrs.yaml"
-        sed -n '/-----BEGIN CERTIFICATE REQUEST-----/,/-----END CERTIFICATE REQUEST-----/p' $CERTS_FOLDER/vault_csrs.yaml | sed 's/^[ \t]*//' | tr -d '\r' > $CERTS_FOLDER/vault.csr
-        rm -f $CERTS_FOLDER/vault_csrs.yaml
+        echo "Checking for outstanding Vault CSRs..."
+        $RUN_AS_LOGIN bash -c "sunbeam tls vault list_outstanding_csrs --format yaml > '$CERTS_FOLDER/vault_csrs.yaml'"
+        sed -n '/-----BEGIN CERTIFICATE REQUEST-----/,/-----END CERTIFICATE REQUEST-----/p' "$CERTS_FOLDER/vault_csrs.yaml" | sed 's/^[ \t]*//' | tr -d '\r' > "$CERTS_FOLDER/vault.csr"
+        rm -f "$CERTS_FOLDER/vault_csrs.yaml"
         
         # Input TLS certificates
-        if grep -q "BEGIN CERTIFICATE REQUEST" $CERTS_FOLDER/vault.csr; then
+        if grep -q "BEGIN CERTIFICATE REQUEST" "$CERTS_FOLDER/vault.csr"; then
             echo "Signing CSR for Vault as an Intermediate CA..."
             
-            openssl x509 -req -sha256 -days 3650 -CA $CERTS_FOLDER/sunbeam-ca.crt -CAkey $CERTS_FOLDER/sunbeam-ca.key -CAcreateserial -extfile $CERTS_FOLDER/ca.conf -extensions v3_ca -in $CERTS_FOLDER/vault.csr -out $CERTS_FOLDER/vault.crt
-            CERT_B64=$(base64 -w0 $CERTS_FOLDER/vault.crt)
+            openssl x509 -req -sha256 -days 3650 -CA "$CERTS_FOLDER/sunbeam-ca.crt" -CAkey "$CERTS_FOLDER/sunbeam-ca.key" -CAcreateserial -extfile "$CERTS_FOLDER/ca.conf" -extensions v3_ca -in "$CERTS_FOLDER/vault.csr" -out "$CERTS_FOLDER/vault.crt"
+            CERT_B64=$(base64 -w0 "$CERTS_FOLDER/vault.crt")
             
             echo "Applying signed Intermediate CA certificates via Sunbeam..."
             run_sunbeam "echo \"$CERT_B64\" | sunbeam tls vault unit_certs" "/tmp/sunbeam-tls-certs.log"
             
             echo "Updating system CA trust store..."
-            cp $CERTS_FOLDER/sunbeam-ca.crt /usr/local/share/ca-certificates/sunbeam-ca.crt
+            cp "$CERTS_FOLDER/sunbeam-ca.crt" /usr/local/share/ca-certificates/sunbeam-ca.crt
             update-ca-certificates
             
-            wait_for_model "openstack"
+            wait_for_app "vault" "openstack"
+            wait_for_app "traefik" "openstack"
             
             echo "Updating admin-openrc and injecting CA bundle..."
-            $RUN_AS_LOGIN sunbeam openrc > /home/{{ sys_user }}/admin-openrc
-            chown {{ sys_user }}:{{ sys_user }} /home/{{ sys_user }}/admin-openrc
+            $RUN_AS_LOGIN sunbeam openrc > "/home/{{ sys_user }}/admin-openrc"
+            chown "{{ sys_user }}:{{ sys_user }}" "/home/{{ sys_user }}/admin-openrc"
+        elif [ -s "$CERTS_FOLDER/vault.crt" ]; then
+            echo "Vault intermediate certificate already signed and applied. Skipping..."
         else
             echo "No CSR found. Vault TLS may not be fully initialized."
+            set_env "STATUS_TLS" "failed"
         fi
     fi
 {% elif os_add_tls %}
     echo -e "\n${BYELLOW}-------- Enabling TLS self-signed for API Endpoints... --------${NC}\n"
     if run_sunbeam "sunbeam enable -m $MANIFEST_FILE tls self-signed" "/tmp/sunbeam-tls.log"; then
-        wait_for_model "openstack"
+        wait_for_app "traefik" "openstack"
     fi
 {% endif %}
     
@@ -2130,82 +2326,103 @@ write_files:
         wait_for_app "octavia"
         
 {% if os_add_amphora %}
-        echo -e "\n${BYELLOW}-------- Enabling Octavia Amphora... --------${NC}\n"
+        echo -e "\n${BYELLOW}-------- Enabling Amphora Backend... --------${NC}\n"
         
-        # 1. Configure Amphora
+        # Configure Amphora
         snap set openstack feature.loadbalancer-amphora=true # Maybe not needed (?)
         if run_sunbeam "sunbeam loadbalancer configure" "/tmp/sunbeam-octavia-amphora.log"; then
             
-            echo -e "\n${BYELLOW}-------- Configuring Octavia Amphora TLS... --------${NC}\n"
+            echo -e "\n${BYELLOW}-------- Configuring Amphora TLS... --------${NC}\n"
             
-            # 2. Wait for Vault to generate BOTH Amphora CSRs
-            for i in {1..12}; do
-                $RUN_AS_LOGIN bash -c "sunbeam loadbalancer list_outstanding_csrs --format yaml > $CERTS_FOLDER/amphora_csrs.yaml"
-                
+            fetch_amphora_csrs() {
+                local count
+                $RUN_AS_LOGIN bash -c "sunbeam loadbalancer list_outstanding_csrs --format yaml > '$CERTS_FOLDER/amphora_csrs.yaml'"
                 if [ -s "$CERTS_FOLDER/amphora_csrs.yaml" ]; then
-                    CSR_COUNT=$($RUN_AS_LOGIN yq 'length' $CERTS_FOLDER/amphora_csrs.yaml)
-                    
+                    count=$($RUN_AS_LOGIN yq 'length // 0' "$CERTS_FOLDER/amphora_csrs.yaml" 2>/dev/null)
+                    echo "${count:-0}"
+                else
+                    echo 0
+                fi
+            }
+            
+            # Check immediately if CSRs are already satisfied from a previous run
+            CSR_COUNT=$(fetch_amphora_csrs)
+            
+            if [ "$CSR_COUNT" = "0" ] && [ -s "$CERTS_FOLDER/amphora-controller.crt" ] && [ -s "$CERTS_FOLDER/amphora-issuing-ca.crt" ]; then
+                echo -e "Octavia Amphora TLS certificates already signed and configured. Skipping..."
+                rm -f "$CERTS_FOLDER/amphora_csrs.yaml"
+            else
+                # Wait for Vault to generate BOTH Amphora CSRs
+                ATTEMPTS=0
+                MAX_ATTEMPTS=12 # Timeout - 1 min
+                while true; do
                     if [ "$CSR_COUNT" = "2" ]; then
-                        echo "Both Amphora CSRs generated successfully."
                         break
                     fi
+                    
+                    ATTEMPTS=$((ATTEMPTS+1))
+                    if [ $ATTEMPTS -ge $MAX_ATTEMPTS ]; then
+                        break
+                    fi
+                    
+                    echo "Amphora CSRs not ready yet (Found $CSR_COUNT/2). Waiting 5s (Attempt $ATTEMPTS/$MAX_ATTEMPTS)..."
+                    sleep 5
+                    CSR_COUNT=$(fetch_amphora_csrs)
+                done
+                
+                if [ "$CSR_COUNT" = "2" ]; then
+                    $RUN_AS_LOGIN bash -c "yq -r '.[] | select(.endpoint == \"amphora-controller-cert\") | .csr' '$CERTS_FOLDER/amphora_csrs.yaml' > '$CERTS_FOLDER/amphora-controller.csr'"
+                    $RUN_AS_LOGIN bash -c "yq -r '.[] | select(.endpoint == \"amphora-issuing-ca\") | .csr' '$CERTS_FOLDER/amphora_csrs.yaml' > '$CERTS_FOLDER/amphora-issuing-ca.csr'"
+                    
+                    # Sign the Controller Leaf Certificate
+                    openssl x509 -req -sha256 -days 3650 -CA "$CERTS_FOLDER/sunbeam-ca.crt" -CAkey "$CERTS_FOLDER/sunbeam-ca.key" -CAcreateserial -in "$CERTS_FOLDER/amphora-controller.csr" -out "$CERTS_FOLDER/amphora-controller.crt"
+                    
+                    # Sign the Issuing CA Certificate
+                    openssl x509 -req -sha256 -days 3650 -CA "$CERTS_FOLDER/sunbeam-ca.crt" -CAkey "$CERTS_FOLDER/sunbeam-ca.key" -CAcreateserial -extfile "$CERTS_FOLDER/ca.conf" -extensions v3_ca -in "$CERTS_FOLDER/amphora-issuing-ca.csr" -out "$CERTS_FOLDER/amphora-issuing-ca.crt"
+                    
+                    chown "{{ sys_user }}:{{ sys_user }}" "$CERTS_FOLDER"/*.crt "$CERTS_FOLDER"/*.srl
+                    
+                    # Generate Base64 Strings
+                    CONTROLLER_B64=$(base64 -w0 "$CERTS_FOLDER/amphora-controller.crt")
+                    ISSUING_CA_B64=$(base64 -w0 "$CERTS_FOLDER/amphora-issuing-ca.crt")
+                    ROOT_CA_B64=$(base64 -w0 "$CERTS_FOLDER/sunbeam-ca.crt")
+                    
+                    # Dynamically generate the input file for the interactive prompt based on the YAML order
+                    : > "$CERTS_FOLDER/amphora_answers.txt"
+                    ENDPOINT_1=$($RUN_AS_LOGIN yq -r '.[0].endpoint' "$CERTS_FOLDER/amphora_csrs.yaml")
+                    ENDPOINT_2=$($RUN_AS_LOGIN yq -r '.[1].endpoint' "$CERTS_FOLDER/amphora_csrs.yaml")
+                    
+                    for ENDPOINT in "$ENDPOINT_1" "$ENDPOINT_2"; do
+                        if [ "$ENDPOINT" == "amphora-controller-cert" ]; then
+                            {
+                                echo "$CONTROLLER_B64"
+                                echo "$ROOT_CA_B64"
+                                echo "" # Blank line for empty CA chain
+                            } >> "$CERTS_FOLDER/amphora_answers.txt"
+                        elif [ "$ENDPOINT" == "amphora-issuing-ca" ]; then
+                            {
+                                echo "$ISSUING_CA_B64"
+                                echo "$ROOT_CA_B64"
+                                echo "" # Blank line for empty CA chain
+                            } >> "$CERTS_FOLDER/amphora_answers.txt"
+                        fi
+                    done
+                    
+                    chown -R "{{ sys_user }}:{{ sys_user }}" "$CERTS_FOLDER"
+                    
+                    # Feed the answers into the Sunbeam prompt automatically
+                    echo "Providing signed certificates to Octavia..."
+                    run_sunbeam "sunbeam loadbalancer provide_certificates < $CERTS_FOLDER/amphora_answers.txt" "/tmp/sunbeam-amphora-certs.log"
                 else
-                    CSR_COUNT=0
+                    echo "Expected 2 Amphora CSRs but found '$CSR_COUNT'. Skipping certificate submission to avoid corrupting state..."
+                    set_env "STATUS_OCTAVIA_AMPHORA" "failed"
                 fi
                 
-                echo "Amphora CSRs not ready yet (Found $CSR_COUNT/2), waiting 5s..."
-                sleep 5
-            done
-            
-            # 3. Extract the CSRs cleanly using yq
-            $RUN_AS_LOGIN bash -c "yq -r '.[] | select(.endpoint == \"amphora-controller-cert\") | .csr' $CERTS_FOLDER/amphora_csrs.yaml > $CERTS_FOLDER/amphora-controller.csr"
-            $RUN_AS_LOGIN bash -c "yq -r '.[] | select(.endpoint == \"amphora-issuing-ca\") | .csr' $CERTS_FOLDER/amphora_csrs.yaml > $CERTS_FOLDER/amphora-issuing-ca.csr"
-            
-            # 4. Sign the Controller Leaf Certificate
-            openssl x509 -req -sha256 -days 3650 -CA $CERTS_FOLDER/sunbeam-ca.crt -CAkey $CERTS_FOLDER/sunbeam-ca.key -CAcreateserial -in $CERTS_FOLDER/amphora-controller.csr -out $CERTS_FOLDER/amphora-controller.crt
-            
-            # 5. Sign the Issuing CA Certificate
-            openssl x509 -req -sha256 -days 3650 -CA $CERTS_FOLDER/sunbeam-ca.crt -CAkey $CERTS_FOLDER/sunbeam-ca.key -CAcreateserial -extfile $CERTS_FOLDER/ca.conf -extensions v3_ca -in $CERTS_FOLDER/amphora-issuing-ca.csr -out $CERTS_FOLDER/amphora-issuing-ca.crt
-            
-            chown {{ sys_user }}:{{ sys_user }} $CERTS_FOLDER/*.crt $CERTS_FOLDER/*.srl
-            
-            # 6. Generate Base64 Strings
-            CONTROLLER_B64=$(base64 -w0 $CERTS_FOLDER/amphora-controller.crt)
-            ISSUING_CA_B64=$(base64 -w0 $CERTS_FOLDER/amphora-issuing-ca.crt)
-            ROOT_CA_B64=$(base64 -w0 $CERTS_FOLDER/sunbeam-ca.crt)
-            
-            # 7. Dynamically generate the input file for the interactive prompt based on the YAML order
-            > $CERTS_FOLDER/amphora_answers.txt
-            ENDPOINT_1=$($RUN_AS_LOGIN yq -r '.[0].endpoint' $CERTS_FOLDER/amphora_csrs.yaml)
-            ENDPOINT_2=$($RUN_AS_LOGIN yq -r '.[1].endpoint' $CERTS_FOLDER/amphora_csrs.yaml)
-            
-            for ENDPOINT in "$ENDPOINT_1" "$ENDPOINT_2"; do
-                if [ "$ENDPOINT" == "amphora-controller-cert" ]; then
-                    echo "$CONTROLLER_B64" >> $CERTS_FOLDER/amphora_answers.txt
-                    echo "$ROOT_CA_B64" >> $CERTS_FOLDER/amphora_answers.txt
-                    echo "" >> $CERTS_FOLDER/amphora_answers.txt # Blank line for empty CA chain
-                elif [ "$ENDPOINT" == "amphora-issuing-ca" ]; then
-                    echo "$ISSUING_CA_B64" >> $CERTS_FOLDER/amphora_answers.txt
-                    echo "$ROOT_CA_B64" >> $CERTS_FOLDER/amphora_answers.txt
-                    echo "" >> $CERTS_FOLDER/amphora_answers.txt # Blank line for empty CA chain
-                fi
-            done
-            
-            chown -R {{ sys_user }}:{{ sys_user }} "$CERTS_FOLDER"
-            
-            # 8. Feed the answers into the Sunbeam prompt automatically
-            echo "Providing signed certificates to Octavia..."
-            run_sunbeam "sunbeam loadbalancer provide_certificates < $CERTS_FOLDER/amphora_answers.txt" "/tmp/sunbeam-amphora-certs.log"
-            
-            # Apply Security Group Fix for MicroOVN
-            # echo "Patching Amphora security group for OVN compatibility..."
-            # $RUN_AS_LOGIN openstack security group rule create --protocol tcp --dst-port 9443 --ingress lb-mgmt-sec-grp
-            
-            # 10. Cleanup
-            echo "Cleaning up Amphora TLS artifacts..."
-            rm -f $CERTS_FOLDER/amphora_csrs.yaml
-            rm -f $CERTS_FOLDER/amphora_answers.txt
-            
+                # Cleanup
+                echo "Cleaning up Amphora TLS artifacts..."
+                rm -f "$CERTS_FOLDER/amphora_csrs.yaml"
+                rm -f "$CERTS_FOLDER/amphora_answers.txt"
+            fi
             wait_for_app "octavia"
         fi
 {% endif %}
@@ -2287,6 +2504,36 @@ write_files:
     
     $RUN_AS_LOGIN sunbeam list-features
     $RUN_AS_LOGIN sunbeam list-feature-gates
+    
+    echo -e "\n${BYELLOW}-------- Deployment Summary --------${NC}\n"
+    
+    # Reload /etc/repro-env to pick up STATUS_* and RETRIES_* written by run_sunbeam / wait_for_app
+    # shellcheck source=/dev/null
+    source /etc/repro-env
+    
+    ADDONS_SUCCEEDED=()
+    ADDONS_FAILED=()
+    
+    while IFS= read -r var; do
+        key="${var#STATUS_}"
+        status="${!var}"
+        retry_var="RETRIES_${key}"
+        name=$(echo "$key" | tr '[:upper:]_' '[:lower:]-')
+        
+        printf "%-20s : %-9s (retries: %s)\n" "$name" "$status" "${!retry_var:-0}"
+        
+        if [ "$key" != "BOOTSTRAP" ] && [ "$key" != "DEPLOY" ] && [ "$key" != "CONFIGURE" ]; then
+            if [ "$status" = "succeeded" ]; then
+                ADDONS_SUCCEEDED+=("$name")
+            else
+                ADDONS_FAILED+=("$name")
+            fi
+        fi
+    done < <(grep -o '^export STATUS_[^=]*' /etc/repro-env | cut -d' ' -f2)
+    
+    set_env "ADDONS_SUCCEEDED" "${ADDONS_SUCCEEDED[*]}"
+    set_env "ADDONS_FAILED" "${ADDONS_FAILED[*]}"
+    echo ""
     
     echo -e "\n${BYELLOW}-------- Finished deploying Sunbeam, have fun!... --------${NC}\n"
 

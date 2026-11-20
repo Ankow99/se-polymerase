@@ -2473,7 +2473,7 @@ except Exception:
             TARGET_MODEL=$(echo "$JUJU_MODELS" | awk '{print $1}')
             [ -z "$TARGET_MODEL" ] && TARGET_MODEL="openstack"
             
-            HORIZON_IP=$(lxc exec "$VM_NAME" --project "$LXD_PROJECT" -- /bin/su - "$SYS_USER" -c "juju status -m $TARGET_MODEL openstack-dashboard --format json" 2>/dev/null | jq -r '.applications["openstack-dashboard"].units | to_entries[0].value["public-address"]' 2>/dev/null)
+            HORIZON_IP=$(lxc exec "$VM_NAME" --project "$LXD_PROJECT" -- su - "$SYS_USER" -c "juju status -m $TARGET_MODEL openstack-dashboard --format json" 2>/dev/null | jq -r '.applications["openstack-dashboard"].units | to_entries[0].value["public-address"]' 2>/dev/null)
             
             if [ -n "$HORIZON_IP" ] && [ "$HORIZON_IP" != "null" ]; then
                 echo -e "  Charmed OpenStack deployment detected..."
