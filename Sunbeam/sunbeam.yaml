@@ -694,7 +694,7 @@ write_files:
             sleep 60
             $RUN_AS_LOGIN script -q -e -f -c "$cmd" /dev/null | sed -u -e 's/\r$//' -e 's/.*\r//' | tee -a "$log_file"
             exit_code=${PIPESTATUS[0]}
-        fi
+        done
         
         # Normalize logfile name to step key (e.g. /tmp/sunbeam-octavia-amphora.log -> OCTAVIA_AMPHORA)
         step_key=$(basename "$log_file" .log | sed -e 's/^sunbeam-//' -e 's/^amphora-certs$/octavia-amphora/' -e 's/-certs$//' | tr '[:lower:]-' '[:upper:]_')
