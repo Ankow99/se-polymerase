@@ -2251,59 +2251,67 @@ write_files:
 {% if os_add_tls and os_add_vault %}
     echo -e "\n${BYELLOW}-------- Enabling TLS via Vault for API Endpoints... --------${NC}\n"
     
-    mkdir -p "$CERTS_FOLDER"
-    chown "{{ sys_user }}:{{ sys_user }}" "$CERTS_FOLDER"
+    # shellcheck source=/dev/null
+    source /etc/repro-env
     
-    if [ ! -f "$CERTS_FOLDER/sunbeam-ca.crt" ]; then
-        echo "Creating OpenSSL CA configuration..."
-        cat <<EOF > "$CERTS_FOLDER/ca.conf"
+    if [ "$STATUS_VAULT" != "succeeded" ]; then
+        echo -e "Skipping TLS because Vault failed..."
+        set_env "STATUS_TLS" "skipped"
+    else
+        mkdir -p "$CERTS_FOLDER"
+        chown "{{ sys_user }}:{{ sys_user }}" "$CERTS_FOLDER"
+        
+        if [ ! -f "$CERTS_FOLDER/sunbeam-ca.crt" ]; then
+            echo "Creating OpenSSL CA configuration..."
+            cat <<EOF > "$CERTS_FOLDER/ca.conf"
     [v3_ca]
     subjectKeyIdentifier = hash
     authorityKeyIdentifier = keyid:always,issuer
     basicConstraints = critical, CA:TRUE
     keyUsage = critical, digitalSignature, cRLSign, keyCertSign
     EOF
-        
-        echo "Generating Self-Signed Root CA for Vault..."
-        openssl req -x509 -newkey rsa:4096 -keyout "$CERTS_FOLDER/sunbeam-ca.key" -out "$CERTS_FOLDER/sunbeam-ca.crt" -sha256 -days 3650 -nodes -config "$CERTS_FOLDER/ca.conf" -extensions v3_ca -subj "/CN=Sunbeam Local Root CA"
-        chown "{{ sys_user }}:{{ sys_user }}" "$CERTS_FOLDER"/sunbeam-ca.* "$CERTS_FOLDER/ca.conf"
-    else
-        echo "Root CA already exists. Skipping generation to preserve Vault trust chain..."
-    fi
-    
-    CA_B64=$(base64 -w0 "$CERTS_FOLDER/sunbeam-ca.crt")
-    if run_sunbeam "sunbeam enable -m $MANIFEST_FILE tls vault --ca \"$CA_B64\" --ca-chain \"$CA_B64\" --endpoint public --endpoint internal --endpoint rgw" "/tmp/sunbeam-tls.log"; then
-        # Extract CSR from vault
-        echo "Checking for outstanding Vault CSRs..."
-        $RUN_AS_LOGIN bash -c "sunbeam tls vault list_outstanding_csrs --format yaml > '$CERTS_FOLDER/vault_csrs.yaml'"
-        sed -n '/-----BEGIN CERTIFICATE REQUEST-----/,/-----END CERTIFICATE REQUEST-----/p' "$CERTS_FOLDER/vault_csrs.yaml" | sed 's/^[ \t]*//' | tr -d '\r' > "$CERTS_FOLDER/vault.csr"
-        rm -f "$CERTS_FOLDER/vault_csrs.yaml"
-        
-        # Input TLS certificates
-        if grep -q "BEGIN CERTIFICATE REQUEST" "$CERTS_FOLDER/vault.csr"; then
-            echo "Signing CSR for Vault as an Intermediate CA..."
             
-            openssl x509 -req -sha256 -days 3650 -CA "$CERTS_FOLDER/sunbeam-ca.crt" -CAkey "$CERTS_FOLDER/sunbeam-ca.key" -CAcreateserial -extfile "$CERTS_FOLDER/ca.conf" -extensions v3_ca -in "$CERTS_FOLDER/vault.csr" -out "$CERTS_FOLDER/vault.crt"
-            CERT_B64=$(base64 -w0 "$CERTS_FOLDER/vault.crt")
-            
-            echo "Applying signed Intermediate CA certificates via Sunbeam..."
-            run_sunbeam "echo \"$CERT_B64\" | sunbeam tls vault unit_certs" "/tmp/sunbeam-tls-certs.log"
-            
-            echo "Updating system CA trust store..."
-            cp "$CERTS_FOLDER/sunbeam-ca.crt" /usr/local/share/ca-certificates/sunbeam-ca.crt
-            update-ca-certificates
-            
-            wait_for_app "vault" "openstack"
-            wait_for_app "traefik" "openstack"
-            
-            echo "Updating admin-openrc and injecting CA bundle..."
-            $RUN_AS_LOGIN sunbeam openrc > "/home/{{ sys_user }}/admin-openrc"
-            chown "{{ sys_user }}:{{ sys_user }}" "/home/{{ sys_user }}/admin-openrc"
-        elif [ -s "$CERTS_FOLDER/vault.crt" ]; then
-            echo "Vault intermediate certificate already signed and applied. Skipping..."
+            echo "Generating Self-Signed Root CA for Vault..."
+            openssl req -x509 -newkey rsa:4096 -keyout "$CERTS_FOLDER/sunbeam-ca.key" -out "$CERTS_FOLDER/sunbeam-ca.crt" -sha256 -days 3650 -nodes -config "$CERTS_FOLDER/ca.conf" -extensions v3_ca -subj "/CN=Sunbeam Local Root CA"
+            chown "{{ sys_user }}:{{ sys_user }}" "$CERTS_FOLDER"/sunbeam-ca.* "$CERTS_FOLDER/ca.conf"
         else
-            echo "No CSR found. Vault TLS may not be fully initialized."
-            set_env "STATUS_TLS" "failed"
+            echo "Root CA already exists. Skipping generation to preserve Vault trust chain..."
+        fi
+        
+        CA_B64=$(base64 -w0 "$CERTS_FOLDER/sunbeam-ca.crt")
+        if run_sunbeam "sunbeam enable -m $MANIFEST_FILE tls vault --ca \"$CA_B64\" --ca-chain \"$CA_B64\" --endpoint public --endpoint internal --endpoint rgw" "/tmp/sunbeam-tls.log"; then
+            # Extract CSR from vault
+            echo "Checking for outstanding Vault CSRs..."
+            $RUN_AS_LOGIN bash -c "sunbeam tls vault list_outstanding_csrs --format yaml > '$CERTS_FOLDER/vault_csrs.yaml'"
+            sed -n '/-----BEGIN CERTIFICATE REQUEST-----/,/-----END CERTIFICATE REQUEST-----/p' "$CERTS_FOLDER/vault_csrs.yaml" | sed 's/^[ \t]*//' | tr -d '\r' > "$CERTS_FOLDER/vault.csr"
+            rm -f "$CERTS_FOLDER/vault_csrs.yaml"
+            
+            # Input TLS certificates
+            if grep -q "BEGIN CERTIFICATE REQUEST" "$CERTS_FOLDER/vault.csr"; then
+                echo "Signing CSR for Vault as an Intermediate CA..."
+                
+                openssl x509 -req -sha256 -days 3650 -CA "$CERTS_FOLDER/sunbeam-ca.crt" -CAkey "$CERTS_FOLDER/sunbeam-ca.key" -CAcreateserial -extfile "$CERTS_FOLDER/ca.conf" -extensions v3_ca -in "$CERTS_FOLDER/vault.csr" -out "$CERTS_FOLDER/vault.crt"
+                CERT_B64=$(base64 -w0 "$CERTS_FOLDER/vault.crt")
+                
+                echo "Applying signed Intermediate CA certificates via Sunbeam..."
+                run_sunbeam "echo \"$CERT_B64\" | sunbeam tls vault unit_certs" "/tmp/sunbeam-tls-certs.log"
+                
+                echo "Updating system CA trust store..."
+                cp "$CERTS_FOLDER/sunbeam-ca.crt" /usr/local/share/ca-certificates/sunbeam-ca.crt
+                update-ca-certificates
+                
+                wait_for_app "vault" "openstack"
+                wait_for_app "traefik" "openstack"
+                
+                echo "Updating admin-openrc and injecting CA bundle..."
+                $RUN_AS_LOGIN sunbeam openrc > "/home/{{ sys_user }}/admin-openrc"
+                chown "{{ sys_user }}:{{ sys_user }}" "/home/{{ sys_user }}/admin-openrc"
+            elif [ -s "$CERTS_FOLDER/vault.crt" ]; then
+                echo "Vault intermediate certificate already signed and applied. Skipping..."
+            else
+                echo "No CSR found. Vault TLS may not be fully initialized."
+                set_env "STATUS_TLS" "failed"
+            fi
         fi
     fi
 {% elif os_add_tls %}
@@ -2315,117 +2323,146 @@ write_files:
     
 {% if os_add_barbican %}
     echo -e "\n${BYELLOW}-------- Enabling Barbican (Secrets)... --------${NC}\n"
-    if run_sunbeam "sunbeam enable -m $MANIFEST_FILE secrets" "/tmp/sunbeam-barbican.log"; then
-        wait_for_app "barbican"
+    
+    # shellcheck source=/dev/null
+    source /etc/repro-env
+    
+    if [ "$STATUS_VAULT" != "succeeded" ]; then
+        echo -e "Skipping Barbican because Vault failed..."
+        set_env "STATUS_BARBICAN" "skipped"
+    else
+        if run_sunbeam "sunbeam enable -m $MANIFEST_FILE secrets" "/tmp/sunbeam-barbican.log"; then
+            wait_for_app "barbican"
+        fi
     fi
 {% endif %}
     
 {% if os_add_octavia %}
     echo -e "\n${BYELLOW}-------- Enabling Octavia (Load Balancer)... --------${NC}\n"
-    if run_sunbeam "sunbeam enable -m $MANIFEST_FILE loadbalancer" "/tmp/sunbeam-octavia.log"; then
-        wait_for_app "octavia"
-        
+    
+    # shellcheck source=/dev/null
+    source /etc/repro-env
+    
+    if [ "$STATUS_BARBICAN" != "succeeded" ]; then
+        echo -e "Skipping Octavia because Barbican failed..."
+        set_env "STATUS_OCTAVIA" "skipped"
 {% if os_add_amphora %}
-        echo -e "\n${BYELLOW}-------- Enabling Amphora Backend... --------${NC}\n"
-        
-        # Configure Amphora
-        snap set openstack feature.loadbalancer-amphora=true # Maybe not needed (?)
-        if run_sunbeam "sunbeam loadbalancer configure" "/tmp/sunbeam-octavia-amphora.log"; then
-            
-            echo -e "\n${BYELLOW}-------- Configuring Amphora TLS... --------${NC}\n"
-            
-            fetch_amphora_csrs() {
-                local count
-                $RUN_AS_LOGIN bash -c "sunbeam loadbalancer list_outstanding_csrs --format yaml > '$CERTS_FOLDER/amphora_csrs.yaml'"
-                if [ -s "$CERTS_FOLDER/amphora_csrs.yaml" ]; then
-                    count=$($RUN_AS_LOGIN yq 'length // 0' "$CERTS_FOLDER/amphora_csrs.yaml" 2>/dev/null)
-                    echo "${count:-0}"
-                else
-                    echo 0
-                fi
-            }
-            
-            # Check immediately if CSRs are already satisfied from a previous run
-            CSR_COUNT=$(fetch_amphora_csrs)
-            
-            if [ "$CSR_COUNT" = "0" ] && [ -s "$CERTS_FOLDER/amphora-controller.crt" ] && [ -s "$CERTS_FOLDER/amphora-issuing-ca.crt" ]; then
-                echo -e "Octavia Amphora TLS certificates already signed and configured. Skipping..."
-                rm -f "$CERTS_FOLDER/amphora_csrs.yaml"
-            else
-                # Wait for Vault to generate BOTH Amphora CSRs
-                ATTEMPTS=0
-                MAX_ATTEMPTS=12 # Timeout - 1 min
-                while true; do
-                    if [ "$CSR_COUNT" = "2" ]; then
-                        break
-                    fi
-                    
-                    ATTEMPTS=$((ATTEMPTS+1))
-                    if [ $ATTEMPTS -ge $MAX_ATTEMPTS ]; then
-                        break
-                    fi
-                    
-                    echo "Amphora CSRs not ready yet (Found $CSR_COUNT/2). Waiting 5s (Attempt $ATTEMPTS/$MAX_ATTEMPTS)..."
-                    sleep 5
-                    CSR_COUNT=$(fetch_amphora_csrs)
-                done
-                
-                if [ "$CSR_COUNT" = "2" ]; then
-                    $RUN_AS_LOGIN bash -c "yq -r '.[] | select(.endpoint == \"amphora-controller-cert\") | .csr' '$CERTS_FOLDER/amphora_csrs.yaml' > '$CERTS_FOLDER/amphora-controller.csr'"
-                    $RUN_AS_LOGIN bash -c "yq -r '.[] | select(.endpoint == \"amphora-issuing-ca\") | .csr' '$CERTS_FOLDER/amphora_csrs.yaml' > '$CERTS_FOLDER/amphora-issuing-ca.csr'"
-                    
-                    # Sign the Controller Leaf Certificate
-                    openssl x509 -req -sha256 -days 3650 -CA "$CERTS_FOLDER/sunbeam-ca.crt" -CAkey "$CERTS_FOLDER/sunbeam-ca.key" -CAcreateserial -in "$CERTS_FOLDER/amphora-controller.csr" -out "$CERTS_FOLDER/amphora-controller.crt"
-                    
-                    # Sign the Issuing CA Certificate
-                    openssl x509 -req -sha256 -days 3650 -CA "$CERTS_FOLDER/sunbeam-ca.crt" -CAkey "$CERTS_FOLDER/sunbeam-ca.key" -CAcreateserial -extfile "$CERTS_FOLDER/ca.conf" -extensions v3_ca -in "$CERTS_FOLDER/amphora-issuing-ca.csr" -out "$CERTS_FOLDER/amphora-issuing-ca.crt"
-                    
-                    chown "{{ sys_user }}:{{ sys_user }}" "$CERTS_FOLDER"/*.crt "$CERTS_FOLDER"/*.srl
-                    
-                    # Generate Base64 Strings
-                    CONTROLLER_B64=$(base64 -w0 "$CERTS_FOLDER/amphora-controller.crt")
-                    ISSUING_CA_B64=$(base64 -w0 "$CERTS_FOLDER/amphora-issuing-ca.crt")
-                    ROOT_CA_B64=$(base64 -w0 "$CERTS_FOLDER/sunbeam-ca.crt")
-                    
-                    # Dynamically generate the input file for the interactive prompt based on the YAML order
-                    : > "$CERTS_FOLDER/amphora_answers.txt"
-                    ENDPOINT_1=$($RUN_AS_LOGIN yq -r '.[0].endpoint' "$CERTS_FOLDER/amphora_csrs.yaml")
-                    ENDPOINT_2=$($RUN_AS_LOGIN yq -r '.[1].endpoint' "$CERTS_FOLDER/amphora_csrs.yaml")
-                    
-                    for ENDPOINT in "$ENDPOINT_1" "$ENDPOINT_2"; do
-                        if [ "$ENDPOINT" == "amphora-controller-cert" ]; then
-                            {
-                                echo "$CONTROLLER_B64"
-                                echo "$ROOT_CA_B64"
-                                echo "" # Blank line for empty CA chain
-                            } >> "$CERTS_FOLDER/amphora_answers.txt"
-                        elif [ "$ENDPOINT" == "amphora-issuing-ca" ]; then
-                            {
-                                echo "$ISSUING_CA_B64"
-                                echo "$ROOT_CA_B64"
-                                echo "" # Blank line for empty CA chain
-                            } >> "$CERTS_FOLDER/amphora_answers.txt"
-                        fi
-                    done
-                    
-                    chown -R "{{ sys_user }}:{{ sys_user }}" "$CERTS_FOLDER"
-                    
-                    # Feed the answers into the Sunbeam prompt automatically
-                    echo "Providing signed certificates to Octavia..."
-                    run_sunbeam "sunbeam loadbalancer provide_certificates < $CERTS_FOLDER/amphora_answers.txt" "/tmp/sunbeam-amphora-certs.log"
-                else
-                    echo "Expected 2 Amphora CSRs but found '$CSR_COUNT'. Skipping certificate submission to avoid corrupting state..."
-                    set_env "STATUS_OCTAVIA_AMPHORA" "failed"
-                fi
-                
-                # Cleanup
-                echo "Cleaning up Amphora TLS artifacts..."
-                rm -f "$CERTS_FOLDER/amphora_csrs.yaml"
-                rm -f "$CERTS_FOLDER/amphora_answers.txt"
-            fi
-            wait_for_app "octavia"
-        fi
+        set_env "STATUS_OCTAVIA_AMPHORA" "skipped"
 {% endif %}
+    else
+        if run_sunbeam "sunbeam enable -m $MANIFEST_FILE loadbalancer" "/tmp/sunbeam-octavia.log"; then
+            wait_for_app "octavia"
+            
+{% if os_add_amphora %}
+            echo -e "\n${BYELLOW}-------- Enabling Amphora Backend... --------${NC}\n"
+            
+            # shellcheck source=/dev/null
+            source /etc/repro-env
+            
+            if [ "$STATUS_TLS" != "succeeded" ]; then
+                echo -e "Skipping Amphora because TLS failed..."
+                set_env "STATUS_OCTAVIA_AMPHORA" "skipped"
+            else
+                # Configure Amphora
+                snap set openstack feature.loadbalancer-amphora=true # Maybe not needed (?)
+                if run_sunbeam "sunbeam loadbalancer configure" "/tmp/sunbeam-octavia-amphora.log"; then
+                    
+                    echo -e "\n${BYELLOW}-------- Configuring Amphora TLS... --------${NC}\n"
+                    
+                    fetch_amphora_csrs() {
+                        local count
+                        $RUN_AS_LOGIN bash -c "sunbeam loadbalancer list_outstanding_csrs --format yaml > '$CERTS_FOLDER/amphora_csrs.yaml'"
+                        if [ -s "$CERTS_FOLDER/amphora_csrs.yaml" ]; then
+                            count=$($RUN_AS_LOGIN yq 'length // 0' "$CERTS_FOLDER/amphora_csrs.yaml" 2>/dev/null)
+                            echo "${count:-0}"
+                        else
+                            echo 0
+                        fi
+                    }
+                    
+                    # Check immediately if CSRs are already satisfied from a previous run
+                    CSR_COUNT=$(fetch_amphora_csrs)
+                    
+                    if [ "$CSR_COUNT" = "0" ] && [ -s "$CERTS_FOLDER/amphora-controller.crt" ] && [ -s "$CERTS_FOLDER/amphora-issuing-ca.crt" ]; then
+                        echo -e "Octavia Amphora TLS certificates already signed and configured. Skipping..."
+                        rm -f "$CERTS_FOLDER/amphora_csrs.yaml"
+                    else
+                        # Wait for Vault to generate BOTH Amphora CSRs
+                        ATTEMPTS=0
+                        MAX_ATTEMPTS=12 # Timeout - 1 min
+                        while true; do
+                            if [ "$CSR_COUNT" = "2" ]; then
+                                break
+                            fi
+                            
+                            ATTEMPTS=$((ATTEMPTS+1))
+                            if [ $ATTEMPTS -ge $MAX_ATTEMPTS ]; then
+                                break
+                            fi
+                            
+                            echo "Amphora CSRs not ready yet (Found $CSR_COUNT/2). Waiting 5s (Attempt $ATTEMPTS/$MAX_ATTEMPTS)..."
+                            sleep 5
+                            CSR_COUNT=$(fetch_amphora_csrs)
+                        done
+                        
+                        if [ "$CSR_COUNT" = "2" ]; then
+                            $RUN_AS_LOGIN bash -c "yq -r '.[] | select(.endpoint == \"amphora-controller-cert\") | .csr' '$CERTS_FOLDER/amphora_csrs.yaml' > '$CERTS_FOLDER/amphora-controller.csr'"
+                            $RUN_AS_LOGIN bash -c "yq -r '.[] | select(.endpoint == \"amphora-issuing-ca\") | .csr' '$CERTS_FOLDER/amphora_csrs.yaml' > '$CERTS_FOLDER/amphora-issuing-ca.csr'"
+                            
+                            # Sign the Controller Leaf Certificate
+                            openssl x509 -req -sha256 -days 3650 -CA "$CERTS_FOLDER/sunbeam-ca.crt" -CAkey "$CERTS_FOLDER/sunbeam-ca.key" -CAcreateserial -in "$CERTS_FOLDER/amphora-controller.csr" -out "$CERTS_FOLDER/amphora-controller.crt"
+                            
+                            # Sign the Issuing CA Certificate
+                            openssl x509 -req -sha256 -days 3650 -CA "$CERTS_FOLDER/sunbeam-ca.crt" -CAkey "$CERTS_FOLDER/sunbeam-ca.key" -CAcreateserial -extfile "$CERTS_FOLDER/ca.conf" -extensions v3_ca -in "$CERTS_FOLDER/amphora-issuing-ca.csr" -out "$CERTS_FOLDER/amphora-issuing-ca.crt"
+                            
+                            chown "{{ sys_user }}:{{ sys_user }}" "$CERTS_FOLDER"/*.crt "$CERTS_FOLDER"/*.srl
+                            
+                            # Generate Base64 Strings
+                            CONTROLLER_B64=$(base64 -w0 "$CERTS_FOLDER/amphora-controller.crt")
+                            ISSUING_CA_B64=$(base64 -w0 "$CERTS_FOLDER/amphora-issuing-ca.crt")
+                            ROOT_CA_B64=$(base64 -w0 "$CERTS_FOLDER/sunbeam-ca.crt")
+                            
+                            # Dynamically generate the input file for the interactive prompt based on the YAML order
+                            : > "$CERTS_FOLDER/amphora_answers.txt"
+                            ENDPOINT_1=$($RUN_AS_LOGIN yq -r '.[0].endpoint' "$CERTS_FOLDER/amphora_csrs.yaml")
+                            ENDPOINT_2=$($RUN_AS_LOGIN yq -r '.[1].endpoint' "$CERTS_FOLDER/amphora_csrs.yaml")
+                            
+                            for ENDPOINT in "$ENDPOINT_1" "$ENDPOINT_2"; do
+                                if [ "$ENDPOINT" == "amphora-controller-cert" ]; then
+                                    {
+                                        echo "$CONTROLLER_B64"
+                                        echo "$ROOT_CA_B64"
+                                        echo "" # Blank line for empty CA chain
+                                    } >> "$CERTS_FOLDER/amphora_answers.txt"
+                                elif [ "$ENDPOINT" == "amphora-issuing-ca" ]; then
+                                    {
+                                        echo "$ISSUING_CA_B64"
+                                        echo "$ROOT_CA_B64"
+                                        echo "" # Blank line for empty CA chain
+                                    } >> "$CERTS_FOLDER/amphora_answers.txt"
+                                fi
+                            done
+                            
+                            chown -R "{{ sys_user }}:{{ sys_user }}" "$CERTS_FOLDER"
+                            
+                            # Feed the answers into the Sunbeam prompt automatically
+                            echo "Providing signed certificates to Octavia..."
+                            run_sunbeam "sunbeam loadbalancer provide_certificates < $CERTS_FOLDER/amphora_answers.txt" "/tmp/sunbeam-amphora-certs.log"
+                        else
+                            echo "Expected 2 Amphora CSRs but found '$CSR_COUNT'. Skipping certificate submission to avoid corrupting state..."
+                            set_env "STATUS_OCTAVIA_AMPHORA" "failed"
+                        fi
+                        
+                        # Cleanup
+                        echo "Cleaning up Amphora TLS artifacts..."
+                        rm -f "$CERTS_FOLDER/amphora_csrs.yaml"
+                        rm -f "$CERTS_FOLDER/amphora_answers.txt"
+                    fi
+                    wait_for_app "octavia"
+                fi
+            fi
+{% endif %}
+        fi
     fi
 {% endif %}
     
@@ -2455,7 +2492,16 @@ write_files:
     
 {% if os_add_magnum %}
     echo -e "\n${BYELLOW}-------- Enabling Magnum (Containers as a Service)... --------${NC}\n"
-    run_sunbeam "sunbeam enable -m $MANIFEST_FILE caas" "/tmp/sunbeam-magnum.log"
+    
+    # shellcheck source=/dev/null
+    source /etc/repro-env
+    
+    if [ "$STATUS_OCTAVIA" != "succeeded" ]; then
+        echo -e "Skipping Magnum because Octavia failed..."
+        set_env "STATUS_MAGNUM" "skipped"
+    else
+        run_sunbeam "sunbeam enable -m $MANIFEST_FILE caas" "/tmp/sunbeam-magnum.log"
+    fi
 {% endif %}
     
 {% if os_add_ldap %}
@@ -2512,6 +2558,7 @@ write_files:
     source /etc/repro-env
     
     ADDONS_SUCCEEDED=()
+    ADDONS_SKIPPED=()
     ADDONS_FAILED=()
     
     while IFS= read -r var; do
@@ -2520,11 +2567,19 @@ write_files:
         retry_var="RETRIES_${key}"
         name=$(echo "$key" | tr '[:upper:]_' '[:lower:]-')
         
-        printf "%-20s : %-9s (retries: %s)\n" "$name" "$status" "${!retry_var:-0}"
+        if [ "$status" = "succeeded" ]; then
+            printf "  [${BGREEN}OK${NC}] %-20s (retries: %s)\n" "$name" "${!retry_var:-0}"
+        elif [ "$status" = "skipped" ]; then
+            printf "  [${BYELLOW}??${NC}] %-20s (retries: %s)\n" "$name" "${!retry_var:-0}"
+        else
+            printf "  [${BRED}!!${NC}] %-20s (retries: %s)\n" "$name" "${!retry_var:-0}"
+        fi
         
         if [ "$key" != "BOOTSTRAP" ] && [ "$key" != "DEPLOY" ] && [ "$key" != "CONFIGURE" ]; then
             if [ "$status" = "succeeded" ]; then
                 ADDONS_SUCCEEDED+=("$name")
+            elif [ "$status" = "skipped" ]; then
+                ADDONS_SKIPPED+=("$name")
             else
                 ADDONS_FAILED+=("$name")
             fi
@@ -2532,8 +2587,8 @@ write_files:
     done < <(grep -o '^export STATUS_[^=]*' /etc/repro-env | cut -d' ' -f2)
     
     set_env "ADDONS_SUCCEEDED" "${ADDONS_SUCCEEDED[*]}"
+    set_env "ADDONS_SKIPPED" "${ADDONS_SKIPPED[*]}"
     set_env "ADDONS_FAILED" "${ADDONS_FAILED[*]}"
-    echo ""
     
     echo -e "\n${BYELLOW}-------- Finished deploying Sunbeam, have fun!... --------${NC}\n"
 
