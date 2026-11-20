@@ -1665,8 +1665,14 @@ if [ "$LXD_PROJECT" != "default" ]; then
         PROJECT_CREATED=true
         lxc project set "$LXD_PROJECT" --property description="${PRETTY_REPRO} Isolated Environment ($DEPLOY_ID)"
         
-        # Initialize the blank default profile with a root disk and MAAS bridge
-        lxc profile device add default root disk path=/ pool="$LXD_POOL" io.cache=writeback --project "$LXD_PROJECT"
+        ACTIVE_POOL_DRIVER=$(lxc storage list --format json | jq -r ".[] | select(.name==\"$LXD_POOL\") | .driver")
+        
+        # Initialize the blank default profile with a root disk (enable writeback cache only on 'dir' pools)
+        if [ "$ACTIVE_POOL_DRIVER" = "dir" ]; then
+            lxc profile device add default root disk path=/ pool="$LXD_POOL" io.cache=writeback --project "$LXD_PROJECT"
+        else
+            lxc profile device add default root disk path=/ pool="$LXD_POOL" --project "$LXD_PROJECT"
+        fi
         
         # Attach the cloud-init config drive to bypass agent race condition bugs
         #lxc profile device add default config disk source=cloud-init:config --project "$LXD_PROJECT"
@@ -1784,8 +1790,10 @@ if ! lxc init "$IMAGE" "$VM_NAME" --vm --project "$LXD_PROJECT" \
     exit 1
 fi
 
-# Inject the writeback cache back into the local root disk before starting
-lxc config device set "$VM_NAME" root io.cache=writeback --project "$LXD_PROJECT"
+# Inject the writeback cache back into the local root disk before starting only if using the dir backend
+if [ "$ACTIVE_POOL_DRIVER" = "dir" ]; then
+    lxc config device set "$VM_NAME" root io.cache=writeback --project "$LXD_PROJECT"
+fi
 
 if ! lxc start "$VM_NAME" --project "$LXD_PROJECT"; then
     echo -e "${BRED}Error: Failed to start VM. Exiting.${NC}"
