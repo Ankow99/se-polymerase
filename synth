@@ -298,21 +298,26 @@ print_cluster_inventory() {
     
     # Fetch the rest of the data only once
     if [ "$target" = "nodes" ] || [ "$target" = "all" ]; then
-        if grep -q "custom_maas_" "$CLOUD_INIT" 2>/dev/null && lxc exec "$VM_NAME" --project "$LXD_PROJECT" -- bash -c "command -v maas" >/dev/null 2>&1; then
-            
-            # Resolve the MAAS user profile name dynamically from the host script
+        local used_maas=false
+        
+        # Only query MAAS if this payload defines the maast helper
+        if grep -q "/usr/local/bin/maast" "$CLOUD_INIT" 2>/dev/null; then
             local local_maas_user="${MAAS_USER:-$(get_default maas_user)}"
             local_maas_user="${local_maas_user:-admin}"
+            local maas_out=""
             
-            inventory_table=$(lxc exec "$VM_NAME" --project "$LXD_PROJECT" -- bash -c "maast $local_maas_user machines read")
-            
-            # Fallback if MAAS API fails or returns empty
-            if [ -z "$inventory_table" ]; then
-                # Smart AWK filter: Skips the VM row AND its trailing separator, handling multi-line IP rows correctly
-                inventory_table=$(lxc list --project "$LXD_PROJECT" -c ns4 | awk -F'|' -v vm="$VM_NAME" '{ n=$2; gsub(/^[ \t]+|[ \t]+$/, "", n); if (n == vm) { skip=1; next } if (skip) { if ($0 ~ /^\+---/) skip=0; next } print $0 }')
-                inventory_table=$'\n'"$inventory_table"
+            if maas_out=$(lxc exec "$VM_NAME" --project "$LXD_PROJECT" -- bash -c "command -v maast >/dev/null 2>&1 && maast '$local_maas_user' machines read" 2>/dev/null); then
+                # Verify maast returned actual table rows (not "[ No records found. ]" or an empty header)
+                if echo "$maas_out" | grep -E '\|' | grep -vE '\|[[:space:]]*(NAME|HOSTNAME)[[:space:]]*\|' >/dev/null 2>&1; then
+                    inventory_table="$maas_out"
+                    used_maas=true
+                fi
             fi
-        else
+        fi
+        
+        # Fallback to LXD if maast isn't in the payload, MAAS failed, or no nodes are enlisted yet
+        if [ "$used_maas" = false ]; then
+            # Smart AWK filter: Skips the VM row AND its trailing separator, handling multi-line IP rows correctly
             inventory_table=$(lxc list --project "$LXD_PROJECT" -c ns4 | awk -F'|' -v vm="$VM_NAME" '{ n=$2; gsub(/^[ \t]+|[ \t]+$/, "", n); if (n == vm) { skip=1; next } if (skip) { if ($0 ~ /^\+---/) skip=0; next } print $0 }')
             inventory_table=$'\n'"$inventory_table"
         fi
@@ -2468,7 +2473,7 @@ except Exception:
             TARGET_MODEL=$(echo "$JUJU_MODELS" | awk '{print $1}')
             [ -z "$TARGET_MODEL" ] && TARGET_MODEL="openstack"
             
-            HORIZON_IP=$(lxc exec "$VM_NAME" --project "$LXD_PROJECT" -- su - "$SYS_USER" -c "juju status -m $TARGET_MODEL openstack-dashboard --format json 2>/dev/null" | jq -r '.applications["openstack-dashboard"].units | to_entries[0].value["public-address"]' 2>/dev/null)
+            HORIZON_IP=$(lxc exec "$VM_NAME" --project "$LXD_PROJECT" -- /bin/su - "$SYS_USER" -c "juju status -m $TARGET_MODEL openstack-dashboard --format json" 2>/dev/null | jq -r '.applications["openstack-dashboard"].units | to_entries[0].value["public-address"]' 2>/dev/null)
             
             if [ -n "$HORIZON_IP" ] && [ "$HORIZON_IP" != "null" ]; then
                 echo -e "  Charmed OpenStack deployment detected..."
