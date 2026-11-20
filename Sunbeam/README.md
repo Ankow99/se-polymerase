@@ -117,7 +117,7 @@ To completely wipe this environment and release its resources, execute the auto-
 ```
 
 ## Modular Execution and Recovery
-To make debugging and recovery effortless, the entire cloud-init deployment pipeline is broken down into discrete, numbered executable scripts located in `/usr/local/bin/` on the primary MAAS controller. 
+To make debugging and recovery effortless, the entire cloud-init deployment pipeline is broken down into discrete, numbered executable scripts located in `/usr/local/bin/` on the primary MAAS controller (all generated helper and pipeline scripts are fully ShellCheck-compliant).
 
 If a specific phase of the deployment fails or times out, you do not need to destroy the environment and start over. Simply SSH into the primary controller and execute the failed step manually to retry it. Every script automatically escalates privileges and sources the `/etc/repro-env` state file, ensuring it has all the correct environment variables and dynamically calculated IPs needed to resume the deployment exactly where it left off.
 
@@ -154,7 +154,7 @@ When launching this Transcript, `synth` will parse the payload and optionally pr
 | Variable | Default Value | Description |
 | :--- | :--- | :--- |
 | update_n_upgrade | True | Auto Update & Upgrade base packages |
-| auto_retry | True | Auto-retry once on Sunbeam deployment timeouts |
+| max_retries | 2 | Maximum retry attempts on Sunbeam Terraform deployment timeouts |
 | vm_image | ubuntu:24.04 | Base operating system image for the primary MAAS controller |
 | sys_user | ubuntu | Default system user for SSH access |
 | password | ubuntu | Password for the default system user |
@@ -177,7 +177,7 @@ When launching this Transcript, `synth` will parse the payload and optionally pr
 | maas_cidr | 10.10.0.0/22 | Subnet CIDR for the MAAS network |
 | maas_ip_count | 30 | Number of IPs to reserve for the MAAS dynamic DHCP pool |
 | os_deployment | sunbeam | Internal logical name for the Sunbeam deployment |
-| os_multi_mysql | False | Enable dedicated MySQL cluster per OpenStack service control-plane database topology|
+| os_multi_mysql | False | Enable dedicated MySQL cluster per OpenStack service control-plane database topology |
 | os_run_demo | True | Run the Sunbeam demo user setup |
 | os_neutron_bridge | nbr0 | Name of the dedicated Neutron network bridge |
 | os_neutron_cidr | 10.20.0.0/22 | Subnet CIDR for the OpenStack provider network |
@@ -230,6 +230,7 @@ Because Testflinger machines vary significantly in CPU, RAM, and local storage, 
 
 | Template | CPU | RAM | Disk | Template Footprint | Addon Capacity & Notes |
 | :--- | :--- | :--- | :--- | :--- | :--- |
+| `tadrock.yaml` | 16 | 62&nbsp;GiB | ~783&nbsp;GiB | 16&nbsp;Cores<br>62&nbsp;GiB&nbsp;RAM<br>240&nbsp;GiB&nbsp;Disk | **Partial (single-node, no COS):** Constrained by 16 cores and 62 GiB RAM; runs a non-HA (`1x` cloud node) topology with core addons and a 100 GiB cloud root disk |
 | `aitken.yaml` | 96 | 126&nbsp;GiB | ~822&nbsp;GiB | 48&nbsp;Cores<br>112&nbsp;GiB&nbsp;RAM<br>640&nbsp;GiB&nbsp;Disk | **Partial (no COS):** Constrained by 126 GiB RAM and ~822 GiB disk; runs core addons with 100 GiB cloud root disks |
 | `oogtar.yaml` | 256 | 126&nbsp;GiB | ~894&nbsp;GiB | 90&nbsp;Cores<br>112&nbsp;GiB&nbsp;RAM<br>700&nbsp;GiB&nbsp;Disk | **Partial (no COS):** Constrained by 126 GiB RAM and ~894 GiB disk; lacks disk headroom for COS without shrinking OSDs |
 | `tabuu.yaml` | 32 | 251&nbsp;GiB | ~823&nbsp;GiB | 30&nbsp;Cores<br>216&nbsp;GiB&nbsp;RAM<br>700&nbsp;GiB&nbsp;Disk | **Most (14/17, no COS):** High RAM supports most addons, but 32 cores and 100 GiB cloud root disks exclude COS, Masakari, and Designate |
@@ -242,6 +243,7 @@ Because Testflinger machines vary significantly in CPU, RAM, and local storage, 
 
 | Machine | MAAS | Juju | Sunbeam | Cloud Nodes | OSDs / Node | Enabled Addons |
 | :--- | :--- | :--- | :--- | :--- | :--- | :--- |
+| `tadrock` | **1x**<br>2&nbsp;Cores<br>8&nbsp;GiB&nbsp;RAM<br>30&nbsp;GiB&nbsp;Disk | **1x**<br>2&nbsp;Cores<br>8&nbsp;GiB&nbsp;RAM<br>30&nbsp;GiB&nbsp;Disk | **1x**<br>2&nbsp;Cores<br>6&nbsp;GiB&nbsp;RAM<br>30&nbsp;GiB&nbsp;Disk | **1x**<br>10&nbsp;Cores<br>40&nbsp;GiB&nbsp;RAM<br>100&nbsp;GiB&nbsp;Disk | **1x**<br>50&nbsp;GiB | Vault, TLS, Barbican, Octavia, Masakari, Tempest |
 | `aitken` | **1x**<br>4&nbsp;Cores<br>8&nbsp;GiB&nbsp;RAM<br>40&nbsp;GiB&nbsp;Disk | **1x**<br>4&nbsp;Cores<br>4&nbsp;GiB&nbsp;RAM<br>30&nbsp;GiB&nbsp;Disk | **1x**<br>4&nbsp;Cores<br>4&nbsp;GiB&nbsp;RAM<br>30&nbsp;GiB&nbsp;Disk | **3x**<br>12&nbsp;Cores<br>32&nbsp;GiB&nbsp;RAM<br>100&nbsp;GiB&nbsp;Disk | **2x**<br>40&nbsp;GiB | Vault, Barbican, Octavia, Masakari, Tempest |
 | `oogtar` | **1x**<br>8&nbsp;Cores<br>8&nbsp;GiB&nbsp;RAM<br>40&nbsp;GiB&nbsp;Disk | **1x**<br>8&nbsp;Cores<br>4&nbsp;GiB&nbsp;RAM<br>30&nbsp;GiB&nbsp;Disk | **1x**<br>8&nbsp;Cores<br>4&nbsp;GiB&nbsp;RAM<br>30&nbsp;GiB&nbsp;Disk | **3x**<br>22&nbsp;Cores<br>32&nbsp;GiB&nbsp;RAM<br>100&nbsp;GiB&nbsp;Disk | **2x**<br>50&nbsp;GiB | Vault, TLS, Barbican, Octavia, Masakari, Tempest |
 | `tabuu` | **1x**<br>2&nbsp;Cores<br>8&nbsp;GiB&nbsp;RAM<br>40&nbsp;GiB&nbsp;Disk | **1x**<br>2&nbsp;Cores<br>8&nbsp;GiB&nbsp;RAM<br>30&nbsp;GiB&nbsp;Disk | **1x**<br>2&nbsp;Cores<br>8&nbsp;GiB&nbsp;RAM<br>30&nbsp;GiB&nbsp;Disk | **3x**<br>8&nbsp;Cores<br>64&nbsp;GiB&nbsp;RAM<br>100&nbsp;GiB&nbsp;Disk | **2x**<br>50&nbsp;GiB | All except Masakari, Designate, COS |
