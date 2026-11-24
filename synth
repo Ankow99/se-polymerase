@@ -4,7 +4,7 @@
 # se-polymerase (synth)
 # Acts as the polymerase to synthesize an isolated, terraform-free LXD 
 # reproducer environment using the host's LXD for MAAS + Juju deployments.
-# version: 10.1.0
+# version: 12.0.0
 #
 # Synthesized by: Pablo Gonzalez De Greiff @ Canonical
 # ---
@@ -48,12 +48,20 @@ INPUT_CONFIG_FILE=""
 # Check if stderr is a TTY
 if [ -t 2 ]; then
     BRED='\033[1;31m'
+    BGREEN='\033[1;32m'
     BYELLOW='\033[1;33m'
     NC='\033[0m'
 else
     BRED=''
+    BGREEN=''
     BYELLOW=''
     NC=''
+fi
+
+if command -v "$(basename "$0")" >/dev/null 2>&1; then
+    CMD_NAME="$(basename "$0")"
+else
+    CMD_NAME="$0"
 fi
 
 # ==========================================
@@ -62,13 +70,26 @@ fi
 
 show_help() {
     echo -e "$(cat << EOF
-${BYELLOW}se-polymerase: LXD Reproducer Synthesis Automation${NC}
-Usage: $0 [OPTIONS] <CLOUD_INIT_FILE> [DEPLOY_ID]
+${BYELLOW}Polymerase: LXD Reproducer Synthesis Automation${NC}
 
-Acts as the polymerase to synthesize an isolated, cloud-init based LXD reproducer environment.
-Logs are always saved to 'log-<LXD_PROJECT>.log'. Once the deployment phase begins, you can safely press Ctrl+C to detach your terminal and let it finish in the background.
+${BYELLOW}Usage:${NC}
+  $CMD_NAME [OPTIONS] <CLOUD_INIT_FILE> [DEPLOY_ID]
+  $CMD_NAME <COMMAND> [ARGS]
 
-${BYELLOW}Options:${NC}
+Acts as the polymerase to synthesize and manage isolated, cloud-init based LXD reproducer environments.
+Logs are saved to 'log-<LXD_PROJECT>.log'. Once the deployment phase begins, you can safely press Ctrl+C to detach your terminal and let it finish in the background.
+
+${BYELLOW}Management Commands:${NC}
+  list                      List all managed labs, their IDs, IPs, and deployment status.
+  monitor <id|name>         Stream or view deployment logs for a lab (aliases: logs, log).
+  shell <id|name>           Connect to a lab's primary VM via SSH (falls back to 'lxc shell').
+  info <id|name>            Display access details, tunnels, and credentials for a lab.
+  destroy <id|name>         Tear down a lab and clean up all associated resources (aliases: rm, delete).
+  completion                Generate or install Bash tab-completion for synth.
+
+  Run '$CMD_NAME <COMMAND> --help' for command-specific options.
+
+${BYELLOW}Deployment Options:${NC}
   -h, --help                Show this help message and exit.
   -y, --yes                 Bypass interactive prompts and accept all defaults.
   -n, --nested              Deploy using a nested LXD architecture (default is non-nested).
@@ -78,24 +99,1030 @@ ${BYELLOW}Options:${NC}
   -c, --config <file>       Load a pre-defined YAML configuration file to bypass prompts.
   -m, --manifest <file>     Provide a custom Sunbeam manifest.yaml to override the default.
 
-${BYELLOW}Arguments:${NC}
+${BYELLOW}Deployment Arguments:${NC}
   CLOUD_INIT_FILE           Path to the cloud-init.yaml template to deploy.
   DEPLOY_ID                 Specify a custom alphanumeric deployment ID (max 8 chars).
 
-${BYELLOW}Example:${NC}
-  # Synthesize an environment accepting all defaults, using deb MAAS, and use '00426900' as the ID:
-  $0 Sunbeam/sunbeam.yaml -yd 00426900
+${BYELLOW}Examples:${NC}
+  # Synthesize an environment accepting all defaults, using deb MAAS, and '00426900' as ID:
+  $CMD_NAME Sunbeam/sunbeam.yaml -yd 00426900
 
-  # Synthesize an environment using pre-defined options from a previous run:
-  $0 Sunbeam/sunbeam.yaml -y -c config-sunbeam-00426900.yaml
+  # List deployed labs and connect to lab #1:
+  $CMD_NAME list
+  $CMD_NAME shell 1
+
+  # Destroy lab #1 without confirmation:
+  $CMD_NAME destroy 1 -y
 
 EOF
     )"
     exit 0
 }
 
+get_next_synth_id() {
+    local used_ids
+    used_ids=$(lxc project list --format json 2>/dev/null | jq -r '.[] | select(.config["user.synth.managed"]=="true") | .config["user.synth.id"] // empty' | sort -n)
+    local candidate=1
+    while echo "$used_ids" | grep -qx "$candidate"; do
+        candidate=$((candidate + 1))
+    done
+    echo "$candidate"
+}
+
+save_lab_metadata() {
+    local created_br_csv
+    created_br_csv=$(IFS=,; echo "${CREATED_BRIDGES[*]}")
+    
+    lxc project set "$LXD_PROJECT" user.synth.managed="true"
+    lxc project set "$LXD_PROJECT" user.synth.id="$SYNTH_ID"
+    lxc project set "$LXD_PROJECT" user.synth.deploy_id="$DEPLOY_ID"
+    lxc project set "$LXD_PROJECT" user.synth.repro="$REPRO_NAME"
+    lxc project set "$LXD_PROJECT" user.synth.status="deploying"
+    lxc project set "$LXD_PROJECT" user.synth.primary_vm="$VM_NAME"
+    lxc project set "$LXD_PROJECT" user.synth.sys_user="${SYS_USER:-ubuntu}"
+    lxc project set "$LXD_PROJECT" user.synth.ssh_key="${SSH_ID:-}"
+    lxc project set "$LXD_PROJECT" user.synth.nested="$NESTED"
+    lxc project set "$LXD_PROJECT" user.synth.lxd_pool="$LXD_POOL"
+    lxc project set "$LXD_PROJECT" user.synth.shared_images="$SHARED_IMAGES"
+    lxc project set "$LXD_PROJECT" user.synth.primary_bridge="${PRIMARY_BRIDGE:-}"
+    lxc project set "$LXD_PROJECT" user.synth.primary_bridge_created="$PRIMARY_BRIDGE_CREATED"
+    lxc project set "$LXD_PROJECT" user.synth.primary_static_ip="${PRIMARY_STATIC_IP:-}"
+    lxc project set "$LXD_PROJECT" user.synth.created_bridges="$created_br_csv"
+    lxc project set "$LXD_PROJECT" user.synth.volatile_cert="${VOLATILE_CERT:-}"
+    lxc project set "$LXD_PROJECT" user.synth.project_dir="$PROJECT_DIR"
+    lxc project set "$LXD_PROJECT" user.synth.access_file="$ACCESS_FILE"
+    lxc project set "$LXD_PROJECT" user.synth.log_file="$LOG_FILE"
+    lxc project set "$LXD_PROJECT" user.synth.config_file="$CONFIG_FILE"
+}
+
+split_short_flags() {
+    PARSED_ARGS=()
+    for arg in "$@"; do
+        if [[ "$arg" =~ ^-[a-zA-Z]{2,}$ ]]; then
+            for (( i=1; i<${#arg}; i++ )); do
+                PARSED_ARGS+=("-${arg:$i:1}")
+            done
+        else
+            PARSED_ARGS+=("$arg")
+        fi
+    done
+}
+
+resolve_lab() {
+    local target="$1"
+    if [ -z "$target" ]; then
+        echo -e "${BRED}Error: You must specify a lab ID, deploy ID, or project name.${NC}" >&2
+        echo "Run '$CMD_NAME list' to see active environments." >&2
+        return 1
+    fi
+    
+    local target_lower
+    target_lower=$(echo "$target" | tr '[:upper:]' '[:lower:]')
+    
+    local matched_project
+    matched_project=$(lxc project list --format json 2>/dev/null | jq -r --arg t "$target" --arg tl "$target_lower" '
+        [ .[] | select(.config["user.synth.managed"]=="true") |
+          select(
+            (.config["user.synth.id"] == $t) or
+            ((.config["user.synth.deploy_id"] // "" | ascii_downcase) == $tl) or
+            ((.name | ascii_downcase) == $tl)
+          )
+        ][0].name // empty
+    ')
+    
+    if [ -z "$matched_project" ]; then
+        echo -e "${BRED}Error: No managed lab found matching '${NC}${target}${BRED}'.${NC}" >&2
+        echo "Run '$CMD_NAME list' to see active environments." >&2
+        return 1
+    fi
+    
+    echo "$matched_project"
+    return 0
+}
+
+get_vm_ipv4() {
+    local proj="$1"
+    local vm="$2"
+    lxc list "$vm" --project "$proj" --format=json 2>/dev/null | jq -r '
+        .[0].state.network // {} | to_entries |
+        (
+            [ .[] | select(.key=="eth0" or .key=="enp5s0") | .value.addresses[]? | select(.family=="inet" and .scope=="global") | .address ] +
+            [ .[] | select(.key!="lo") | .value.addresses[]? | select(.family=="inet" and .scope=="global") | .address ]
+        ) | .[0] // empty
+    ' 2>/dev/null | head -n 1
+}
+
+get_status_color() {
+    case "$1" in
+        deployed)  echo -n "$BGREEN" ;;
+        deploying) echo -n "$BYELLOW" ;;
+        failed)    echo -n "$BRED" ;;
+        *)         echo -n "$NC" ;;
+    esac
+}
+
+# ==========================================
+# MANAGEMENT SUBCOMMANDS
+# ==========================================
+
+cmd_list() {
+    split_short_flags "$@"
+    set -- ${PARSED_ARGS[@]+"${PARSED_ARGS[@]}"}
+    
+    while [[ $# -gt 0 ]]; do
+        case "$1" in
+            -h|--help)
+                cat << EOF
+Usage: $CMD_NAME list
+
+List all synth-managed LXD environments, their persistent IDs, primary VM IPs, and current deployment status.
+
+Aliases: ls
+EOF
+                exit 0
+                ;;
+            -*)
+                echo -e "${BRED}Error: Unknown flag '${NC}${1}${BRED}' for list command.${NC}"
+                exit 1
+                ;;
+            *)
+                echo -e "${BRED}Error: Unexpected argument '${NC}${1}${BRED}' for list command.${NC}"
+                exit 1
+                ;;
+        esac
+    done
+    
+    local projects_json
+    projects_json=$(lxc project list --format json 2>/dev/null)
+    
+    if [ -z "$projects_json" ]; then
+        echo -e "${BRED}Error: Unable to query LXD projects.${NC}"
+        exit 1
+    fi
+    
+    local managed_rows
+    managed_rows=$(echo "$projects_json" | jq -r '
+        [ .[] | select(.config["user.synth.managed"]=="true") ] |
+        sort_by((.config["user.synth.id"] // "999999") | tonumber) |
+        .[] | [
+            (.config["user.synth.id"] // "-"),
+            (.config["user.synth.deploy_id"] // "-"),
+            .name,
+            (.config["user.synth.repro"] // "-" | ascii_downcase),
+            (.config["user.synth.primary_vm"] // "-"),
+            (.config["user.synth.status"] // "unknown"),
+            (.config["user.synth.worker_pid"] // "")
+        ] | @tsv
+    ')
+    
+    if [ -z "$managed_rows" ]; then
+        echo ""
+        echo -e "${BYELLOW}No active synth environments found.${NC}"
+        echo ""
+        exit 0
+    fi
+    
+    local table_data=""
+    while IFS=$'\t' read -r id deploy_id proj repro primary_vm status worker_pid; do
+        # Verify background worker is still alive if status is 'deploying'
+        if [ "$status" = "deploying" ] && [ -n "$worker_pid" ]; then
+            if [ ! -d "/proc/$worker_pid" ]; then
+                local latest_status
+                latest_status=$(lxc project get "$proj" user.synth.status 2>/dev/null || echo "failed")
+                if [ "$latest_status" = "deploying" ]; then
+                    status="failed"
+                    lxc project set "$proj" user.synth.status="failed" 2>/dev/null || true
+                else
+                    status="$latest_status"
+                fi
+            fi
+        fi
+        
+        local ip_addr
+        ip_addr=$(get_vm_ipv4 "$proj" "$primary_vm")
+        [ -z "$ip_addr" ] && ip_addr="-"
+        
+        table_data+="${id}"$'\t'"${deploy_id}"$'\t'"${proj}"$'\t'"${repro}"$'\t'"${primary_vm}"$'\t'"${ip_addr}"$'\t'"${status}"$'\n'
+    done <<< "$managed_rows"
+    
+    local use_color="0"
+    [ -t 1 ] && use_color="1"
+    
+    echo ""
+    printf '%s' "$table_data" | python3 -c '
+import sys
+
+use_color = sys.argv[1] == "1"
+BGREEN = "\033[1;32m" if use_color else ""
+BYELLOW = "\033[1;33m" if use_color else ""
+BRED = "\033[1;31m" if use_color else ""
+NC = "\033[0m" if use_color else ""
+
+headers = ["ID", "Deploy ID", "Project", "Type", "Primary VM", "IP Address", "Status"]
+rows = [line.rstrip("\n").split("\t") for line in sys.stdin if line.strip()]
+
+widths = [len(h) for h in headers]
+for r in rows:
+    for i, cell in enumerate(r[:len(headers)]):
+        widths[i] = max(widths[i], len(cell))
+
+sep = "+" + "+".join("-" * (w + 2) for w in widths) + "+"
+
+def fmt_row(cells, is_header=False):
+    parts = []
+    for i, w in enumerate(widths):
+        val = cells[i] if i < len(cells) else ""
+        padded = f" {val:<{w}} "
+        if is_header and use_color:
+            padded = f"{BYELLOW}{padded}{NC}"
+        elif not is_header and i == 6 and use_color:
+            color = {"deployed": BGREEN, "deploying": BYELLOW, "failed": BRED}.get(val, "")
+            if color:
+                padded = f" {color}{val:<{w}}{NC} "
+        parts.append(padded)
+    return "|" + "|".join(parts) + "|"
+
+print(sep)
+print(fmt_row(headers, is_header=True))
+print(sep)
+for r in rows:
+    print(fmt_row(r))
+print(sep)
+' "$use_color"
+    echo ""
+    exit 0
+}
+
+cmd_monitor() {
+    local target=""
+    local tail_lines="10"
+    
+    split_short_flags "$@"
+    set -- ${PARSED_ARGS[@]+"${PARSED_ARGS[@]}"}
+    
+    while [[ $# -gt 0 ]]; do
+        case "$1" in
+            -h|--help)
+                cat << EOF
+Usage: $CMD_NAME monitor <id|deploy_id|project> [OPTIONS]
+
+Tail the last 10 lines of a lab's deployment log and stream live while deploying.
+For completed or failed labs, displays the tail of the log and exits.
+Press Ctrl+C at any time to detach without interrupting the background deployment.
+
+Options:
+  -n, --lines <N>       Show the last N lines (default: 10).
+  -a, --all             Show the entire log file from the beginning.
+  -h, --help            Show this help message and exit.
+
+Aliases: logs, log
+EOF
+                exit 0
+                ;;
+            -a|--all)
+                tail_lines="+1"
+                shift 1
+                ;;
+            -n|--lines)
+                if [[ -n "$2" && "$2" =~ ^[0-9]+$ ]]; then
+                    tail_lines="$2"
+                    shift 2
+                else
+                    echo -e "${BRED}Error: $1 requires a numeric line count.${NC}"
+                    exit 1
+                fi
+                ;;
+            -*)
+                echo -e "${BRED}Error: Unknown flag '${NC}${1}${BRED}' for monitor command.${NC}"
+                exit 1
+                ;;
+            *)
+                if [ -z "$target" ]; then
+                    target="$1"
+                    shift 1
+                else
+                    echo -e "${BRED}Error: Unexpected extra argument '${NC}${1}${BRED}'.${NC}"
+                    exit 1
+                fi
+                ;;
+        esac
+    done
+    
+    local proj
+    proj=$(resolve_lab "$target") || exit 1
+    
+    local lab_id status worker_pid log_file
+    lab_id=$(lxc project get "$proj" user.synth.id 2>/dev/null)
+    status=$(lxc project get "$proj" user.synth.status 2>/dev/null)
+    worker_pid=$(lxc project get "$proj" user.synth.worker_pid 2>/dev/null)
+    log_file=$(lxc project get "$proj" user.synth.log_file 2>/dev/null)
+    
+    if [ "$status" = "deploying" ] && [ -n "$worker_pid" ] && [ ! -d "/proc/$worker_pid" ]; then
+        status=$(lxc project get "$proj" user.synth.status 2>/dev/null || echo "failed")
+        if [ "$status" = "deploying" ]; then
+            status="failed"
+            lxc project set "$proj" user.synth.status="failed" 2>/dev/null || true
+        fi
+    fi
+    
+    local status_color
+    status_color=$(get_status_color "$status")
+    
+    if [ -z "$log_file" ] || [ ! -f "$log_file" ]; then
+        echo -e "${BRED}Error: Log file not found for lab #${lab_id} (${NC}${proj}${BRED}).${NC}"
+        exit 1
+    fi
+    
+    trap '
+        echo -ne "\033[?25h"
+        echo ""
+        echo -e "${BYELLOW}-> Detached from monitor. Background deployment is unaffected.${NC}"
+        echo ""
+        exit 0
+    ' INT TERM
+    
+    echo ""
+    if [ "$status" = "deploying" ] && [ -n "$worker_pid" ] && [ -d "/proc/$worker_pid" ]; then
+        echo -e "${BYELLOW}-> Monitoring live deployment for lab #${lab_id} (${NC}${proj}${BYELLOW}) [Ctrl+C to detach]...${NC}"
+        echo ""
+        sleep 5
+        tail -n "$tail_lines" -f --pid="$worker_pid" "$log_file"
+        echo -ne "\033[?25h"
+    else
+        echo -e "${BYELLOW}-> Showing deployment log for lab #${lab_id} (${NC}${proj}${BYELLOW} | Status: ${status_color}${status}${BYELLOW}):${NC}"
+        echo ""
+        sleep 5
+        tail -n "$tail_lines" "$log_file"
+    fi
+    exit 0
+}
+
+cmd_shell() {
+    local target=""
+    local force_lxc=false
+    
+    split_short_flags "$@"
+    set -- ${PARSED_ARGS[@]+"${PARSED_ARGS[@]}"}
+    
+    while [[ $# -gt 0 ]]; do
+        case "$1" in
+            -h|--help)
+                cat << EOF
+Usage: $CMD_NAME shell <id|deploy_id|project> [OPTIONS]
+
+Connect to a lab's primary VM via SSH using the configured key and user.
+Automatically falls back to 'lxc shell' if the VM has no IP yet or SSH is unreachable.
+
+Options:
+  --lxc                 Skip SSH and connect directly via 'lxc shell'.
+  -h, --help            Show this help message and exit.
+
+Aliases: connect, ssh
+EOF
+                exit 0
+                ;;
+            --lxc)
+                force_lxc=true
+                shift 1
+                ;;
+            -*)
+                echo -e "${BRED}Error: Unknown flag '${NC}${1}${BRED}' for shell command.${NC}"
+                exit 1
+                ;;
+            *)
+                if [ -z "$target" ]; then
+                    target="$1"
+                    shift 1
+                else
+                    echo -e "${BRED}Error: Unexpected extra argument '${NC}${1}${BRED}'.${NC}"
+                    exit 1
+                fi
+                ;;
+        esac
+    done
+    
+    local proj
+    proj=$(resolve_lab "$target") || exit 1
+    
+    local primary_vm sys_user ssh_key
+    primary_vm=$(lxc project get "$proj" user.synth.primary_vm 2>/dev/null)
+    sys_user=$(lxc project get "$proj" user.synth.sys_user 2>/dev/null)
+    sys_user="${sys_user:-ubuntu}"
+    ssh_key=$(lxc project get "$proj" user.synth.ssh_key 2>/dev/null)
+    
+    local vm_state
+    vm_state=$(lxc list "$primary_vm" --project "$proj" --format json 2>/dev/null | jq -r '.[0].status // empty')
+    
+    if [ -z "$vm_state" ]; then
+        echo -e "${BRED}Error: Primary VM '${NC}${primary_vm}${BRED}' not found in project '${NC}${proj}${BRED}'.${NC}"
+        exit 1
+    elif [ "$vm_state" != "Running" ]; then
+        echo -e "${BRED}Error: Primary VM '${NC}${primary_vm}${BRED}' is currently '${NC}${vm_state}${BRED}'.${NC}"
+        echo "Start it with: lxc start $primary_vm --project $proj"
+        exit 1
+    fi
+    
+    echo ""
+    if [ "$force_lxc" = true ]; then
+        echo -e "${BYELLOW}-> Opening '${NC}lxc shell${BYELLOW}' into '${NC}${primary_vm}${BYELLOW}' (${NC}${proj}${BYELLOW})...${NC}"
+        echo ""
+        exec lxc shell "$primary_vm" --project "$proj"
+    fi
+    
+    local ip_addr
+    ip_addr=$(get_vm_ipv4 "$proj" "$primary_vm")
+    
+    local ssh_opts=()
+    if [ -n "$ssh_key" ] && [ -f "$ssh_key" ]; then
+        ssh_opts=(-i "$ssh_key" -o "StrictHostKeyChecking=no" -o "UserKnownHostsFile=/dev/null")
+    else
+        ssh_opts=(-o "StrictHostKeyChecking=no" -o "UserKnownHostsFile=/dev/null")
+    fi
+    
+    if [ -n "$ip_addr" ]; then
+        # Fast pre-flight check to verify SSH daemon and keys are ready
+        if ssh -o ConnectTimeout=3 -o BatchMode=yes "${ssh_opts[@]}" "${sys_user}@${ip_addr}" true >/dev/null 2>&1; then
+            echo -e "${BYELLOW}-> Connecting to '${NC}${proj}${BYELLOW}' (${NC}${sys_user}@${ip_addr}${BYELLOW}) via SSH...${NC}"
+            echo ""
+            exec ssh "${ssh_opts[@]}" "${sys_user}@${ip_addr}"
+        else
+            echo -e "${BYELLOW}-> SSH to '${NC}${sys_user}@${ip_addr}${BYELLOW}' is not ready or failed. Falling back to '${NC}lxc shell${BYELLOW}'...${NC}"
+            echo ""
+            exec lxc shell "$primary_vm" --project "$proj"
+        fi
+    else
+        echo -e "${BYELLOW}-> Primary VM has no IPv4 address yet. Falling back to '${NC}lxc shell${BYELLOW}'...${NC}"
+        echo ""
+        exec lxc shell "$primary_vm" --project "$proj"
+    fi
+}
+
+cmd_info() {
+    local target=""
+    
+    split_short_flags "$@"
+    set -- ${PARSED_ARGS[@]+"${PARSED_ARGS[@]}"}
+    
+    while [[ $# -gt 0 ]]; do
+        case "$1" in
+            -h|--help)
+                cat << EOF
+Usage: $CMD_NAME info <id|deploy_id|project>
+
+Display access details, SSH commands, SSH port-forwarding tunnels, and dashboard credentials for a lab.
+EOF
+                exit 0
+                ;;
+            -*)
+                echo -e "${BRED}Error: Unknown flag '${NC}${1}${BRED}' for info command.${NC}"
+                exit 1
+                ;;
+            *)
+                if [ -z "$target" ]; then
+                    target="$1"
+                    shift 1
+                else
+                    echo -e "${BRED}Error: Unexpected extra argument '${NC}${1}${BRED}'.${NC}"
+                    exit 1
+                fi
+                ;;
+        esac
+    done
+    
+    local proj
+    proj=$(resolve_lab "$target") || exit 1
+    
+    local lab_id deploy_id status worker_pid primary_vm sys_user ssh_key access_file log_file config_file
+    lab_id=$(lxc project get "$proj" user.synth.id 2>/dev/null)
+    deploy_id=$(lxc project get "$proj" user.synth.deploy_id 2>/dev/null)
+    status=$(lxc project get "$proj" user.synth.status 2>/dev/null)
+    worker_pid=$(lxc project get "$proj" user.synth.worker_pid 2>/dev/null)
+    primary_vm=$(lxc project get "$proj" user.synth.primary_vm 2>/dev/null)
+    sys_user=$(lxc project get "$proj" user.synth.sys_user 2>/dev/null)
+    sys_user="${sys_user:-ubuntu}"
+    ssh_key=$(lxc project get "$proj" user.synth.ssh_key 2>/dev/null)
+    access_file=$(lxc project get "$proj" user.synth.access_file 2>/dev/null)
+    log_file=$(lxc project get "$proj" user.synth.log_file 2>/dev/null)
+    config_file=$(lxc project get "$proj" user.synth.config_file 2>/dev/null)
+    
+    if [ "$status" = "deploying" ] && [ -n "$worker_pid" ] && [ ! -d "/proc/$worker_pid" ]; then
+        status=$(lxc project get "$proj" user.synth.status 2>/dev/null || echo "failed")
+        if [ "$status" = "deploying" ]; then
+            status="failed"
+            lxc project set "$proj" user.synth.status="failed" 2>/dev/null || true
+        fi
+    fi
+    
+    local status_color
+    status_color=$(get_status_color "$status")
+    
+    echo ""
+    echo -e "${BYELLOW}Lab #${lab_id} (${NC}${proj}${BYELLOW} | ID: ${NC}${deploy_id}${BYELLOW} | Status: ${status_color}${status}${BYELLOW})${NC}"
+    [ -n "$log_file" ] && [ -f "$log_file" ] && echo -e "${BYELLOW}Log File:${NC}    $log_file"
+    [ -n "$config_file" ] && [ -f "$config_file" ] && echo -e "${BYELLOW}Config File:${NC} $config_file"
+    echo ""
+    
+    if [ -n "$access_file" ] && [ -f "$access_file" ]; then
+        cat "$access_file"
+    else
+        local ip_addr
+        ip_addr=$(get_vm_ipv4 "$proj" "$primary_vm")
+        local ssh_cmd="ssh -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null"
+        [ -n "$ssh_key" ] && [ -f "$ssh_key" ] && ssh_cmd="ssh -i $ssh_key -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null"
+        
+        echo "=========================================="
+        echo " Access Details for ${proj}"
+        echo "=========================================="
+        echo ""
+        echo "[ LXD Web UI ]"
+        echo "  URL:      https://localhost:8443/ui/project/${proj}/instances"
+        echo ""
+        echo "[ SSH Access - Primary VM ]"
+        if [ -n "$ip_addr" ]; then
+            echo "  ${ssh_cmd} ${sys_user}@${ip_addr}"
+        else
+            echo "  (Waiting for Primary VM IP address — use '$CMD_NAME shell ${lab_id}' for lxc shell)"
+        fi
+        echo ""
+    fi
+    exit 0
+}
+
+cmd_destroy() {
+    local target=""
+    local skip_confirm=false
+    local remove_all=false
+    
+    split_short_flags "$@"
+    set -- ${PARSED_ARGS[@]+"${PARSED_ARGS[@]}"}
+    
+    while [[ $# -gt 0 ]]; do
+        case "$1" in
+            -h|--help)
+                cat << EOF
+Usage: $CMD_NAME destroy <id|deploy_id|project> [OPTIONS]
+
+Tear down a managed lab, terminating any active background worker and deleting its LXD project,
+instances, custom volumes, dynamic bridges, DNS records, volatile certificates, and log/access files.
+
+Options:
+  -y, --yes             Skip confirmation prompt and destroy immediately.
+  -a, --all             Also remove the saved deployment configuration file (config-*.yaml).
+  -h, --help            Show this help message and exit.
+
+Aliases: rm, delete
+EOF
+                exit 0
+                ;;
+            -y|--yes)
+                skip_confirm=true
+                shift 1
+                ;;
+            -a|--all)
+                remove_all=true
+                shift 1
+                ;;
+            -*)
+                echo -e "${BRED}Error: Unknown flag '${NC}${1}${BRED}' for destroy command.${NC}"
+                exit 1
+                ;;
+            *)
+                if [ -z "$target" ]; then
+                    target="$1"
+                    shift 1
+                else
+                    echo -e "${BRED}Error: Unexpected extra argument '${NC}${1}${BRED}'.${NC}"
+                    exit 1
+                fi
+                ;;
+        esac
+    done
+    
+    local proj
+    proj=$(resolve_lab "$target") || exit 1
+    
+    local lab_id worker_pid primary_vm lxd_pool shared_images
+    local primary_bridge primary_bridge_created primary_static_ip created_bridges_csv
+    local volatile_cert project_dir access_file log_file config_file term_size_file
+    
+    lab_id=$(lxc project get "$proj" user.synth.id 2>/dev/null)
+    worker_pid=$(lxc project get "$proj" user.synth.worker_pid 2>/dev/null)
+    primary_vm=$(lxc project get "$proj" user.synth.primary_vm 2>/dev/null)
+    lxd_pool=$(lxc project get "$proj" user.synth.lxd_pool 2>/dev/null)
+    lxd_pool="${lxd_pool:-default}"
+    shared_images=$(lxc project get "$proj" user.synth.shared_images 2>/dev/null)
+    primary_bridge=$(lxc project get "$proj" user.synth.primary_bridge 2>/dev/null)
+    primary_bridge_created=$(lxc project get "$proj" user.synth.primary_bridge_created 2>/dev/null)
+    primary_static_ip=$(lxc project get "$proj" user.synth.primary_static_ip 2>/dev/null)
+    created_bridges_csv=$(lxc project get "$proj" user.synth.created_bridges 2>/dev/null)
+    volatile_cert=$(lxc project get "$proj" user.synth.volatile_cert 2>/dev/null)
+    project_dir=$(lxc project get "$proj" user.synth.project_dir 2>/dev/null)
+    access_file=$(lxc project get "$proj" user.synth.access_file 2>/dev/null)
+    log_file=$(lxc project get "$proj" user.synth.log_file 2>/dev/null)
+    config_file=$(lxc project get "$proj" user.synth.config_file 2>/dev/null)
+    term_size_file="${project_dir:+${project_dir}/.term_size}"
+    
+    if [ "$skip_confirm" = false ]; then
+        echo ""
+        if [ "$remove_all" = true ]; then
+            echo -ne "${BYELLOW}Destroy lab #${lab_id} (${NC}${proj}${BYELLOW}) and all its resources (including config file)? [y/N]: ${NC}"
+        else
+            echo -ne "${BYELLOW}Destroy lab #${lab_id} (${NC}${proj}${BYELLOW}) and all its resources? [y/N]: ${NC}"
+        fi
+        read -r confirm_input </dev/tty
+        if [[ ! "$confirm_input" =~ ^[Yy]$ ]]; then
+            echo ""
+            echo -e "${BRED}Action aborted by user. Exiting.${NC}"
+            exit 1
+        fi
+    fi
+    
+    echo ""
+    echo -e "${BYELLOW}----- Starting Cleanup for Lab #${lab_id} (${NC}${proj}${BYELLOW}) -----${NC}"
+    echo ""
+    
+    # 1. Terminate active background worker first so it does not race with instance deletion
+    if [ -n "$worker_pid" ]; then
+        echo -e "${BYELLOW}-> Checking background worker process (${NC}${worker_pid}${BYELLOW})...${NC}"
+        echo ""
+        if [ -d "/proc/$worker_pid" ]; then
+            kill -9 "$worker_pid" 2>/dev/null || sudo kill -9 "$worker_pid" 2>/dev/null || true
+            sleep 0.5
+            if [ ! -d "/proc/$worker_pid" ]; then
+                echo "Background worker process ($worker_pid) forcibly terminated."
+            else
+                echo -e "${BRED}Warning: Could not terminate background worker process ($worker_pid).${NC}"
+            fi
+        else
+            echo "Background worker process ($worker_pid) is not running."
+        fi
+        echo ""
+    fi
+    
+    # 2. Purge LXD project instances, custom volumes, isolated images, and project
+    echo -e "${BYELLOW}-> Cleaning up dedicated LXD project:${NC} $proj"
+    echo ""
+    if lxc project list --format csv 2>/dev/null | cut -d',' -f1 | grep -qx "$proj"; then
+        echo "Stopping and deleting all instances in project '$proj'..."
+        for inst in $(lxc list --project "$proj" --format json 2>/dev/null | jq -r '.[].name'); do
+            local attempts=0
+            local max_attempts=6
+
+            while lxc list --project "$proj" --format csv -c n 2>/dev/null | grep -qx "${inst}"; do
+                if [ $attempts -ge $max_attempts ]; then
+                    echo ""
+                    echo -e "${BRED}Error: Instance '$inst' is stuck and refused to delete.${NC}"
+                    echo "Please run 'sudo snap restart lxd' to break the deadlock, then run '$CMD_NAME destroy $lab_id' again."
+                    exit 1
+                fi
+                
+                [ $attempts -gt 0 ] && echo "Instance busy. Retrying deletion for '$inst' (Attempt $((attempts+1))/$max_attempts)..."
+                
+                lxc stop -f --project "$proj" "$inst" 2>/dev/null || true
+                sleep 2
+                lxc delete -f --project "$proj" "$inst" 2>/dev/null || true
+                
+                attempts=$((attempts + 1))
+            done
+        done
+        
+        sleep 2
+        
+        echo "Deleting storage volumes in project '$proj'..."
+        for vol in $(lxc storage volume list "$lxd_pool" --project "$proj" --format json 2>/dev/null | jq -r '.[] | select(.type=="custom") | .name'); do
+            lxc storage volume delete "$lxd_pool" "$vol" --project "$proj"
+        done
+        
+        if [ "$shared_images" = "false" ]; then
+            echo "Deleting images in project '$proj'..."
+            for img in $(lxc image list --project "$proj" --format json 2>/dev/null | jq -r '.[].fingerprint'); do
+                lxc image delete --project "$proj" "$img"
+            done
+        fi
+        
+        lxc project switch default 2>/dev/null || true
+        lxc project delete "$proj"
+    else
+        echo "LXD project '$proj' not found, skipping..."
+    fi
+    echo ""
+    
+    # 3. Shared Primary Bridge DNS Cleanup
+    if [ "$primary_bridge_created" = "false" ] && [ -n "$primary_bridge" ] && [ -n "$primary_vm" ] && [ -n "$primary_static_ip" ]; then
+        echo -e "${BYELLOW}-> Cleaning up DNS records on shared Primary Bridge:${NC} $primary_bridge"
+        echo ""
+        if lxc network show "$primary_bridge" >/dev/null 2>&1; then
+            local target_record="host-record=${primary_vm}.lxd,${primary_static_ip}"
+            local current_dnsmasq
+            current_dnsmasq=$(lxc network get "$primary_bridge" raw.dnsmasq 2>/dev/null || true)
+            
+            if echo "$current_dnsmasq" | grep -qF "$target_record"; then
+                local new_dnsmasq
+                new_dnsmasq=$(echo "$current_dnsmasq" | grep -vF "$target_record")
+                if [ -z "$new_dnsmasq" ]; then
+                    lxc network unset "$primary_bridge" raw.dnsmasq 2>/dev/null || true
+                else
+                    lxc network set "$primary_bridge" raw.dnsmasq="$new_dnsmasq" 2>/dev/null || true
+                fi
+                echo "DNS record removed from '$primary_bridge'."
+                echo ""
+            fi
+        fi
+    fi
+    
+    # 4. Dynamic Bridges Cleanup
+    if [ -n "$created_bridges_csv" ]; then
+        IFS=',' read -ra bridges_to_delete <<< "$created_bridges_csv"
+        for br in "${bridges_to_delete[@]}"; do
+            [ -z "$br" ] && continue
+            echo -e "${BYELLOW}-> Deleting dynamic bridge:${NC} $br"
+            echo ""
+            if lxc network show "$br" >/dev/null 2>&1; then
+                lxc network delete "$br"
+            else
+                echo "Bridge '$br' not found, skipping..."
+            fi
+            echo ""
+        done
+    fi
+    
+    # 5. Volatile LXD Certificate Cleanup
+    if [ -n "$volatile_cert" ]; then
+        local cert_name
+        cert_name="$(basename "$volatile_cert")"
+        echo -e "${BYELLOW}-> Removing LXD trust for volatile certificate:${NC} ${volatile_cert}"
+        echo ""
+        local fingerprint
+        fingerprint=$(lxc config trust list --format json 2>/dev/null | jq -r ".[] | select(.name==\"${cert_name}\") | .fingerprint")
+        
+        if [ -n "$fingerprint" ] && [ "$fingerprint" != "null" ]; then
+            lxc config trust remove "$fingerprint" 2>/dev/null || true
+            echo "Certificate '${cert_name}' removed from trust store."
+        else
+            echo "Certificate '${cert_name}' not found in trust store, skipping..."
+        fi
+        rm -f "${volatile_cert}.crt" "${volatile_cert}.key"
+        echo ""
+    fi
+    
+    # 6. Local Files & Empty Directory Cleanup
+    if [ -n "$access_file" ] && [ -f "$access_file" ]; then
+        echo -e "${BYELLOW}-> Removing Access Info File:${NC} $access_file"
+        echo ""
+        rm -f "$access_file"
+    fi
+    
+    if [ -n "$log_file" ] && [ -f "$log_file" ]; then
+        echo -e "${BYELLOW}-> Removing Log File:${NC} $log_file"
+        echo ""
+        rm -f "$log_file"
+    fi
+    
+    if [ "$remove_all" = true ] && [ -n "$config_file" ] && [ -f "$config_file" ]; then
+        echo -e "${BYELLOW}-> Removing Configuration File:${NC} $config_file"
+        echo ""
+        rm -f "$config_file"
+    fi
+    
+    if [ -n "$term_size_file" ] && [ -f "$term_size_file" ]; then
+        rm -f "$term_size_file"
+    fi
+    
+    if [ -n "$project_dir" ] && [ -d "$project_dir" ]; then
+        rmdir "$project_dir" 2>/dev/null || true
+    fi
+    
+    echo -e "${BYELLOW}-------------- Cleanup Complete --------------${NC}"
+    echo ""
+    exit 0
+}
+
+cmd_completion() {
+    local action="bash"
+
+    split_short_flags "$@"
+    set -- ${PARSED_ARGS[@]+"${PARSED_ARGS[@]}"}
+
+    while [[ $# -gt 0 ]]; do
+        case "$1" in
+            -h|--help)
+                cat << EOF
+Usage: $CMD_NAME completion [bash|install]
+
+Generate or install Bash tab-completion for synth.
+
+Actions:
+  bash                  Print the Bash completion script to stdout (default).
+  install               Install completion to ~/.local/share/bash-completion/completions/synth.
+  -h, --help            Show this help message and exit.
+EOF
+                exit 0
+                ;;
+            bash|install)
+                action="$1"
+                shift 1
+                ;;
+            -*)
+                echo -e "${BRED}Error: Unknown flag '${NC}${1}${BRED}' for completion command.${NC}"
+                exit 1
+                ;;
+            *)
+                echo -e "${BRED}Error: Unexpected argument '${NC}${1}${BRED}' for completion command.${NC}"
+                exit 1
+                ;;
+        esac
+    done
+
+    local comp_script
+    comp_script=$(cat << 'EOF'
+_synth_lab_targets() {
+    lxc project list --format json 2>/dev/null | jq -r '
+        .[] | select(.config["user.synth.managed"]=="true") |
+        (.config["user.synth.id"] // empty),
+        (.config["user.synth.deploy_id"] // empty),
+        .name
+    ' 2>/dev/null
+}
+
+_synth_completions() {
+    local cur prev subcmd=""
+    local pos_count=0
+    local i
+    
+    COMPREPLY=()
+    cur="${COMP_WORDS[COMP_CWORD]}"
+    prev=""
+    [ "$COMP_CWORD" -gt 0 ] && prev="${COMP_WORDS[COMP_CWORD-1]}"
+    
+    for (( i=1; i<COMP_CWORD; i++ )); do
+        case "${COMP_WORDS[i]}" in
+            -i|--id|-c|--config|-m|--manifest|-n|--lines)
+                ((i++))
+                ;;
+            -*)
+                ;;
+            *)
+                if [ -z "$subcmd" ]; then
+                    subcmd="${COMP_WORDS[i]}"
+                else
+                    ((pos_count++))
+                fi
+                ;;
+        esac
+    done
+    
+    case "$subcmd" in
+        list|ls)
+            COMPREPLY=( $(compgen -W "-h --help" -- "$cur") )
+            return 0
+            ;;
+        monitor|logs|log)
+            if [[ "$prev" == "-n" || "$prev" == "--lines" ]]; then
+                COMPREPLY=( $(compgen -W "20 50 100 200" -- "$cur") )
+            elif [[ "$cur" == -* ]]; then
+                COMPREPLY=( $(compgen -W "-a --all -n --lines -h --help" -- "$cur") )
+            elif [ "$pos_count" -eq 0 ]; then
+                COMPREPLY=( $(compgen -W "$(_synth_lab_targets)" -- "$cur") )
+            fi
+            return 0
+            ;;
+        shell|connect|ssh)
+            if [[ "$cur" == -* ]]; then
+                COMPREPLY=( $(compgen -W "--lxc -h --help" -- "$cur") )
+            elif [ "$pos_count" -eq 0 ]; then
+                COMPREPLY=( $(compgen -W "$(_synth_lab_targets)" -- "$cur") )
+            fi
+            return 0
+            ;;
+        info)
+            if [[ "$cur" == -* ]]; then
+                COMPREPLY=( $(compgen -W "-h --help" -- "$cur") )
+            elif [ "$pos_count" -eq 0 ]; then
+                COMPREPLY=( $(compgen -W "$(_synth_lab_targets)" -- "$cur") )
+            fi
+            return 0
+            ;;
+        destroy|rm|delete)
+            if [[ "$cur" == -* ]]; then
+                COMPREPLY=( $(compgen -W "-y --yes -a --all -h --help" -- "$cur") )
+            elif [ "$pos_count" -eq 0 ]; then
+                COMPREPLY=( $(compgen -W "$(_synth_lab_targets)" -- "$cur") )
+            fi
+            return 0
+            ;;
+        completion)
+            if [[ "$cur" == -* ]]; then
+                COMPREPLY=( $(compgen -W "-h --help" -- "$cur") )
+            elif [ "$pos_count" -eq 0 ]; then
+                COMPREPLY=( $(compgen -W "bash install" -- "$cur") )
+            fi
+            return 0
+            ;;
+    esac
+    
+    case "$prev" in
+        -c|--config|-m|--manifest)
+            compopt -o filenames 2>/dev/null
+            COMPREPLY=(
+                $(compgen -f -X '!*.yaml' -- "$cur")
+                $(compgen -f -X '!*.yml' -- "$cur")
+                $(compgen -d -- "$cur")
+            )
+            return 0
+            ;;
+        -i|--id)
+            return 0
+            ;;
+    esac
+    
+    if [[ "$cur" == -* ]]; then
+        local deploy_opts="-h --help -y --yes -n --nested -d --deb -i --id -I --isolate-images -c --config -m --manifest"
+        COMPREPLY=( $(compgen -W "$deploy_opts" -- "$cur") )
+        return 0
+    fi
+    
+    if [ -z "$subcmd" ]; then
+        local cmds="list monitor shell info destroy completion"
+        compopt -o filenames 2>/dev/null
+        COMPREPLY=(
+            $(compgen -W "$cmds" -- "$cur")
+            $(compgen -f -X '!*.yaml' -- "$cur")
+            $(compgen -f -X '!*.yml' -- "$cur")
+            $(compgen -d -- "$cur")
+        )
+        return 0
+    fi
+}
+
+complete -F _synth_completions synth ./synth
+EOF
+)
+    
+    if [ "$action" = "bash" ]; then
+        printf '%s\n' "$comp_script"
+        exit 0
+    fi
+    
+    local comp_dir="${BASH_COMPLETION_USER_DIR:-${XDG_DATA_HOME:-$HOME/.local/share}/bash-completion}/completions"
+    local comp_file="${comp_dir}/synth"
+    
+    mkdir -p "$comp_dir"
+    printf '%s\n' "$comp_script" > "$comp_file"
+    
+    echo ""
+    echo -e "${BYELLOW}-> Bash completion installed to:${NC} $comp_file"
+    echo ""
+    if ! command -v synth >/dev/null 2>&1; then
+        echo -e "${BYELLOW}Note: '${NC}synth${BYELLOW}' is not in your \$PATH yet. To use '${NC}synth <TAB>${BYELLOW}' from anywhere, symlink it:${NC}"
+        echo "  sudo ln -sf $(realpath "$0") /usr/local/bin/synth"
+        echo ""
+        echo -e "${BYELLOW}Or to enable completion for '${NC}./synth <TAB>${BYELLOW}' immediately, add this to ~/.bashrc:${NC}"
+        echo "  source \"$comp_file\""
+        echo ""
+    else
+        echo -e "Run 'exec bash' (or open a new terminal) to activate it."
+        echo ""
+    fi
+    exit 0
+}
+
+# ==========================================
+# SUBCOMMAND ROUTING
+# ==========================================
+
+case "${1:-}" in
+    list|ls)
+        shift 1
+        cmd_list "$@"
+        ;;
+    monitor|logs|log)
+        shift 1
+        cmd_monitor "$@"
+        ;;
+    shell|connect|ssh)
+        shift 1
+        cmd_shell "$@"
+        ;;
+    info)
+        shift 1
+        cmd_info "$@"
+        ;;
+    destroy|rm|delete)
+        shift 1
+        cmd_destroy "$@"
+        ;;
+    completion)
+        shift 1
+        cmd_completion "$@"
+        ;;
+esac
+
+# ==========================================
+# DEPLOYMENT HELPER FUNCTIONS
+# ==========================================
+
 emergency_rollback() {
-    # If the script dies before the destroy.sh script is created, clean up the host
+    # If the script dies before lab metadata handover completes, clean up the host
     if [ "$CLEANUP_HANDOVER" = false ]; then
         
         # Kill the UI tailer if it's running
@@ -237,7 +1264,7 @@ extract_num() {
 pause_to_continue() {
     local prompt_msg="$1"
     
-    # Auto-continue if -a flag was passed
+    # Auto-continue if -y flag was passed
     if [ "$ACCEPT_DEFAULTS" = true ]; then
         return 0
     fi
@@ -249,7 +1276,7 @@ pause_to_continue() {
 confirm_or_abort() {
     local prompt_msg="$1"
 
-    # Auto-confirm if -a flag was passed
+    # Auto-confirm if -y flag was passed
     if [ "$ACCEPT_DEFAULTS" = true ]; then
         return 0
     fi
@@ -683,18 +1710,8 @@ except Exception:
 # FUNCTION PARAMETERS
 # ==========================================
 
-# Split combined short flags (e.g. -nd -> -n -d)
-parsed_args=()
-for arg in "$@"; do
-    if [[ "$arg" =~ ^-[a-zA-Z]{2,}$ ]]; then
-        for (( i=1; i<${#arg}; i++ )); do
-            parsed_args+=("-${arg:$i:1}")
-        done
-    else
-        parsed_args+=("$arg")
-    fi
-done
-set -- "${parsed_args[@]}"
+split_short_flags "$@"
+set -- ${PARSED_ARGS[@]+"${PARSED_ARGS[@]}"}
 
 CLI_MAAS_SNAP=""
 CLI_NESTED_LXD=""
@@ -778,7 +1795,7 @@ done
 # Resolve the Cloud-Init Payload File
 if [ ${#POSITIONAL_ARGS[@]} -lt 1 ]; then
     echo -e "${BRED}Error: You must provide the path to a cloud-init template.${NC}"
-    echo "Usage: $0 [OPTIONS] <CLOUD_INIT_FILE> [DEPLOY_ID]"
+    echo "Usage: $CMD_NAME [OPTIONS] <CLOUD_INIT_FILE> [DEPLOY_ID]"
     exit 1
 fi
 
@@ -934,7 +1951,7 @@ if [ ${#MISSING_APT[@]} -gt 0 ] || [ "$NEEDS_LXD_SNAP" = true ] || [ "$NEEDS_LXD
         echo ""
     fi
     
-    # 3. Initialize LXD with LVM
+    # 3. Initialize LXD
     if [ "$NEEDS_LXD_INIT" = true ]; then
         echo -e "${BYELLOW}-> Initializing LXD with '${NC}${LXD_STORAGE_DRIVER}${BYELLOW}' storage backend...${NC}"
         echo ""
@@ -1157,34 +2174,46 @@ JUJU_MODELS=$(get_default "juju_models")
 # Default project name using the specific prefix + unified ID (8 hex chars)
 DEFAULT_PROJECT="${REPRO_NAME}-${DEPLOY_ID}"
 
-# Resolve the Host's unique LXD Project Name
+# Resolve the Host's unique LXD Project Name (prohibit 'default')
 echo -e "${BYELLOW}-> -------- Dynamic ${PRETTY_REPRO} Payload Configuration ---------${NC}"
 echo ""
 
 if [ -n "${CONFIG_PROVIDED_lxd_project}" ]; then
     LXD_PROJECT="${CONFIG_PROVIDED_lxd_project}"
     echo -e "  ${BYELLOW}Host LXD Project Name [${NC}from config${BYELLOW}]: ${NC}${LXD_PROJECT}"
+    if [ "$LXD_PROJECT" = "default" ]; then
+        echo -e "${BRED}Error: Using the 'default' LXD project is prohibited. Please specify a dedicated project name.${NC}"
+        exit 1
+    fi
 elif [ "$ACCEPT_DEFAULTS" = true ]; then
     LXD_PROJECT="$DEFAULT_PROJECT"
     echo -e "  ${BYELLOW}Host LXD Project Name [${NC}auto-accepted${BYELLOW}]: ${NC}${LXD_PROJECT}"
 else
-    echo -ne "  ${BYELLOW}Host LXD Project Name [${NC}${DEFAULT_PROJECT}${BYELLOW}]: ${NC}"
-    read -r user_input </dev/tty
-    LXD_PROJECT="${user_input:-$DEFAULT_PROJECT}"
+    while true; do
+        echo -ne "  ${BYELLOW}Host LXD Project Name [${NC}${DEFAULT_PROJECT}${BYELLOW}]: ${NC}"
+        read -r user_input </dev/tty
+        LXD_PROJECT="${user_input:-$DEFAULT_PROJECT}"
+        if [ "$LXD_PROJECT" = "default" ]; then
+            echo -e "  ${BRED}Error: Using the 'default' LXD project is prohibited. Please choose a dedicated project name.${NC}"
+        else
+            break
+        fi
+    done
 fi
 
-# Create the isolated project directory to store all resources
+# Assign persistent numeric lab ID
+SYNTH_ID=$(get_next_synth_id)
+
+# Create the isolated project directory to store logs, access info, and config
 PROJECT_DIR="$SCRIPT_DIR/${DEPLOY_ID}"
 mkdir -p "$PROJECT_DIR"
 
 # Generate the resources scoped to the selected LXD project directory
 VOLATILE_CERT="$PROJECT_DIR/.cert-${LXD_PROJECT}"
-CLEANUP_SCRIPT="$PROJECT_DIR/destroy-${LXD_PROJECT}.sh"
 ACCESS_FILE="$PROJECT_DIR/access-${LXD_PROJECT}.txt"
 LOG_FILE="$PROJECT_DIR/log-${LXD_PROJECT}.log"
 CONFIG_FILE="$PROJECT_DIR/config-${LXD_PROJECT}.yaml"
 CONFIG_FILE_TMP="${CONFIG_FILE}.tmp"
-WORKER_PID_FILE="$PROJECT_DIR/.worker-${LXD_PROJECT}.pid"
 TERM_SIZE_FILE="$PROJECT_DIR/.term_size"
 
 # Initialize configuration file to a temporary file (Prevents overwrite if using the same file as input -c)
@@ -1214,10 +2243,10 @@ done
 
 # Pre-flight check: Prevent deploying over an existing VM
 TARGET_VM_NAME="$VM_NAME"
-[ "$NESTED" = true ] && TARGET_VM_NAME="${LXD_PROJECT}"
+[ "$NESTED" = true ] && TARGET_VM_NAME="${REPRO_NAME}"
 
-if lxc project list 2>/dev/null | grep -q " $LXD_PROJECT "; then
-    if lxc list --project "$LXD_PROJECT" -c n --format csv 2>/dev/null | grep -q "^${TARGET_VM_NAME}$"; then
+if lxc project list --format csv 2>/dev/null | cut -d',' -f1 | grep -qx "$LXD_PROJECT"; then
+    if lxc list --project "$LXD_PROJECT" -c n --format csv 2>/dev/null | grep -qx "${TARGET_VM_NAME}"; then
         echo ""
         echo -e "${BRED}Error: VM '${NC}${TARGET_VM_NAME}${BRED}' already exists in LXD project '${NC}${LXD_PROJECT}${BRED}'.${NC}"
         echo "Please use a different deployment ID or destroy the existing environment first."
@@ -1308,21 +2337,21 @@ UNIQUE_PREFIXES=""
 while read -r line; do
     var_key=$(echo "$line" | sed -E 's/.*set custom_([a-zA-Z0-9_]+).*/\1/')
     
-    # 1. Discovery phase, scan cloud-init for any variable ending in _cpu, _ram, or _disk
+    # 1. Discovery phase
     if [[ "$var_key" =~ ^(.*)_(cpu|ram|disk)$ ]]; then
         prefix="${BASH_REMATCH[1]}"
         res_type="${BASH_REMATCH[2]}"
 
         UNIQUE_PREFIXES+=" $prefix "
         
-        # 2. Extract base value, get the raw number (stripping 'GiB' or 'GB' safely)
+        # 2. Extract base value
         bash_var=$(echo "$var_key" | tr '[:lower:]' '[:upper:]')
         val="${!bash_var}"
         [ -z "$val" ] && val=$(get_default "$var_key")
         num=$(extract_num "$val")
         [ -z "$num" ] && num=0
         
-        # 3. Calculate multipliers, how many times does this resource exist?
+        # 3. Calculate multipliers
         total_mult=1
         search_prefix="$prefix"
         
@@ -1395,7 +2424,7 @@ HOST_CPU=$(nproc 2>/dev/null || echo 0)
 # Convert Kb to GiB and round to nearest whole number
 HOST_RAM=$(awk '/MemTotal/ {printf "%.0f", $2/1024/1024}' /proc/meminfo 2>/dev/null || echo 0)
 
-# Query LXD API for total LVM thin-pool size
+# Query LXD API for total pool size
 LXD_POOL="${LXD_POOL:-default}"
 POOL_RES=$(lxc query "/1.0/storage-pools/$LXD_POOL/resources" 2>/dev/null || true)
 
@@ -1430,6 +2459,7 @@ fi
     echo ""
     echo -e "${BYELLOW}-> -------------- Deployment Summary --------------${NC}"
     echo ""
+    printf "  %-28s %s\n" "Lab ID:" "#$SYNTH_ID"
     printf "  %-28s %s\n" "Project Name:" "$LXD_PROJECT"
     
     # Network Summary
@@ -1623,7 +2653,7 @@ network:
         search: [${TLD}, maas, lxd]
 EOF
     
-    # Inject static net config and 
+    # Inject static net config
     LXC_OPTIONAL_ARGS+=("-c" "cloud-init.network-config=$STATIC_NET")
     
     # Force LXD dnsmasq to resolve the orchestrator's static IP for the rest of the cluster safely
@@ -1653,43 +2683,35 @@ if [ -z "$LXD_POOL" ]; then
     fi
 fi
 
-# Create LXD Project
-if [ "$LXD_PROJECT" != "default" ]; then
-    if ! lxc project list | grep -q " $LXD_PROJECT "; then
-        echo ""
-        echo -e "${BYELLOW}-> Creating Host LXD Project:${NC} $LXD_PROJECT"
-        echo ""
-        confirm_or_abort "Create custom LXD project '$LXD_PROJECT'?"
-        
-        # Create project with isolated profiles and volumes, and conditionally shared images
-        if [ "$SHARED_IMAGES" = false ]; then
-            lxc project create "$LXD_PROJECT" -c features.images=true -c features.profiles=true -c features.storage.volumes=true
-        else
-            lxc project create "$LXD_PROJECT" -c features.images=false -c features.profiles=true -c features.storage.volumes=true
-        fi
-        PROJECT_CREATED=true
-        lxc project set "$LXD_PROJECT" --property description="${PRETTY_REPRO} Isolated Environment ($DEPLOY_ID)"
-        
-        ACTIVE_POOL_DRIVER=$(lxc storage list --format json | jq -r ".[] | select(.name==\"$LXD_POOL\") | .driver")
-        
-        # Initialize the blank default profile with a root disk (enable writeback cache only on 'dir' pools)
-        if [ "$ACTIVE_POOL_DRIVER" = "dir" ]; then
-            lxc profile device add default root disk path=/ pool="$LXD_POOL" io.cache=writeback --project "$LXD_PROJECT"
-        else
-            lxc profile device add default root disk path=/ pool="$LXD_POOL" --project "$LXD_PROJECT"
-        fi
-        
-        # Attach the cloud-init config drive to bypass agent race condition bugs
-        #lxc profile device add default config disk source=cloud-init:config --project "$LXD_PROJECT"
-        
-        # Only attach the MAAS bridge to the host profile if non-nested
-        if [ "$NESTED" = false ]; then
-            lxc profile device add default eth0 nic network="$PRIMARY_BRIDGE" name=eth0 --project "$LXD_PROJECT"
-        fi
+ACTIVE_POOL_DRIVER=$(lxc storage list --format json | jq -r ".[] | select(.name==\"$LXD_POOL\") | .driver")
+
+# Create dedicated LXD Project
+if ! lxc project list --format csv 2>/dev/null | cut -d',' -f1 | grep -qx "$LXD_PROJECT"; then
+    echo ""
+    echo -e "${BYELLOW}-> Creating Host LXD Project:${NC} $LXD_PROJECT"
+    echo ""
+    confirm_or_abort "Create custom LXD project '$LXD_PROJECT'?"
+    
+    if [ "$SHARED_IMAGES" = false ]; then
+        lxc project create "$LXD_PROJECT" -c features.images=true -c features.profiles=true -c features.storage.volumes=true
     else
-        echo ""
-        echo -e "${BYELLOW}-> LXD Project '${NC}${LXD_PROJECT}${BYELLOW}' already exists, skipping..."
+        lxc project create "$LXD_PROJECT" -c features.images=false -c features.profiles=true -c features.storage.volumes=true
     fi
+    PROJECT_CREATED=true
+    lxc project set "$LXD_PROJECT" --property description="${PRETTY_REPRO} Isolated Environment ($DEPLOY_ID)"
+    
+    if [ "$ACTIVE_POOL_DRIVER" = "dir" ]; then
+        lxc profile device add default root disk path=/ pool="$LXD_POOL" io.cache=writeback --project "$LXD_PROJECT"
+    else
+        lxc profile device add default root disk path=/ pool="$LXD_POOL" --project "$LXD_PROJECT"
+    fi
+    
+    if [ "$NESTED" = false ]; then
+        lxc profile device add default eth0 nic network="$PRIMARY_BRIDGE" name=eth0 --project "$LXD_PROJECT"
+    fi
+else
+    echo ""
+    echo -e "${BYELLOW}-> LXD Project '${NC}${LXD_PROJECT}${BYELLOW}' already exists, skipping...${NC}"
 fi
 
 # ==========================================
@@ -1805,207 +2827,13 @@ if ! lxc start "$VM_NAME" --project "$LXD_PROJECT"; then
     exit 1
 fi
 
-# ==========================================
-# CLEANUP SCRIPT
-# ==========================================
-
-# 2. Generate Cleanup Script
-cat << EOF > "$CLEANUP_SCRIPT"
-#!/bin/bash
-echo ""
-echo -e "${BYELLOW}----- Starting Cleanup for LXD Project '${NC}${LXD_PROJECT}${BYELLOW}' -----${NC}"
-echo ""
-EOF
-
-# 1. ONLY purge project if the project is NOT 'default'
-if [[ "$LXD_PROJECT" != "default" ]]; then
-    cat << EOF >> "$CLEANUP_SCRIPT"
-echo -e "${BYELLOW}-> Cleaning up dedicated LXD project:${NC} $LXD_PROJECT"
-echo ""
-if lxc project list | grep -q "$LXD_PROJECT"; then
-    
-    # Delete all instances inside the "$LXD_PROJECT" project first
-    echo "Stopping and deleting all instances in project '$LXD_PROJECT'..."
-    for inst in \$(lxc list --project "$LXD_PROJECT" --format json | jq -r '.[].name'); do
-        ATTEMPTS=0
-        MAX_ATTEMPTS=6
-        
-        # Loop as long as the instance still exists
-        while lxc list --project "$LXD_PROJECT" --format csv -c n 2>/dev/null | grep -q "^\${inst}\$"; do
-            if [ \$ATTEMPTS -ge \$MAX_ATTEMPTS ]; then
-                echo ""
-                echo -e "${BRED}Error: Instance '\$inst' is stuck and refused to delete.${NC}"
-                echo "Please run 'sudo snap restart lxd' to break the deadlock, then run this script again."
-                exit 1 # Abort here so the script doesn't delete itself
-            fi
-            
-            [ \$ATTEMPTS -gt 0 ] && echo "Instance busy. Retrying deletion for '\$inst' (Attempt \$((ATTEMPTS+1))/\$MAX_ATTEMPTS)..."
-            
-            lxc stop -f --project "$LXD_PROJECT" "\$inst" 2>/dev/null || true
-            sleep 2 # Wait for state changes and Ceph/OSD storage locks to release
-            lxc delete -f --project "$LXD_PROJECT" "\$inst"
-            
-            ATTEMPTS=\$((ATTEMPTS + 1))
-        done
-    done
-    
-    sleep 2 # Buffer to let LXD's database settle before wiping volumes
-    
-    # Delete all storage volumes inside the "$LXD_PROJECT" project
-    echo "Deleting storage volumes in project '$LXD_PROJECT'..."
-    for vol in \$(lxc storage volume list "$LXD_POOL" --project "$LXD_PROJECT" --format json | jq -r '.[] | select(.type=="custom") | .name'); do
-        lxc storage volume delete "$LXD_POOL" "\$vol" --project "$LXD_PROJECT"
-    done
-    
-EOF
-    
-    # Only inject image deletion logic if images are isolated
-    if [ "$SHARED_IMAGES" = false ]; then
-        cat << EOF >> "$CLEANUP_SCRIPT"
-    # Delete all images inside the "$LXD_PROJECT" project
-    echo "Deleting images in project '$LXD_PROJECT'..."
-    for img in \$(lxc image list --project "$LXD_PROJECT" --format json | jq -r '.[].fingerprint'); do
-        lxc image delete --project "$LXD_PROJECT" "\$img"
-    done
-    
-EOF
-    fi
-    
-    cat << EOF >> "$CLEANUP_SCRIPT"
-    # Switch to default to ensure we are not "inside" the project we are deleting
-    lxc project switch default 2>/dev/null
-    lxc project delete "$LXD_PROJECT"
-else
-    echo "LXD project '$LXD_PROJECT' not found, skipping..."
-fi
-echo ""
-EOF
-else
-    cat << EOF >> "$CLEANUP_SCRIPT"
-echo -e "${BYELLOW}-> Selected 'default' LXD project, skipping... (Leaving instance cleanup to user)${NC}"
-echo ""
-EOF
-fi
-
-# 2. Dynamic Bridge Cleanup
-# Only perform the DNS cleanup if the primary bridge is a shared host network
-if [ "$PRIMARY_BRIDGE_CREATED" = false ] && [ -n "$PRIMARY_BRIDGE" ]; then
-    cat << EOF >> "$CLEANUP_SCRIPT"
-echo -e "${BYELLOW}-> Cleaning up DNS records on shared Primary Bridge:${NC} $PRIMARY_BRIDGE"
-if lxc network show "$PRIMARY_BRIDGE" 2>/dev/null; then
-    TARGET_RECORD="host-record=${VM_NAME}.lxd,${PRIMARY_STATIC_IP}"
-    CURRENT_DNSMASQ=\$(lxc network get "$PRIMARY_BRIDGE" raw.dnsmasq 2>/dev/null || true)
-    
-    if echo "\$CURRENT_DNSMASQ" | grep -qF "\$TARGET_RECORD"; then
-        NEW_DNSMASQ=\$(echo "\$CURRENT_DNSMASQ" | grep -vF "\$TARGET_RECORD")
-        
-        if [ -z "\$NEW_DNSMASQ" ]; then
-            lxc network unset "$PRIMARY_BRIDGE" raw.dnsmasq 2>/dev/null || true
-        else
-            lxc network set "$PRIMARY_BRIDGE" raw.dnsmasq="\$NEW_DNSMASQ" 2>/dev/null || true
-        fi
-    fi
-fi
-echo ""
-EOF
-fi
-
-if [ ${#CREATED_BRIDGES[@]} -gt 0 ]; then
-    for br in "${CREATED_BRIDGES[@]}"; do
-        cat << EOF >> "$CLEANUP_SCRIPT"
-echo -e "${BYELLOW}-> Deleting dynamic bridge:${NC} $br"
-echo ""
-if lxc network show "$br" 2>/dev/null; then
-    lxc network delete "$br"
-else
-    echo "Bridge '$br' not found, skipping..."
-fi
-echo ""
-EOF
-    done
-fi
-
-# 3. Volatile LXD Certificate Cleanup (Non-nested only)
-if [ "$NESTED" = false ]; then
-    CERT_NAME="$(basename "$VOLATILE_CERT")"
-    cat << EOF >> "$CLEANUP_SCRIPT"
-echo -e "${BYELLOW}-> Removing LXD trust for volatile certificate:${NC} ${VOLATILE_CERT}"
-echo ""
-# Fetch the certificate's fingerprint by matching its common name
-FINGERPRINT=\$(lxc config trust list --format json | jq -r '.[] | select(.name=="${CERT_NAME}") | .fingerprint') 2>/dev/null
-
-if [ -n "\$FINGERPRINT" ] && [ "\$FINGERPRINT" != "null" ]; then
-    lxc config trust remove "\$FINGERPRINT" 2>/dev/null || true
-else
-    echo "Certificate '${CERT_NAME}' not found in trust store, skipping..."
-    echo ""
-fi
-
-rm -f "${VOLATILE_CERT}.crt" "${VOLATILE_CERT}.key"
-EOF
-fi
-
-# 4. Access file, log file removal & Footer
-cat << EOF >> "$CLEANUP_SCRIPT"
-
-echo -e "${BYELLOW}-> Removing Access Info File:${NC} $ACCESS_FILE"
-
-if [ -f "$ACCESS_FILE" ]; then
-    rm -f "$ACCESS_FILE"
-else
-    echo "Access info file '$ACCESS_FILE' not found, skipping..."
-fi
-echo ""
-
-echo -e "${BYELLOW}-> Removing Log File:${NC} $LOG_FILE"
-
-if [ -f "$LOG_FILE" ]; then
-    rm -f "$LOG_FILE"
-else
-    echo "Log file '$LOG_FILE' not found, skipping..."
-fi
-echo ""
-
-echo -e "${BYELLOW}-> Terminating active background tracking processes...${NC}"
-echo ""
-
-if [ -f "$WORKER_PID_FILE" ]; then
-    WPID=\$(cat "$WORKER_PID_FILE")
-    if kill -0 "\$WPID" 2>/dev/null; then
-        kill -9 "\$WPID" 2>/dev/null
-        echo "Background worker process (\$WPID) forcibly terminated."
-    else
-        echo "Background worker process (\$WPID) successfully terminated."
-    fi
-    rm -f "$WORKER_PID_FILE"
-else
-    echo "PID file '$WORKER_PID_FILE' not found, skipping..."
-fi
-
-# Clean up the dynamic terminal resizing side-channel file
-if [ -f "$TERM_SIZE_FILE" ]; then
-    rm -f "$TERM_SIZE_FILE"
-fi
-echo ""
-
-echo -e "${BYELLOW}-------------- Cleanup Complete --------------${NC}"
-
-# Remove the cleanup script itself to avoid clutter
-SCRIPT_DIR="\$(dirname "\$0")"
-rm -f "\$0"
-
-# Safely attempt to remove the project directory if it's empty
-rmdir "\$SCRIPT_DIR" 2>/dev/null || true
-
-EOF
-
-chmod +x "$CLEANUP_SCRIPT"
-
-# Disable the emergency rollback trap because the persistent cleanup script now exists
+# Persist all lab state into LXD project metadata and hand over cleanup responsibility
+SYS_USER="${SYS_USER:-ubuntu}"
+save_lab_metadata
 CLEANUP_HANDOVER=true
 
 echo ""
-echo -e "${BYELLOW}-> 2. Cleanup script created:${NC} $CLEANUP_SCRIPT"
+echo -e "${BYELLOW}-> 2. Lab registered as ID ${NC}#${SYNTH_ID}${BYELLOW} (${NC}${LXD_PROJECT}${BYELLOW})${NC}"
 
 # ==========================================
 # BACKGROUND HANDOVER
@@ -2020,23 +2848,22 @@ trap '
     echo ""
     echo -e "${BYELLOW}-> Detaching... Deployment will continue in background...${NC}"
     echo ""
-    echo -e "To monitor progress: ${BYELLOW}tail -f $LOG_FILE${NC}"
-    echo -e "To abort, run: ${BYELLOW}$CLEANUP_SCRIPT${NC}"
+    echo -e "To monitor progress: ${BYELLOW}${CMD_NAME} monitor ${SYNTH_ID}${NC}"
+    echo -e "To abort & destroy:  ${BYELLOW}${CMD_NAME} destroy ${SYNTH_ID}${NC}"
+    echo -e "To list labs:        ${BYELLOW}${CMD_NAME} list${NC}"
     echo ""
     exit 0
 ' INT TERM HUP
 
 # Capture terminal height before forking so the headless worker knows how to size the UI
 USER_TERM_HEIGHT=$(tput lines 2>/dev/null || echo 40)
-SYS_USER="${SYS_USER:-ubuntu}"
-
 echo "$USER_TERM_HEIGHT" > "$TERM_SIZE_FILE"
 
 # Spawn a lightweight poller before closing FDs so it can track live window resizes
 (
     trap 'if [ -n "$SLEEP_PID" ]; then kill "$SLEEP_PID" 2>/dev/null || true; fi; rm -f "$TERM_SIZE_FILE" 2>/dev/null || true' EXIT
     trap 'exit 0' INT TERM HUP
-
+    
     while kill -0 $$ 2>/dev/null; do
         NEW_HEIGHT=$(stty size <&3 2>/dev/null | awk '{print $1}')
         if [ -n "$NEW_HEIGHT" ] && kill -0 $$ 2>/dev/null; then
@@ -2061,27 +2888,28 @@ disown $POLLER_PID 2>/dev/null
     trap 'rm -f "$TERM_SIZE_FILE" 2>/dev/null || true' EXIT
     trap 'exit 143' TERM
     
+    DEPLOY_FAILED=false
+    
     # ==========================================
     # OBTAIN LXD PRIMARY IP ADDRESS
     # ==========================================
     
-    # 3. Watch for IP Address
     echo ""
     echo -e "${BYELLOW}-> 3. Obtaining IP Address...${NC}"
     echo ""
     
-    # Loop until we get an IPv4 address on eth0 (or enp5s0)
     IP=""
     TIMEOUT=0
     
     while [ -z "$IP" ]; do
         if [ "$TIMEOUT" -ge "$MAX_WAIT" ]; then
             echo -e "${BRED}Error: Timed out waiting for VM to get an IP address.${NC}"
-            echo "Run '${CLEANUP_SCRIPT}' to clean up the environment."
+            echo "Run '$CMD_NAME destroy ${SYNTH_ID}' to clean up the environment."
+            lxc project set "$LXD_PROJECT" user.synth.status="failed" 2>/dev/null || true
             exit 1
         fi
         
-        IP=$(lxc list "$VM_NAME" --project "$LXD_PROJECT" --format=json 2>/dev/null | jq -r '.[0].state.network // empty | to_entries[]? | select(.key=="eth0" or .key=="enp5s0") | .value.addresses[]? | select(.family=="inet" and .scope=="global") | .address' 2>/dev/null | head -n 1)
+        IP=$(get_vm_ipv4 "$LXD_PROJECT" "$VM_NAME")
         
         if [ -z "$IP" ]; then
             sleep 2
@@ -2098,7 +2926,6 @@ disown $POLLER_PID 2>/dev/null
     # MAAS DASHBOARD ACCESS
     # ==========================================
     
-    # 4. MAAS Dashboard Access (SSH-Aware)
     if grep -q "custom_maas_" "$CLOUD_INIT"; then
         echo ""
         echo -e "${BYELLOW}-> 4. Opening MAAS Dashboard...${NC}"
@@ -2155,12 +2982,11 @@ disown $POLLER_PID 2>/dev/null
     # LOG TAILING + JUJU STATUS
     # ==========================================
     
-    # 5. Wait for cloud-init to finish and tail logs and then Juju watch
     echo ""
     echo -e "${BYELLOW}-> 5. Connecting to live cloud-init logs... (will switch to Juju status)${NC}"
     echo ""
     
-    PHASE="LOG_TAIL" # Phase options: LOG_TAIL, JUJU_WATCH, DONE
+    PHASE="LOG_TAIL"
     CLUSTER_TRIGGER_FIRED=false
     CURSOR_TOP='\033[H'
     CLEAR_REST='\033[J'
@@ -2175,6 +3001,7 @@ disown $POLLER_PID 2>/dev/null
             if [ "$LXD_API_FAILS" -ge 5 ]; then
                 echo ""
                 echo -e "${BRED}Fatal: VM '$VM_NAME' or Project '$LXD_PROJECT' no longer exists. Aborting watch loop.${NC}${CLR_EOL}"
+                lxc project set "$LXD_PROJECT" user.synth.status="failed" 2>/dev/null || true
                 exit 1
             fi
         else
@@ -2222,8 +3049,9 @@ disown $POLLER_PID 2>/dev/null
                     echo ""
                     echo -e "${BRED}--------------------------------------------------------------------------${NC}"
                     echo ""
-                    echo "Connect using 'ssh ${SSH_OPTS[*]} ${SYS_USER}@$IP' to debug what happened, and resume deployment..."
-                    echo "Or alternatively run '${CLEANUP_SCRIPT}' to clean up the environment."
+                    echo "Connect using '${CMD_NAME} shell ${SYNTH_ID}' to debug what happened, or run '${CMD_NAME} destroy ${SYNTH_ID}' to clean up."
+                    DEPLOY_FAILED=true
+                    lxc project set "$LXD_PROJECT" user.synth.status="failed" 2>/dev/null || true
                     PHASE="DONE"
                 elif [ "$PHASE" == "DONE" ]; then
                     echo ""
@@ -2319,8 +3147,9 @@ disown $POLLER_PID 2>/dev/null
                     echo ""
                     echo -e "${BRED}--------------------------------------------------------------------------${NC}"
                     echo ""
-                    echo "Connect using 'ssh ${SSH_OPTS[*]} ${SYS_USER}@$IP' to debug what happened, and resume deployment..."
-                    echo "Or alternatively run '${CLEANUP_SCRIPT}' to clean up the environment."
+                    echo "Connect using '${CMD_NAME} shell ${SYNTH_ID}' to debug what happened, or run '${CMD_NAME} destroy ${SYNTH_ID}' to clean up."
+                    DEPLOY_FAILED=true
+                    lxc project set "$LXD_PROJECT" user.synth.status="failed" 2>/dev/null || true
                     PHASE="DONE"
                     break
                 elif [[ "$CI_STATUS" == *"status: done"* ]]; then
@@ -2329,7 +3158,7 @@ disown $POLLER_PID 2>/dev/null
                     echo -e "Target IP: $IP | Updated: $(date +%T)${CLR_EOL}"
                     echo -e "${BYELLOW}------------------------------ Juju Status -------------------------------${NC}${CLR_EOL}"
                     echo -e "$JUJU_OUTPUT" | sed "s/$/${CLR_EOL}/"
-                    echo -ne "${CLEAR_REST}" # Clean up bottom
+                    echo -ne "${CLEAR_REST}"
                     echo ""
                     echo -e "${BYELLOW}cloud-init finished successfully!${NC}"
                     PHASE="DONE"
@@ -2348,11 +3177,8 @@ disown $POLLER_PID 2>/dev/null
                     # Calculate padding to match the default header width (~66 characters)
                     TEXT_LEN=${#RAW_STEP}
                     PAD_LEN=$(( (74 - TEXT_LEN - 2) / 2 ))
-                    [ "$PAD_LEN" -lt 8 ] && PAD_LEN=8 # Guarantee at least 8 dashes per side
-                    
-                    # Generate dynamic dash padding
+                    [ "$PAD_LEN" -lt 8 ] && PAD_LEN=8
                     PADDING=$(printf '%*s' "$PAD_LEN" '' | tr ' ' '-')
-                    
                     UI_FRAME+="${BYELLOW}${PADDING} ${RAW_STEP} ${PADDING}${NC}${CLR_EOL}\n"
                 else
                     UI_FRAME+="${BYELLOW}------------------------ Latest $CLOUD_INIT_LOG_LINES cloud-init Logs ------------------------${NC}${CLR_EOL}\n"
@@ -2376,7 +3202,7 @@ disown $POLLER_PID 2>/dev/null
                 
                 # Reserve lines for cloud-init logs + header (4) + a safety buffer (2)
                 MAX_JUJU_LINES=$(( USER_TERM_HEIGHT - ( 4 + CLOUD_INIT_LOG_LINES ) - 2 ))
-                if [ "$MAX_JUJU_LINES" -lt 10 ]; then MAX_JUJU_LINES=10; fi # Fallback for tiny windows (10 lines)
+                if [ "$MAX_JUJU_LINES" -lt 10 ]; then MAX_JUJU_LINES=10; fi
                 
                 JUJU_LINE_COUNT=$(echo "$JUJU_OUTPUT" | wc -l)
                 
@@ -2392,7 +3218,6 @@ disown $POLLER_PID 2>/dev/null
                 
                 # Clear whatever is left at the very bottom of the screen (in case list got shorter)
                 UI_FRAME+="${CLEAR_REST}"
-                
                 echo -ne "$UI_FRAME"
             else
                 # If SSH fails, just print a warning on top, don't wipe screen
@@ -2406,11 +3231,17 @@ disown $POLLER_PID 2>/dev/null
     # Force cursor to reappear
     echo -e "\033[?25h"
     
+    if [ "$DEPLOY_FAILED" = true ]; then
+        if [ -n "$TAIL_PID" ]; then
+            kill "$TAIL_PID" 2>/dev/null || true
+        fi
+        exit 1
+    fi
+    
     # ==========================================
     # HORIZON DASHBOARD
     # ==========================================
     
-    # 6. Horizon Dashboard Access (SSH-Aware)
     if grep -q "custom_os_" "$CLOUD_INIT"; then
         echo ""
         echo -e "${BYELLOW}-> 6. Opening OpenStack Horizon Dashboard...${NC}"
@@ -2583,13 +3414,15 @@ except Exception:
     # CLUSTER IP INVENTORY
     # ==========================================
     
-    # Print final live status to terminal
     echo ""
     echo -e "${BYELLOW}==========================================${NC}"
     echo -e "${BYELLOW} Cluster Instances & Access Info${NC}"
     echo -e "${BYELLOW}==========================================${NC}"
     echo ""
     print_cluster_inventory "all"
+    
+    # Mark deployment as completed in LXD project metadata
+    lxc project set "$LXD_PROJECT" user.synth.status="deployed" 2>/dev/null || true
     
     # Kill the tail process
     if [ -n "$TAIL_PID" ]; then
@@ -2611,12 +3444,13 @@ except Exception:
         
         echo ""
         echo -e "${BYELLOW}-> 7. Deployment completed in ${NC}${TIME_STR}${BYELLOW}! Connect to your environment using:${NC}"
-        echo "  ssh ${SSH_OPTS[*]} ${SYS_USER}@$IP"
+        echo "  ${CMD_NAME} shell ${SYNTH_ID}"
+        echo "  (or directly: ssh ${SSH_OPTS[*]} ${SYS_USER}@$IP)"
         echo ""
     } >> "$LOG_FILE"
 ) &
 WORKER_PID=$!
-echo "$WORKER_PID" > "$WORKER_PID_FILE"
+lxc project set "$LXD_PROJECT" user.synth.worker_pid="$WORKER_PID" 2>/dev/null || true
 
 # Wait for the background worker to finish naturally
 wait $WORKER_PID
@@ -2630,8 +3464,8 @@ if [ -n "$TAIL_PID" ]; then
     kill "$TAIL_PID" 2>/dev/null || true
 fi
 
-# Clean up PID file if worker finished naturally
-rm -f "$WORKER_PID_FILE" 2>/dev/null
+# Restore stdout/stderr back to the terminal
+exec 1>&3 2>&4
 
 # If we get here, the user DID NOT interrupt (Ctrl+C). Restore normal traps
 trap 'emergency_rollback; exit 1' INT TERM HUP
@@ -2639,14 +3473,12 @@ trap 'emergency_rollback; exit 1' INT TERM HUP
 # Abort the parent if the worker failed
 if [ $WORKER_EXIT_CODE -ne 0 ]; then
     echo -e "${BRED}Deployment process failed or was aborted.${NC}"
+    echo "Connect with '${CMD_NAME} shell ${SYNTH_ID}' to debug or '${CMD_NAME} destroy ${SYNTH_ID}' to clean up."
     exit $WORKER_EXIT_CODE
 fi
 
-# Restore stdout/stderr back to the terminal for a clean interactive ssh session
-exec 1>&3 2>&4
-
 # Fetch the IP directly from LXD since we are in the parent shell and the worker has finished
-IP=$(lxc list "$VM_NAME" --project "$LXD_PROJECT" --format=json 2>/dev/null | jq -r '.[0].state.network // empty | to_entries[]? | select(.key=="eth0" or .key=="enp5s0") | .value.addresses[]? | select(.family=="inet" and .scope=="global") | .address' 2>/dev/null | head -n 1)
+IP=$(get_vm_ipv4 "$LXD_PROJECT" "$VM_NAME")
 
 # ==========================================
 # FINAL SSH SHELL
@@ -2675,4 +3507,3 @@ fi
 # ==========================================
 # DONE
 # ==========================================
-

@@ -50,10 +50,10 @@ This Transcript supports enabling optional Sunbeam features during step `15-sunb
 
 ## Requirements
 To successfully synthesize this environment, your host machine must meet the following minimum specifications using the *default* topology.
-* CPU: 22 cores
-* RAM: 60 GiB
-* Disk: 310 GiB
-* Network: Outbound internet access for LXD image downloads, MAAS image synchronization, and Sunbeam snap installations
+- CPU: 22 cores
+- RAM: 60 GiB
+- Disk: 310 GiB
+- Network: Outbound internet access for LXD image downloads, MAAS image synchronization, and Sunbeam snap installations
 
 ## Usage
 Deploy this Transcript using the `se-polymerase` orchestrator. The orchestrator isolates all generated files into a dedicated `[DEPLOY_ID]` directory and automatically handles headless background execution.
@@ -98,12 +98,20 @@ You now have a fully populated configuration file inside the generated deploymen
 ```
 
 ## Access and Cleanup
-Because the deployment is executed in the background, you can detach your terminal at any time. Monitor the live progress by tailing the log file stored in the deployment directory:
+Because the deployment is executed in the background, you can detach your terminal at any time. Check active labs with `./synth list` and monitor live progress using the lab's numeric ID or deploy ID:
 ```bash
-tail -f Sunbeam/00426900/log-sunbeam-00426900.log
+./synth monitor 00426900
 ```
 
-Once the payload finishes executing, `synth` will automatically drop you into a secure multiplexed SSH shell connected to the primary MAAS controller. You can also view all SSH tunneling commands and dashboard URLs in the generated `access-[PROJECT].txt` file.
+Once the payload finishes executing, `synth` will automatically drop you into an SSH shell connected to the primary MAAS controller. You can reconnect at any time using:
+```bash
+./synth shell 00426900
+```
+
+View all SSH tunneling commands, dashboard URLs, and credentials stored in `access-[PROJECT].txt`:
+```bash
+./synth info 00426900
+```
 
 OpenStack credentials are automatically generated in your user directory. The `admin-openrc` file is automatically sourced at login. You can interact with the OpenStack CLI and manage the newly deployed cloud:
 ```bash
@@ -111,9 +119,9 @@ openstack server list
 ```
 Note: If `os_run_demo` is enabled, a `demo-openrc` file will also be available for testing isolated tenant workflows.
 
-To completely wipe this environment and release its resources, execute the auto-generated teardown script located in the deployment directory:
+To completely wipe this environment and release its resources (pass `-a` / `--all` to also remove the saved configuration file):
 ```bash
-./Sunbeam/00426900/destroy-sunbeam-00426900.sh
+./synth destroy 00426900
 ```
 
 ## Modular Execution and Recovery
@@ -142,7 +150,7 @@ If a specific phase of the deployment fails or times out, you do not need to des
 
 ### Why is this useful?
 
-If a deployment fails at step `12` due to a transient network error or misconfiguration, you **do not** need to destroy the lab and start over. You can simply SSH into the primary machine and re-run the specific script:
+If a deployment fails at step `12` due to a transient network error or misconfiguration, you **do not** need to destroy the lab and start over. Connect to the primary machine with `./synth shell <id>` (which automatically falls back to `lxc shell` if SSH is not up yet) and re-run the specific script:
 
 ```bash
 ubuntu@maas-1:~$ 12-sunbeam-bootstrap
