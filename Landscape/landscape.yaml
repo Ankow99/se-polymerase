@@ -99,12 +99,13 @@
 # ==========================================
 
 {% if cloud_name == "lxd" %}
-    {% set meta = {} %}
+    {% set ns_meta = namespace(pairs=[]) %}
     {% for key, value in ds.config.items() %}
         {% if key.startswith("user_") %}
-            {% set _ = meta.__setitem__(key[5:], value) %}
+            {% set ns_meta.pairs = ns_meta.pairs + [(key[5:], value)] %}
         {% endif %}
     {% endfor %}
+    {% set meta = dict(ns_meta.pairs) %}
 {% else %}
     {% set meta = ds.meta_data.get("meta") if ds.meta_data.get("meta") else {} %}
 {% endif %}
@@ -269,8 +270,6 @@ users:
     ssh_import_id:
       - {{ ssh_import_id }}
 {% endif %}
-
-no_ssh_fingerprints: true
 
 # Enable SSH Password Auth ONLY if no keys are provided
 {% if not ssh_key and not ssh_import_id %}

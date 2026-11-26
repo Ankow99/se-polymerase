@@ -3444,6 +3444,7 @@ except Exception:
         
         echo ""
         echo -e "${BYELLOW}-> 7. Deployment completed in ${NC}${TIME_STR}${BYELLOW}! Connect to your environment using:${NC}"
+        echo ""
         echo "  ${CMD_NAME} shell ${SYNTH_ID}"
         echo "  (or directly: ssh ${SSH_OPTS[*]} ${SYS_USER}@$IP)"
         echo ""
